@@ -68,6 +68,44 @@ fn assert_committed_count(path: &Path, expected: usize) {
     );
 }
 
+fn assert_cli_committed_count(
+    live: &Path,
+    expected_messages: usize,
+    expected_conversations: usize,
+) {
+    let observed = validated_searchable_index_summary(live).unwrap();
+    let db_path = live
+        .parent()
+        .and_then(|dir| dir.parent())
+        .expect("index dir lives under data/index/...")
+        .join("agent_search.db");
+    let storage = SqliteStorage::open_readonly(&db_path).unwrap();
+    let region_docs =
+        coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+            storage.raw(),
+        )
+        .unwrap();
+    let expected_region_docs = expected_conversations * 3;
+    assert_eq!(
+        region_docs,
+        expected_region_docs,
+        "region doc bound at {}",
+        live.display()
+    );
+    assert_eq!(
+        observed.docs - region_docs,
+        expected_messages,
+        "canonical doc share at {}",
+        live.display()
+    );
+    assert_eq!(
+        observed.docs,
+        expected_messages + expected_region_docs,
+        "fresh reader at {}",
+        live.display()
+    );
+}
+
 #[test]
 fn gh530_twenty_producers_preserve_committed_counts_and_pinned_readers() {
     let directory = tempfile::tempdir().unwrap();
@@ -496,7 +534,7 @@ fn gh530_cli_rebuild_with_growing_sessions_recovers_durable_tail_in_search() {
     }
     drop(storage);
     let live = index_dir(&home.path().join("data")).unwrap();
-    assert_committed_count(&live, SESSIONS * per_session);
+    assert_cli_committed_count(&live, SESSIONS * per_session, SESSIONS);
     for session in 0..SESSIONS {
         let term = format!("gh530s{session:03}m{:08}z", per_session - 1);
         let mut search = cass(home.path());
@@ -681,12 +719,12 @@ fn gh530_cli_rejects_noncanonical_surplus_before_replaying_a_non_eof_checkpoint(
         contaminated_manifest,
         "preserve the refused generation without writing into it"
     );
-    assert_committed_count(&live, SESSIONS * INITIAL_MESSAGES);
+    assert_cli_committed_count(&live, SESSIONS * INITIAL_MESSAGES, SESSIONS);
     assert_eq!(checkpoint_at(&live)["completed"], true);
     let mut no_op = cass(home.path());
     no_op.args(["index", "--json"]);
     Process::spawn(&mut no_op, home.path(), "surplus-no-op").success();
-    assert_committed_count(&live, SESSIONS * INITIAL_MESSAGES);
+    assert_cli_committed_count(&live, SESSIONS * INITIAL_MESSAGES, SESSIONS);
     assert_eq!(quarantines(&data).len(), 1);
 }
 
@@ -782,7 +820,7 @@ fn gh530_cli_killed_rebuild_finishes_while_sources_grow_and_incremental_catches_
     let mut catch_up = cass(home.path());
     catch_up.args(["index", "--json"]);
     Process::spawn(&mut catch_up, home.path(), "growing-catch-up").success();
-    assert_committed_count(&live, SESSIONS * per_session + 2);
+    assert_cli_committed_count(&live, SESSIONS * per_session + 2, SESSIONS + 2);
     let storage = SqliteStorage::open_readonly(&data.join("agent_search.db")).unwrap();
     let conversations = storage.list_conversations(1000, 0).unwrap();
     assert_eq!(conversations.len(), SESSIONS + 2);
@@ -868,7 +906,7 @@ fn gh530_watch_once_then_plain_index_does_not_rebuild_a_certified_generation() {
         process.diagnostics()
     );
     let live = index_dir(&home.path().join("data")).unwrap();
-    assert_committed_count(&live, SESSIONS * INITIAL_MESSAGES + 1);
+    assert_cli_committed_count(&live, SESSIONS * INITIAL_MESSAGES + 1, SESSIONS);
     assert_eq!(checkpoint_at(&live)["completed"], true);
 }
 
@@ -897,7 +935,7 @@ fn gh530_force_rebuild_then_watch_once_new_sessions_then_plain_index_appends() {
     rebuild.args(["index", "--full", "--force-rebuild", "--json"]);
     Process::spawn(&mut rebuild, home.path(), "force-rebuild").success();
     let live = index_dir(&home.path().join("data")).unwrap();
-    assert_committed_count(&live, SESSIONS * INITIAL_MESSAGES);
+    assert_cli_committed_count(&live, SESSIONS * INITIAL_MESSAGES, SESSIONS);
     assert_eq!(checkpoint_at(&live)["completed"], true);
 
     let new_sources: Vec<PathBuf> = (SESSIONS..SESSIONS + NEW_SESSIONS)
@@ -918,7 +956,7 @@ fn gh530_force_rebuild_then_watch_once_new_sessions_then_plain_index_appends() {
     let mut watched = Process::spawn(&mut watch, home.path(), "watch-once-new");
     watched.success();
     let expected = (SESSIONS + NEW_SESSIONS) * INITIAL_MESSAGES;
-    assert_committed_count(&live, expected);
+    assert_cli_committed_count(&live, expected, SESSIONS + NEW_SESSIONS);
     let backups_before = publish_backups(&live);
 
     let unexpected_rebuild = home.path().join("unexpected-rebuild.json");
@@ -947,7 +985,7 @@ fn gh530_force_rebuild_then_watch_once_new_sessions_then_plain_index_appends() {
         backups_before,
         "the plain index after watch-once published a new generation: {diagnostics}"
     );
-    assert_committed_count(&live, expected);
+    assert_cli_committed_count(&live, expected, SESSIONS + NEW_SESSIONS);
     assert_eq!(checkpoint_at(&live)["completed"], true, "{diagnostics}");
 }
 
@@ -983,7 +1021,7 @@ fn gh530_index_json_reports_sources_deferred_for_an_active_writer() {
         sample[0].as_str().unwrap().ends_with("session-0.jsonl"),
         "{report}"
     );
-    assert_committed_count(&live, SESSIONS * INITIAL_MESSAGES);
+    assert_cli_committed_count(&live, SESSIONS * INITIAL_MESSAGES, SESSIONS);
 
     writer.unlock().unwrap();
     drop(writer);
@@ -998,7 +1036,7 @@ fn gh530_index_json_reports_sources_deferred_for_an_active_writer() {
         stats.get("deferred_active_source_sample").is_none(),
         "{report}"
     );
-    assert_committed_count(&live, SESSIONS * INITIAL_MESSAGES + 1);
+    assert_cli_committed_count(&live, SESSIONS * INITIAL_MESSAGES + 1, SESSIONS);
 }
 
 #[test]
@@ -1036,7 +1074,7 @@ fn gh530_cli_scale_rebuild_progresses_with_twenty_active_writers() {
     assert!(growers.completed_rounds.load(Ordering::Acquire) > before);
     let live = index_dir(&home.path().join("data")).unwrap();
     assert_eq!(checkpoint_at(&live)["completed"], true);
-    assert_committed_count(&live, initial_docs);
+    assert_cli_committed_count(&live, initial_docs, archive_sessions);
     let per_session = growers.finish();
     let mut catch_up = cass(home.path());
     catch_up.args(["index", "--json"]);
@@ -1044,7 +1082,7 @@ fn gh530_cli_scale_rebuild_progresses_with_twenty_active_writers() {
     Process::spawn(&mut catch_up, home.path(), "scale-catch-up").success();
     let catch_up_ms = started.elapsed().as_millis();
     let final_docs = initial_docs + SESSIONS * (per_session - initial_messages);
-    assert_committed_count(&live, final_docs);
+    assert_cli_committed_count(&live, final_docs, archive_sessions);
     eprintln!(
         "GH530 scale sessions={archive_sessions} initial_docs={initial_docs} final_docs={final_docs} seed_ms={seed_ms} rebuild_ms={rebuild_ms} catch_up_ms={catch_up_ms}"
     );
@@ -1103,7 +1141,7 @@ fn gh530_cli_late_surplus_outside_the_upsert_window_does_not_abort_resume() {
         SESSIONS * messages,
         started.elapsed().as_millis()
     );
-    assert_committed_count(&live, SESSIONS * messages);
+    assert_cli_committed_count(&live, SESSIONS * messages, SESSIONS);
     assert_eq!(checkpoint_at(&live)["completed"], true);
     assert_eq!(quarantines(&data).len(), 1);
 }

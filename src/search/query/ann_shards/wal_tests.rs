@@ -188,12 +188,51 @@ fn latest_wal_replacement_supersedes_a_better_old_graph_vector() {
         1,
         "last durable write wins"
     );
-    let set = SemanticAnnShardSet::open(Arc::clone(&ctx.artifacts)).unwrap();
     let before = files(temp.path());
-    let (expected, _) =
+    let err = SemanticAnnShardSet::open(Arc::clone(&ctx.artifacts))
+        .err()
+        .expect("single-shard FSVI with WAL tombstones must not admit stale native HNSW");
+    assert_eq!(err.reason, SemanticAnnUnavailableReason::SidecarNotNative);
+    assert_eq!(err.diagnostic, "selected_graph_not_native");
+    let (exact_hits, _) =
         SearchClient::search_exact_semantic_indexes(&ctx, &[1.0, 0.0], 2, None).unwrap();
+    assert_eq!(exact_hits[0].message_id, 2);
+    assert_eq!(
+        exact_hits.iter().find(|hit| hit.message_id == 1).unwrap().score,
+        0.0
+    );
+    assert_eq!(files(temp.path()), before);
+
+    // Pair the tombstoned shard with an intact native HNSW shard to preserve
+    // `WalShardOverlay` coverage alongside the partial exact fallback.
+    let paired_temp = tempfile::tempdir().unwrap();
+    let paired_ctx = context(vec![
+        shard(
+            paired_temp.path(),
+            "replace-paired",
+            &[(doc(1, 3), [1.0, 0.0]), (doc(2, 3), [0.6, 0.8])],
+            &[(doc(1, 3), [0.8, 0.6]), (doc(1, 3), [0.0, 1.0])],
+        ),
+        shard(
+            paired_temp.path(),
+            "other-hnsw",
+            &[(doc(900, 3), [-1.0, 0.0])],
+            &[],
+        ),
+    ]);
+    let set = SemanticAnnShardSet::open(Arc::clone(&paired_ctx.artifacts)).unwrap();
+    assert_eq!(set.native_ordinals, vec![1]);
+    assert_eq!(set.exact_shards.len(), 1);
+    assert_eq!(set.exact_shards[0].shard, 0);
+    assert_eq!(
+        set.exact_shards[0].reason,
+        SemanticAnnUnavailableReason::SidecarNotNative
+    );
+    let paired_before = files(paired_temp.path());
+    let (expected, _) =
+        SearchClient::search_exact_semantic_indexes(&paired_ctx, &[1.0, 0.0], 2, None).unwrap();
     let (actual, _, stats) = set
-        .search_with_exact_fallback(&ctx, &[1.0, 0.0], 2, None)
+        .search_with_exact_fallback(&paired_ctx, &[1.0, 0.0], 2, None)
         .unwrap();
     assert_eq!(actual[0].message_id, 2);
     assert_eq!(signature(&actual), signature(&expected));
@@ -201,8 +240,10 @@ fn latest_wal_replacement_supersedes_a_better_old_graph_vector() {
         actual.iter().find(|hit| hit.message_id == 1).unwrap().score,
         0.0
     );
-    assert!(stats.unwrap().exact_fallback.is_none());
-    assert_eq!(files(temp.path()), before);
+    let stats = stats.unwrap();
+    assert!(stats.exact_fallback.is_none());
+    assert_eq!(stats.partial_exact.unwrap().shards[0].shard, 0);
+    assert_eq!(files(paired_temp.path()), paired_before);
 }
 
 #[test]
@@ -398,24 +439,76 @@ fn wal_chunk_replacement_keeps_unmodified_chunks_of_the_same_message() {
         "chunk-replacement",
         &[
             (doc(1, 3), [1.0, 0.0]),
-            (other_chunk, [0.8, 0.6]),
+            (other_chunk.clone(), [0.8, 0.6]),
             (doc(2, 3), [0.6, 0.8]),
         ],
         &[(doc(1, 3), [0.0, 1.0])],
     )]);
-    let set = SemanticAnnShardSet::open(Arc::clone(&ctx.artifacts)).unwrap();
     let before = files(temp.path());
+    let err = SemanticAnnShardSet::open(Arc::clone(&ctx.artifacts))
+        .err()
+        .expect("single-shard FSVI with WAL tombstones must not admit stale native HNSW");
+    assert_eq!(err.reason, SemanticAnnUnavailableReason::SidecarNotNative);
+    assert_eq!(err.diagnostic, "selected_graph_not_native");
+    let (exact_hits, _) =
+        SearchClient::search_exact_semantic_indexes(&ctx, &[1.0, 0.0], 2, None).unwrap();
+    assert_eq!(
+        exact_hits
+            .iter()
+            .map(|hit| hit.message_id)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(exact_hits[0].chunk_idx, 1);
+    assert_eq!(exact_hits[0].score.to_bits(), 0.8_f32.to_bits());
+    assert_eq!(files(temp.path()), before);
+
+    // Pair the tombstoned shard with an intact native HNSW shard to preserve
+    // `WalShardOverlay` coverage alongside the partial exact fallback.
+    let paired_temp = tempfile::tempdir().unwrap();
+    let paired_ctx = context(vec![
+        shard(
+            paired_temp.path(),
+            "chunk-replacement-paired",
+            &[
+                (doc(1, 3), [1.0, 0.0]),
+                (other_chunk, [0.8, 0.6]),
+                (doc(2, 3), [0.6, 0.8]),
+            ],
+            &[(doc(1, 3), [0.0, 1.0])],
+        ),
+        shard(
+            paired_temp.path(),
+            "other-hnsw",
+            &[(doc(900, 3), [-1.0, 0.0])],
+            &[],
+        ),
+    ]);
+    let set = SemanticAnnShardSet::open(Arc::clone(&paired_ctx.artifacts)).unwrap();
+    assert_eq!(set.native_ordinals, vec![1]);
+    assert_eq!(set.exact_shards.len(), 1);
+    assert_eq!(set.exact_shards[0].shard, 0);
+    assert_eq!(
+        set.exact_shards[0].reason,
+        SemanticAnnUnavailableReason::SidecarNotNative
+    );
+    let paired_before = files(paired_temp.path());
+    let (expected, _) =
+        SearchClient::search_exact_semantic_indexes(&paired_ctx, &[1.0, 0.0], 2, None).unwrap();
     let (hits, _, stats) = set
-        .search_with_exact_fallback(&ctx, &[1.0, 0.0], 2, None)
+        .search_with_exact_fallback(&paired_ctx, &[1.0, 0.0], 2, None)
         .unwrap();
+    assert_eq!(signature(&hits), signature(&expected));
     assert_eq!(
         hits.iter().map(|hit| hit.message_id).collect::<Vec<_>>(),
         vec![1, 2]
     );
     assert_eq!(hits[0].chunk_idx, 1);
     assert_eq!(hits[0].score.to_bits(), 0.8_f32.to_bits());
-    assert!(stats.unwrap().exact_fallback.is_none());
-    assert_eq!(files(temp.path()), before);
+    let stats = stats.unwrap();
+    assert!(stats.exact_fallback.is_none());
+    assert_eq!(stats.partial_exact.unwrap().shards[0].shard, 0);
+    assert_eq!(files(paired_temp.path()), paired_before);
 }
 
 #[test]

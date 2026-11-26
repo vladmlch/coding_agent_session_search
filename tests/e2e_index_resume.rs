@@ -554,34 +554,45 @@ fn gh426_batch_fallback_sigterm_and_sigint_preserve_committed_prefix() {
     }
     for (signal, exit) in [("-TERM", 143), ("-INT", 130)] {
         let home = tempfile::tempdir().unwrap();
-        // Claude completes through the boundary producer first. Aider then
+        // Claude completes through the boundary producer first. Qwen then
         // exercises the real non-streaming fallback, one durable batch at a
         // time. Alternating prompt/answer blocks produce 32 native messages.
         seed(home.path(), 1);
         for source in 1..81 {
             let term = source_term(source);
-            let root = if source == 1 {
-                home.path().to_path_buf()
-            } else {
-                home.path().join(format!("aider/project-{source}"))
-            };
-            fs::create_dir_all(&root).unwrap();
-            let history = (0..32)
+            let chats_dir = home
+                .path()
+                .join(format!(".qwen/tmp/project-{source}/chats"));
+            fs::create_dir_all(&chats_dir).unwrap();
+            let messages: Vec<Value> = (0..32)
                 .map(|message| {
-                    format!(
-                        "{}{term} exactresume{source}message{message} message {message}\n\n",
-                        if message % 2 == 0 { "> " } else { "" },
-                    )
+                    serde_json::json!({
+                        "id": format!("msg-{source}-{message:02}"),
+                        "timestamp": format!("2025-11-08T23:19:{:02}.000Z", message),
+                        "type": if message % 2 == 0 { "user" } else { "qwen" },
+                        "content": format!("{term} exactresume{source}message{message} message {message}"),
+                    })
                 })
-                .collect::<String>();
-            fs::write(root.join(".aider.chat.history.md"), history).unwrap();
+                .collect();
+            let session_json = serde_json::json!({
+                "sessionId": format!("qwen-resume-{source}"),
+                "projectHash": format!("project-{source}"),
+                "startTime": "2025-11-08T23:19:00.000Z",
+                "lastUpdated": "2025-11-08T23:19:31.000Z",
+                "messages": messages,
+            });
+            fs::write(
+                chats_dir.join(format!("session-17311079{source:04}00-{source}.json")),
+                serde_json::to_vec(&session_json).unwrap(),
+            )
+            .unwrap();
         }
         let trace = home.path().join("fallback-signal-trace.jsonl");
         let stderr = home.path().join("fallback-stderr");
         let stdout = home.path().join("fallback-stdout");
         let mut child = Guard(
             index_command(home.path(), "0", &trace)
-                .env("CASS_AIDER_DATA_ROOT", home.path())
+                .env("QWEN_HOME", home.path().join(".qwen"))
                 .env("CASS_NON_WATCH_INGEST_CHUNK_SIZE", "1")
                 .arg("--robot-trace-ingest")
                 .stdout(Stdio::from(fs::File::create(&stdout).unwrap()))
@@ -665,7 +676,7 @@ fn gh426_batch_fallback_sigterm_and_sigint_preserve_committed_prefix() {
         drop(storage);
         let resumed_trace = home.path().join("fallback-resumed-trace.jsonl");
         assert_cmd::Command::from_std(index_command(home.path(), "0", &resumed_trace))
-            .env("CASS_AIDER_DATA_ROOT", home.path())
+            .env("QWEN_HOME", home.path().join(".qwen"))
             .env("CASS_NON_WATCH_INGEST_CHUNK_SIZE", "1")
             .timeout(Duration::from_secs(240))
             .assert()
