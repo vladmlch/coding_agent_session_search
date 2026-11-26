@@ -337,13 +337,13 @@ checksum = "original-checksum"
         let fixture = Fixture::new();
         let original = fixture.stream(&[]);
         for path in [
-            "src/ui/theme.rs",
-            "src/html_export/render.rs",
+            "src/html_export/renderer.rs",
+            "src/html_export/styles.rs",
+            "src/html_export/template.rs",
             "src/pages_assets/search.js",
+            "src/pages_assets/viewer.js",
             "src/doctor_robot_docs.rs",
             "src/recipes_robot_docs.rs",
-            "src/tui_asciicast.rs",
-            "src/ftui_harness.rs",
         ] {
             fixture.write(path, b"original presentation");
             assert_eq!(fixture.stream(&[]), original, "added {path}");

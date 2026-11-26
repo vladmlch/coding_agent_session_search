@@ -280,10 +280,21 @@ fn search_with_fallback_keeps_exact_hits_when_the_wildcard_retry_runs_out_of_fue
             FieldMask::FULL,
         )
     };
-    let budget = (0..40)
+    let hi = (0..40)
         .map(|shift| 1_u64 << shift)
         .find(|budget| plain(*budget).is_ok())
         .expect("the plain lookup fits some budget");
+    let mut lo = hi / 2;
+    let mut hi_bound = hi;
+    while lo < hi_bound {
+        let mid = lo + (hi_bound - lo) / 2;
+        if plain(mid).is_ok() {
+            hi_bound = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    let budget = hi_bound;
     // Precondition: at that budget the retry's walk does not fit.
     let refused = client_with_budget(budget)?
         .search(

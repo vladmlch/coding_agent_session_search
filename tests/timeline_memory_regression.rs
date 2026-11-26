@@ -209,7 +209,7 @@ fn timeline_agent_and_source_filters_compose_without_dropping_zero_counts() {
         (vec!["--agent", "Claude_Code"], vec![8, 4, 2]),
         (vec!["--agent", "claude"], vec![8, 4, 2]),
         (vec!["--agent", "codex"], vec![5, 10, 3]),
-        (vec!["--agent", "aider"], vec![]),
+        (vec!["--agent", "qoder"], vec![]),
         (vec!["--agent", "unknown"], vec![11, 7]),
         (vec!["--agent", "unknown", "--source", "local"], vec![7]),
         (vec!["--source", "local"], vec![10, 7, 3, 2]),

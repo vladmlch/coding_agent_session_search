@@ -134,9 +134,22 @@ struct CmdOutcome {
     stderr: String,
 }
 
-fn run_export_html(args: &[&str], db: Option<&Path>) -> Result<CmdOutcome, Box<dyn Error>> {
+fn run_export_html(
+    args: &[&str],
+    db: Option<&Path>,
+    home: &Path,
+    data_dir: &Path,
+) -> Result<CmdOutcome, Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("cass")?;
-    cmd.arg("--color=never");
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("CASS_DATA_DIR", data_dir)
+        .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+        .env("CASS_AUTO_REFRESH", "0")
+        .env("NO_COLOR", "1")
+        .env_remove("CASS_DB_PATH")
+        .arg("--color=never");
     if let Some(db) = db {
         cmd.arg("--db").arg(db);
     }
@@ -221,10 +234,29 @@ fn assert_error_envelope(
 fn export_html_nonexistent_session_returns_not_indexed_envelope() -> TestResult {
     let tmp = TempDir::new()?;
     let bogus = tmp.path().join("does_not_exist_for_export.jsonl");
-    // No --db: a never-indexed temp path cannot match any archive row.
-    // Index-first taxonomy reports `conversation-not-indexed` (code 3) where
-    // the file-first contract reported `session-not-found`.
-    let outcome = run_export_html(&[bogus.to_str().ok_or("non-utf8 path")?], None)?;
+    let bogus_str = bogus.to_str().ok_or("non-utf8 path")?;
+
+    // Missing archive in an isolated data dir must report index-unavailable (9).
+    let missing_data_dir = tmp.path().join("missing-data");
+    fs::create_dir_all(&missing_data_dir)?;
+    let missing_outcome = run_export_html(&[bogus_str], None, tmp.path(), &missing_data_dir)?;
+    assert_error_envelope(
+        "export-html-missing-archive",
+        &missing_outcome,
+        9,
+        "index-unavailable",
+    )?;
+
+    // Populated/valid empty schema-v1 archive in an isolated data dir:
+    // nonexistent session must report conversation-not-indexed (3).
+    let data_dir = tmp.path().join("cass-data");
+    fs::create_dir_all(&data_dir)?;
+    let db = data_dir.join("agent_search.db");
+    FrankenStorage::open(&db)
+        .expect("open empty archive")
+        .close()
+        .expect("close empty archive");
+    let outcome = run_export_html(&[bogus_str], None, tmp.path(), &data_dir)?;
     assert_error_envelope(
         "export-html-nonexistent",
         &outcome,
@@ -281,6 +313,8 @@ fn export_html_unwritable_output_dir_returns_output_not_writable_envelope() -> T
             out_dir.to_str().ok_or("non-utf8 path")?,
         ],
         Some(&db),
+        tmp.path(),
+        tmp.path(),
     )?;
 
     // Restore write permission so the temp dir cleanup can succeed even
@@ -311,6 +345,8 @@ fn export_html_success_envelope_has_documented_keys() -> TestResult {
             out_dir.to_str().ok_or("non-utf8 path")?,
         ],
         Some(&db),
+        tmp.path(),
+        tmp.path(),
     )?;
     let code = outcome
         .exit_code

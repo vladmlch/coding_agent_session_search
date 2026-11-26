@@ -203,7 +203,7 @@ fn gh521_filters_counts_nulls_and_grouping_preserve_the_timeline_contract() {
         (&["--source", "user@remote"], &[6]),
         (&["--agent", "claude_code", "--source", "local"], &[7, 4, 2]),
         (&["--agent", "codex", "--source", "backup"], &[]),
-        (&["--agent", "aider"], &[]),
+        (&["--agent", "qoder"], &[]),
     ];
     for grouping in ["none", "hour", "day"] {
         for (flags, expected) in cases {
