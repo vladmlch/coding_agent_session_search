@@ -803,6 +803,7 @@ fn assert_gh466_canonical_prefix_cap(agent_slug: &str, route: usize, expand_pref
         );
         assert_eq!(packet.payload.messages[1].content, "beyondcapneedle");
     }
+    index.commit_with_region_doc_stamps(storage.raw()).unwrap();
     assert_eq!(
         crate::indexer::expected_live_lexical_doc_count(&storage).unwrap(),
         expected_docs as usize,

@@ -326,7 +326,7 @@ mod gh473_preflight {
             (first.inserted_conversations, first.inserted_messages),
             (1, 1)
         );
-        index.commit().unwrap();
+        index.commit_with_region_doc_stamps(storage.raw()).unwrap();
         // Task 5: the index also holds this session's region documents;
         // compare the canonical share.
         assert_eq!(
@@ -363,7 +363,7 @@ mod gh473_preflight {
             ledger.get(&completion.key).map(String::as_str),
             Some("generation-1")
         );
-        index.commit().unwrap();
+        index.commit_with_region_doc_stamps(storage.raw()).unwrap();
         assert_eq!(
             index.doc_count().unwrap()
                 - crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
@@ -389,7 +389,7 @@ mod gh473_preflight {
             .unwrap();
             assert_eq!(outcome.inserted_messages, expected_insertions);
             assert_eq!(outcome.inserted_conversations, 0);
-            index.commit().unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
             assert_eq!(
                 index.doc_count().unwrap()
                     - crate::viewer_extensions::search_regions::live_region_doc_bound(
@@ -417,7 +417,12 @@ mod gh473_preflight {
             Some(&completion.observation)
         );
         let index = TantivyIndex::open_or_create(&index_path).unwrap();
-        assert_eq!(index.doc_count().unwrap(), 2);
+        assert_eq!(
+            index.doc_count().unwrap()
+                - crate::viewer_extensions::search_regions::live_region_doc_bound(reopened.raw())
+                    .unwrap_or(0) as u64,
+            2
+        );
         reopened.close_without_checkpoint().unwrap();
     }
 

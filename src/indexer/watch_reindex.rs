@@ -648,12 +648,8 @@ pub(in crate::indexer) fn reindex_paths_with_semantic_delta(
                 connector_name = chunk.first().map(|conv| conv.agent_slug.clone());
             }
             for conv in &mut chunk {
-                if let Some(progress) = &opts.progress {
-                    progress.check_stop()?;
-                }
                 capture_prepared_conversation(&opts.data_dir, conv, &raw_source_exclusions);
                 if let Some(progress) = &opts.progress {
-                    progress.check_stop()?;
                     progress.tick_activity();
                 }
             }
