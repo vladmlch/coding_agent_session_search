@@ -112,17 +112,18 @@ pub(crate) fn doctor_archive_bundle_bytes(db_path: &Path) -> u64 {
 }
 
 // `PRAGMA quick_check(1)` limits the number of diagnostics returned; it does
-// not limit the number of database pages visited.  FrankenSQLite's synchronous
-// PRAGMA executor also does not currently expose a cancellation handle, so a
-// thread-level `recv_timeout` can stop the doctor from waiting but cannot stop
-// the abandoned worker from continuing to consume CPU and emit trace output.
-// Keep routine doctor checks away from that known-unbounded path once the
-// archive bundle is large enough for a runaway full-page walk to be material.
-// A skipped check is reported as unchecked (or satisfied by a still-current
-// cached attestation), never silently promoted to a pass.
+// not limit the number of database pages visited.  SQLite's synchronous
+// PRAGMA executor on this probe thread also does not wire a cancellation handle
+// across `recv_timeout`, so a thread-level `recv_timeout` can stop the doctor
+// from waiting but cannot stop the abandoned worker from continuing to consume
+// CPU and emit trace output. Keep routine doctor checks away from that
+// known-unbounded path once the archive bundle is large enough for a runaway
+// full-page walk to be material. A skipped check is reported as unchecked (or
+// satisfied by a still-current cached attestation), never silently promoted to
+// a pass.
 pub(crate) const DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES: u64 = 256 * 1024 * 1024;
 /// Opt-in override for the size gate above (GH #390): operators on long-lived
-/// archives need a supported way to run the full-page frankensqlite
+/// archives need a supported way to run the full-page SQLite
 /// `integrity_check` through doctor instead of being told to leave the
 /// process. The probe still runs under the hard `recv_timeout` deadline
 /// (`CASS_DOCTOR_DB_PROBE_TIMEOUT_SECS`), so lifting the byte cap without
@@ -164,7 +165,7 @@ pub(crate) fn doctor_franken_deep_integrity_skip_reason_for_bytes(
     }
     (bundle_bytes > DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES).then(|| {
         format!(
-            "frankensqlite_full_page_integrity_probe_deferred: archive bundle is {bundle_bytes} bytes, above the bounded doctor limit of {DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES} bytes; set {CASS_DOCTOR_FULL_PAGE_INTEGRITY_PROBE}=1 (and raise CASS_DOCTOR_DB_PROBE_TIMEOUT_SECS) to run the full-page integrity probe anyway"
+            "full_page_integrity_probe_deferred: archive bundle is {bundle_bytes} bytes, above the bounded doctor limit of {DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES} bytes; set {CASS_DOCTOR_FULL_PAGE_INTEGRITY_PROBE}=1 (and raise CASS_DOCTOR_DB_PROBE_TIMEOUT_SECS) to run the full-page integrity probe anyway"
         )
     })
 }
@@ -174,13 +175,13 @@ pub(crate) fn doctor_franken_deep_integrity_skip_reason(db_path: &Path) -> Optio
         Ok(metadata) if metadata.file_type().is_file() => metadata.len(),
         Ok(_) => {
             return Some(
-                "frankensqlite_full_page_integrity_probe_deferred: archive path is not a regular file"
+                "full_page_integrity_probe_deferred: archive path is not a regular file"
                     .to_string(),
             );
         }
         Err(err) => {
             return Some(format!(
-                "frankensqlite_full_page_integrity_probe_deferred: archive size is unavailable ({err})"
+                "full_page_integrity_probe_deferred: archive size is unavailable ({err})"
             ));
         }
     };
@@ -195,7 +196,7 @@ pub(crate) fn doctor_franken_deep_integrity_skip_reason(db_path: &Path) -> Optio
         Ok(metadata) if metadata.file_type().is_file() => {
             let Some(total) = bundle_bytes.checked_add(metadata.len()) else {
                 return Some(
-                    "frankensqlite_full_page_integrity_probe_deferred: archive bundle size overflowed"
+                    "full_page_integrity_probe_deferred: archive bundle size overflowed"
                         .to_string(),
                 );
             };
@@ -203,14 +204,14 @@ pub(crate) fn doctor_franken_deep_integrity_skip_reason(db_path: &Path) -> Optio
         }
         Ok(_) => {
             return Some(
-                "frankensqlite_full_page_integrity_probe_deferred: WAL sidecar is not a regular file"
+                "full_page_integrity_probe_deferred: WAL sidecar is not a regular file"
                     .to_string(),
             );
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
             return Some(format!(
-                "frankensqlite_full_page_integrity_probe_deferred: WAL size is unavailable ({err})"
+                "full_page_integrity_probe_deferred: WAL size is unavailable ({err})"
             ));
         }
     }
@@ -324,7 +325,7 @@ pub(crate) fn doctor_deferred_archive_recommended_action(
 /// final JSON verdict. A Rust thread cannot be force-cancelled, so the size
 /// gate above prevents known-large full-page PRAGMAs from entering this worker
 /// at all. An unexpected timeout on a smaller archive still leaves a detached
-/// worker until process exit; process isolation or an upstream FrankenSQLite
+/// worker until process exit; process isolation or a cooperative SQLite
 /// cancellation handle is required to remove that residual limitation.
 pub(crate) fn run_bounded_doctor_archive_db_probe(
     conn: crate::storage::sqlite::FrankenOwnerConnection,

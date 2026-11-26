@@ -136,7 +136,7 @@ pub(super) fn probe_doctor_database_and_wal(
                     // #287: row counts and eligible small-archive PRAGMAs run on a
                     // deadline-bounded worker. Known-large full-page integrity
                     // PRAGMAs are deferred before execution because a thread timeout
-                    // cannot cancel FrankenSQLite's synchronous PRAGMA executor.
+                    // cannot cancel the synchronous SQLite PRAGMA executor.
                     let probe_timeout =
                         doctor_archive_db_probe_hard_timeout(doctor_archive_bundle_bytes(&db_path));
                     match run_bounded_doctor_archive_db_probe(conn, &db_path, probe_timeout) {
@@ -254,14 +254,12 @@ pub(super) fn probe_doctor_database_and_wal(
                                             );
 
                                             // Check whether the FTS table is visible through
-                                            // frankensqlite on this connection. Do not auto-register
+                                            // SQLite on this connection. Do not auto-register
                                             // it here: on migrated databases with legacy rootpage=0
                                             // FTS schema entries, CREATE VIRTUAL TABLE IF NOT EXISTS
                                             // can persist duplicate sqlite_master rows.
                                             match probe.fts_state {
-                                                Some(
-                                                    DoctorFtsTableState::QueryableViaFrankensqlite,
-                                                ) => {
+                                                Some(DoctorFtsTableState::Queryable) => {
                                                     // #438: keep queryability distinct from
                                                     // structural validation; never dismiss
                                                     // an independent integrity failure.
@@ -290,7 +288,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                     );
                                                 }
                                                 Some(DoctorFtsTableState::Missing {
-                                                    frankensqlite_error,
+                                                    sqlite_error,
                                                     not_viable,
                                                 }) => {
                                                     // An absent in-DB FTS shadow is benign
@@ -303,13 +301,13 @@ pub(super) fn probe_doctor_database_and_wal(
                                                             "Database-resident FTS shadow was dropped on purpose: {detail}"
                                                         ),
                                                         None => format!(
-                                                            "Database-resident FTS table is absent or not queryable via frankensqlite ({frankensqlite_error}); lexical search relies on the Tantivy index instead"
+                                                            "Database-resident FTS table is absent or not queryable via SQLite ({sqlite_error}); lexical search relies on the Tantivy index instead"
                                                         ),
                                                     };
                                                     add_check!("fts_table", "pass", message, false);
                                                 }
                                                 Some(DoctorFtsTableState::ShadowCorrupt {
-                                                    frankensqlite_error,
+                                                    sqlite_error,
                                                 }) => {
                                                     // A queryable table whose docsize shadow
                                                     // cannot be counted is the #362/#368
@@ -322,7 +320,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                         "fts_table",
                                                         "warn",
                                                         format!(
-                                                            "Database-resident FTS shadow is queryable but its docsize shadow table failed to count ({frankensqlite_error}); the shadow structure is likely corrupt — run `cass doctor --rebuild-canonical-fts --yes` to rebuild it. Lexical search continues via the Tantivy index"
+                                                            "Database-resident FTS shadow is queryable but its docsize shadow table failed to count ({sqlite_error}); the shadow structure is likely corrupt — run `cass doctor --rebuild-canonical-fts --yes` to rebuild it. Lexical search continues via the Tantivy index"
                                                         ),
                                                         false
                                                     );
@@ -348,7 +346,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                 "database",
                                                 "fail",
                                                 format!(
-                                                    "Database failed frankensqlite {failed_pragma}: {} ({} conversations, {} messages){leaked_pages_remedy}",
+                                                    "Database failed SQLite {failed_pragma}: {} ({} conversations, {} messages){leaked_pages_remedy}",
                                                     diagnostic_summary, conv_count, msg_count
                                                 ),
                                                 true
@@ -361,7 +359,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                 "database",
                                                 "fail",
                                                 format!(
-                                                    "Database health probe failed via frankensqlite: {err}"
+                                                    "Database health probe failed via SQLite: {err}"
                                                 ),
                                                 true
                                             );
