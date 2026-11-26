@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use coding_agent_search::franken_sync::Connection;
-use coding_agent_search::franken_sync::compat::{OpenFlags, RowExt, open_with_flags};
+use coding_agent_search::franken_sync::compat::RowExt;
 use serde::Serialize;
 
 use super::protocol::refuse;
@@ -400,7 +400,7 @@ fn stamp(path: &Path, schema_version: i64) -> Result<(ArchiveStamp, u64)> {
 pub fn strict_open(path: &Path) -> Result<Connection> {
     stamp(path, STRICT_SCHEMA_VERSION)?;
     let text = path.to_str().context("Archive path is not UTF-8")?;
-    let connection = open_with_flags(text, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let connection = Connection::open_schema_only_with_wal_index_recovery(text)
         .context("Open canonical archive strictly read-only")?;
     connection.execute("PRAGMA query_only = ON")?;
     connection.execute("PRAGMA busy_timeout = 250")?;

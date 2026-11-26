@@ -91,7 +91,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use coding_agent_search::franken_sync::Connection;
-use coding_agent_search::franken_sync::compat::{OpenFlags, open_with_flags};
 use coding_agent_search::viewer_extensions::changes as journal;
 use serde_json::{Value, json};
 
@@ -581,10 +580,54 @@ fn send_and_close(stream: &mut TcpStream, bytes: &[u8]) {
 /// connection to `StrictArchive`'s, never shared state.
 fn open_journal_reader(db: &Path) -> Option<Connection> {
     let text = db.to_str()?;
-    let connection = open_with_flags(text, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let connection = Connection::open_schema_only_with_wal_index_recovery(text).ok()?;
     connection.execute("PRAGMA query_only = ON").ok()?;
     connection.execute("PRAGMA busy_timeout = 250").ok()?;
     Some(connection)
+}
+
+#[cfg(unix)]
+type SnapshotMetaStamp = Option<[(u64, u64, u64, i64, i64, i64, i64); 2]>;
+#[cfg(not(unix))]
+type SnapshotMetaStamp = Option<[(u64, Option<std::time::SystemTime>); 2]>;
+
+fn snapshot_meta_stamp(db: &Path) -> SnapshotMetaStamp {
+    let wal = PathBuf::from(format!("{}-wal", db.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let read_one = |path: &Path, required: bool| -> Option<(u64, u64, u64, i64, i64, i64, i64)> {
+            match std::fs::symlink_metadata(path) {
+                Ok(meta) => Some((
+                    meta.len(),
+                    meta.dev(),
+                    meta.ino(),
+                    meta.mtime(),
+                    meta.mtime_nsec(),
+                    meta.ctime(),
+                    meta.ctime_nsec(),
+                )),
+                Err(_) if !required => Some((0, 0, 0, 0, 0, 0, 0)),
+                Err(_) => None,
+            }
+        };
+        Some([read_one(db, true)?, read_one(&wal, false)?])
+    }
+    #[cfg(not(unix))]
+    {
+        let read_one = |path: &Path, required: bool| -> Option<(u64, Option<std::time::SystemTime>)> {
+            match std::fs::symlink_metadata(path) {
+                Ok(meta) => Some((meta.len(), meta.modified().ok())),
+                Err(_) if !required => Some((0, None)),
+                Err(_) => None,
+            }
+        };
+        Some([read_one(db, true)?, read_one(&wal, false)?])
+    }
+}
+
+fn is_snapshot_connection(connection: Option<&Connection>) -> bool {
+    connection.is_some_and(|conn| conn.file_identity().ok().flatten().is_none())
 }
 
 /// One pump pass over every subscriber: bounded journal replay per
@@ -634,6 +677,7 @@ fn pump_pass(connection: Option<&Connection>, subscribers: &mut [Subscriber], he
 fn pump_loop(db: &Path, inbox: Receiver<TcpStream>, shutdown: Arc<AtomicBool>, poll: Duration) {
     let heartbeat_interval = poll.saturating_mul(HEARTBEAT_TICKS as u32);
     let mut connection = None;
+    let mut snapshot_stamp: SnapshotMetaStamp = None;
     let mut connection_age: u64 = 0;
     let mut handshakes: Vec<Handshake> = Vec::new();
     let mut subscribers: Vec<Subscriber> = Vec::new();
@@ -666,8 +710,15 @@ fn pump_loop(db: &Path, inbox: Receiver<TcpStream>, shutdown: Arc<AtomicBool>, p
         for (mut stream, line) in ready {
             match classify(&line) {
                 Ok(ClientOp::Notify) => {
-                    // Wakeup-only: the journal is re-read below; the frame
-                    // carries no payload semantics.
+                    // Wakeup-only: the journal is re-read below; if we were
+                    // holding a private snapshot copy, drop it now so the new
+                    // WAL commit is opened immediately instead of waiting out
+                    // `REOPEN_TICKS`.
+                    if is_snapshot_connection(connection.as_ref()) {
+                        connection = None;
+                        snapshot_stamp = None;
+                        connection_age = 0;
+                    }
                     dirty = true;
                 }
                 Ok(ClientOp::Subscribe { after_seq }) => {
@@ -684,6 +735,11 @@ fn pump_loop(db: &Path, inbox: Receiver<TcpStream>, shutdown: Arc<AtomicBool>, p
                         // the ack's high_water or the very next pass.
                         if connection.is_none() {
                             connection = open_journal_reader(db);
+                            snapshot_stamp = if is_snapshot_connection(connection.as_ref()) {
+                                snapshot_meta_stamp(db)
+                            } else {
+                                None
+                            };
                         }
                         let mut subscriber = Subscriber::new(stream, after_seq);
                         subscriber.enqueue_pinned(subscribed_frame(after_seq, connection.as_ref()));
@@ -703,8 +759,20 @@ fn pump_loop(db: &Path, inbox: Receiver<TcpStream>, shutdown: Arc<AtomicBool>, p
         // 4. Pump pass when the journal may have moved.
         let now = Instant::now();
         if !subscribers.is_empty() && (dirty || now >= next_tick) {
+            if is_snapshot_connection(connection.as_ref())
+                && snapshot_meta_stamp(db) != snapshot_stamp
+            {
+                connection = None;
+                snapshot_stamp = None;
+                connection_age = 0;
+            }
             if connection.is_none() {
                 connection = open_journal_reader(db);
+                snapshot_stamp = if is_snapshot_connection(connection.as_ref()) {
+                    snapshot_meta_stamp(db)
+                } else {
+                    None
+                };
             }
             let heartbeat_due = last_heartbeat.elapsed() >= heartbeat_interval;
             pump_pass(connection.as_ref(), &mut subscribers, heartbeat_due);
@@ -716,6 +784,7 @@ fn pump_loop(db: &Path, inbox: Receiver<TcpStream>, shutdown: Arc<AtomicBool>, p
             connection_age += 1;
             if connection_age >= REOPEN_TICKS {
                 connection = None; // un-pin a possibly replaced archive inode
+                snapshot_stamp = None;
                 connection_age = 0;
             }
         }

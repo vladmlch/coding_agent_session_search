@@ -610,9 +610,10 @@ fn both_lookup_directions_use_provenance_indexes() -> Result<()> {
     let forward = plan_rows(identity::FORWARD_ROW_SQL, &[SqliteValue::Integer(1)])?;
     eprintln!("forward plan: {forward:?}");
     ensure!(
-        forward
-            .iter()
-            .any(|line| { line.contains("SEARCH conversations USING INTEGER PRIMARY KEY") }),
+        forward.iter().any(|line| {
+            line.contains("SEARCH conversations USING INTEGER PRIMARY KEY")
+                || line.contains("SEARCH c USING INTEGER PRIMARY KEY")
+        }),
         "forward lookup must be a primary-key probe, not a scan: {forward:?}"
     );
     let reverse = plan_rows(
@@ -623,12 +624,12 @@ fn both_lookup_directions_use_provenance_indexes() -> Result<()> {
     ensure!(
         reverse
             .iter()
-            .all(|line| !line.starts_with("SCAN conversations")),
+            .all(|line| !line.starts_with("SCAN conversations") && !line.starts_with("SCAN c ")),
         "reverse lookup must not scan the catalog: {reverse:?}"
     );
     ensure!(
         reverse.iter().any(|line| {
-            line.contains("SEARCH conversations")
+            (line.contains("SEARCH conversations") || line.contains("SEARCH c "))
                 && (line.contains("idx_conversations_source_id")
                     || line.contains("idx_conversations_provenance"))
         }),

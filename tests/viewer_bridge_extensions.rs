@@ -1380,7 +1380,7 @@ fn facts_parent_lookup_key_migration_for_pre_v9_archives() -> Result<()> {
     let stable: Option<String> = conn
         .query_row_with_params(
             "SELECT parent_lookup_key FROM viewer_session_facts \
-             WHERE conversation_id = 1",
+             WHERE conversation_id = ?1",
             &[SqliteValue::Integer(1)],
         )?
         .get_typed(0)?;
@@ -3291,18 +3291,35 @@ fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
         "INSERT OR IGNORE INTO sources (id,kind,created_at,updated_at) \
          VALUES ('local','local',0,0)",
     )?;
+    let mut agent_ids = Vec::with_capacity(2);
     for slug in ["claude_code", "gemini"] {
         conn.execute_with_params(
-            "INSERT INTO agents (slug,name,kind,created_at,updated_at) \
+            "INSERT OR IGNORE INTO agents (slug,name,kind,created_at,updated_at) \
              VALUES (?1,?1,'cli',0,0)",
             &param_slice_to_values(params![slug]),
         )?;
+        let id: i64 = conn
+            .query_row_with_params(
+                "SELECT id FROM agents WHERE slug = ?1",
+                &param_slice_to_values(params![slug]),
+            )?
+            .get_typed(0)?;
+        agent_ids.push(id);
     }
+    let mut workspace_ids = Vec::with_capacity(8);
     for i in 0..8_i64 {
+        let path = format!("/scale/proj-{i}");
         conn.execute_with_params(
-            "INSERT INTO workspaces (path,display_name) VALUES (?1,?2)",
-            &param_slice_to_values(params![format!("/scale/proj-{i}"), format!("proj-{i}")]),
+            "INSERT OR IGNORE INTO workspaces (path,display_name) VALUES (?1,?2)",
+            &param_slice_to_values(params![path.as_str(), format!("proj-{i}")]),
         )?;
+        let id: i64 = conn
+            .query_row_with_params(
+                "SELECT id FROM workspaces WHERE path = ?1",
+                &param_slice_to_values(params![path.as_str()]),
+            )?
+            .get_typed(0)?;
+        workspace_ids.push(id);
     }
     // One prepared insert: at 50k rows the per-statement parse dominates.
     let insert = conn.prepare(
@@ -3329,11 +3346,11 @@ fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
         };
         insert.execute_with_params(&param_slice_to_values(params![
             i + 1,
-            if i % 2 == 0 { 1_i64 } else { 2_i64 },
+            agent_ids[(i as usize) % agent_ids.len()],
             if i % 3 == 0 {
                 SqliteValue::Null
             } else {
-                SqliteValue::Integer((i % 8) + 1)
+                SqliteValue::Integer(workspace_ids[(i as usize) % workspace_ids.len()])
             },
             external,
             format!("scale-{i}"),
@@ -3396,7 +3413,10 @@ fn seed_sort_scale_extensions(db: &Path, count: usize) -> Result<()> {
         ]))?;
     }
     drop(insert);
-    for id in [100_i64, 25_001, 49_999] {
+    for id in [100_i64, 25_001, 49_999]
+        .into_iter()
+        .filter(|&id| id <= count as i64)
+    {
         conn.execute_with_params(
             "INSERT INTO viewer_annotations (conversation_id,is_pinned,revision) \
              VALUES (?1,1,1)",
@@ -6038,6 +6058,7 @@ fn analytics_query_plan_audit() -> Result<()> {
             "punchcard",
             format!(
                 "SELECT (CAST(strftime('%w', datetime({ACTIVITY}/1000.0,'unixepoch','localtime')) AS INTEGER)+6)%7, \
+             CAST(strftime('%H', datetime({ACTIVITY}/1000.0,'unixepoch','localtime')) AS INTEGER), \
              COUNT(*), COALESCE(SUM(c.estimated_cost_usd),0.0) {FROM} \
              WHERE {ACTIVITY} IS NOT NULL GROUP BY 1, 2"
             ),
@@ -8341,21 +8362,33 @@ fn meta_token_probe_earns_and_denies_the_fast_path() -> Result<()> {
 
     let temp = tempfile::tempdir()?;
     // Behavioral half: rewrite content, restore mtime — only a real ctime
-    // still proves the write. A capable filesystem returns Some(true).
+    // still proves the write. On a coarse-tick tmpfs the probe honestly
+    // reports `Some(false)` and retires the fast path; either boolean verdict
+    // is valid as long as `meta_token_trusted` obeys it and `observe()`
+    // catches same-mtime rewrites either way.
     let probe = temp.path().join("probe.bin");
+    let verdict = reader::meta_token_probe(&probe);
     ensure!(
-        reader::meta_token_probe(&probe) == Some(true),
-        "local filesystem must report an unforgeable inode change-time"
+        matches!(verdict, Some(true | false)),
+        "probe on writable local directory must yield a boolean verdict, got {verdict:?}"
+    );
+    ensure!(
+        reader::meta_token_probe(temp.path()).is_none(),
+        "probe targeting an existing directory must fail write and return None"
     );
 
     // Capability wrapper: a real archive path in a writable directory earns
-    // the token; the probe file is cleaned up behind it.
+    // the token iff the probe (and mount check) proved it; the probe file
+    // is cleaned up behind it.
     let archive = temp.path().join("archive.db");
     std::fs::write(&archive, b"x")?;
-    ensure!(
-        reader::meta_token_trusted(&archive),
-        "a local writable data dir must keep the metadata fast path"
-    );
+    let trusted = reader::meta_token_trusted(&archive);
+    if verdict == Some(false) {
+        ensure!(
+            !trusted,
+            "when meta_token_probe returns Some(false), meta_token_trusted must retire the fast path"
+        );
+    }
     ensure!(
         std::fs::read_dir(temp.path())?
             .filter_map(|entry| entry.ok())
@@ -8366,6 +8399,71 @@ fn meta_token_probe_earns_and_denies_the_fast_path() -> Result<()> {
         "the probe must not leak files into the data directory"
     );
 
+    // Real-FS content-change check: whether `meta_token_trusted` earned
+    // `true` or retired to `false`, `StrictArchive::observe` must catch an
+    // equal-length rewrite even after restoring the file's `mtime`.
+    let db_path = temp.path().join("observe.db");
+    let storage = FrankenStorage::open(&db_path)?;
+    let agent_id = storage.ensure_agent(&Agent {
+        id: None,
+        slug: "codex".into(),
+        name: "Codex".into(),
+        version: None,
+        kind: AgentKind::Cli,
+    })?;
+    storage.insert_conversation_tree(
+        agent_id,
+        None,
+        &Conversation {
+            id: None,
+            agent_slug: "codex".into(),
+            workspace: None,
+            external_id: Some("probe-conv".into()),
+            title: Some("aaaa".into()),
+            source_path: "/probe/conv.jsonl".into(),
+            started_at: Some(1_700_000_000_000),
+            ended_at: None,
+            approx_tokens: None,
+            metadata_json: json!({}),
+            source_id: "local".into(),
+            origin_host: None,
+            messages: vec![Message {
+                id: None,
+                idx: 0,
+                role: MessageRole::User,
+                author: None,
+                created_at: Some(1_700_000_000_000),
+                content: "hello".into(),
+                extra_json: json!({}),
+                snippets: Vec::new(),
+            }],
+        },
+    )?;
+    storage.raw().execute("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    storage.raw().execute("PRAGMA journal_mode = DELETE;")?;
+    storage.close()?;
+
+    let mut strict = reader::StrictArchive::open(&db_path)?;
+    let rev1 = strict.observe()?;
+    let original_mtime = std::fs::metadata(&db_path)?.modified()?;
+    let writer = Connection::open(db_path.to_string_lossy().into_owned())?;
+    writer.execute("UPDATE conversations SET title = 'bbbb' WHERE id = 1")?;
+    writer.close()?;
+    let file = std::fs::OpenOptions::new().write(true).open(&db_path)?;
+    file.set_modified(original_mtime)?;
+    drop(file);
+    let rev2 = strict.observe()?;
+    ensure!(
+        rev2 != rev1,
+        "StrictArchive::observe must detect same-mtime rewrite under both fast-path and fallback"
+    );
+    let (title, _) = strict.snapshot(|conn| {
+        Ok(conn
+            .query_row("SELECT title FROM conversations WHERE id = 1")?
+            .get_typed::<String>(0)?)
+    })?;
+    ensure!(title == "bbbb", "expected updated title after observe, got {title}");
+
     // Fallback: a path that cannot exist fails the probe → distrust.
     let missing = temp.path().join("no-such-dir").join("archive.db");
     ensure!(
@@ -8373,17 +8471,21 @@ fn meta_token_probe_earns_and_denies_the_fast_path() -> Result<()> {
         "an unresolvable archive path must retire the metadata token"
     );
 
-    // Fallback: a data directory the probe cannot write to retires the
-    // token too — the failure is never mistaken for capability.
+    // Fallback: a data directory that actually refuses probe writes (non-root
+    // `chmod 0555`) retires the token too — skipped when running as root
+    // because CAP_DAC_OVERRIDE allows writing to 0555 directories.
     let sealed = temp.path().join("sealed");
     std::fs::create_dir(&sealed)?;
     let inner = sealed.join("archive.db");
     std::fs::write(&inner, b"x")?;
     std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555))?;
-    ensure!(
-        !reader::meta_token_trusted(&inner),
-        "an unwritable data dir must retire the metadata token"
-    );
+    let probe_write_blocked = std::fs::write(sealed.join("write-check"), b"x").is_err();
+    if probe_write_blocked {
+        ensure!(
+            !reader::meta_token_trusted(&inner),
+            "an unwritable data dir must retire the metadata token"
+        );
+    }
     std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
