@@ -259,7 +259,9 @@ pub(super) fn probe_doctor_database_and_wal(
                                             // FTS schema entries, CREATE VIRTUAL TABLE IF NOT EXISTS
                                             // can persist duplicate sqlite_master rows.
                                             match probe.fts_state {
-                                                Some(DoctorFtsTableState::Queryable) => {
+                                                Some(
+                                                    DoctorFtsTableState::QueryableViaFrankensqlite,
+                                                ) => {
                                                     // #438: keep queryability distinct from
                                                     // structural validation; never dismiss
                                                     // an independent integrity failure.
@@ -288,7 +290,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                     );
                                                 }
                                                 Some(DoctorFtsTableState::Missing {
-                                                    sqlite_error,
+                                                    frankensqlite_error: sqlite_error,
                                                     not_viable,
                                                 }) => {
                                                     // An absent in-DB FTS shadow is benign
@@ -307,7 +309,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                     add_check!("fts_table", "pass", message, false);
                                                 }
                                                 Some(DoctorFtsTableState::ShadowCorrupt {
-                                                    sqlite_error,
+                                                    frankensqlite_error: sqlite_error,
                                                 }) => {
                                                     // A queryable table whose docsize shadow
                                                     // cannot be counted is the #362/#368
