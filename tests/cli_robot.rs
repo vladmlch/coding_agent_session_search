@@ -75,13 +75,20 @@ fn is_transient_lexical_build_path(path: &Path) -> bool {
     })
 }
 
-/// Legacy VFS namespace lock sidecars may still sit next to the committed
-/// fixture DB if an older build opened it. They carry machine-local lock state,
-/// so the fixture clone must never carry them (they are also gitignored).
+/// Legacy VFS namespace lock sidecars and untracked SQLite sidecars may sit
+/// next to the committed fixture DB if another run opened it in place. Cloning
+/// stale or mismatched sidecars breaks strict read-only opens of the copied DB.
 fn is_legacy_runtime_lock_sidecar_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with("-fsqlite-ns-gate") || name.ends_with("-fsqlite-ns-use"))
+        .is_some_and(|name| {
+            name.ends_with("-fsqlite-ns-gate")
+                || name.ends_with("-fsqlite-ns-use")
+                || matches!(
+                    name,
+                    "agent_search.db-wal" | "agent_search.db-shm" | "agent_search.db-journal"
+                )
+        })
 }
 
 fn safe_fixture_destination(dst_root: &Path, rel: &Path) -> Result<PathBuf, Box<dyn Error>> {
