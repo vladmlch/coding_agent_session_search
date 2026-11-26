@@ -15,7 +15,6 @@ use coding_agent_search::search::tantivy::{
     searchable_index_summary,
 };
 use coding_agent_search::storage::sqlite::SqliteStorage;
-use rusqlite::Connection as RusqliteConnection;
 use serial_test::serial;
 use std::fs;
 use std::path::Path;
@@ -1387,17 +1386,6 @@ struct SearchLoopStats {
 #[test]
 #[serial]
 fn duplicate_fts_schema_rows_do_not_block_cli_reads_and_writes() {
-    let sqlite3_available = std::process::Command::new("sqlite3")
-        .arg("-version")
-        .output()
-        .is_ok_and(|output| output.status.success());
-    if !sqlite3_available {
-        eprintln!(
-            "skipping duplicate_fts_schema_rows_do_not_block_cli_reads_and_writes: \
-             duplicate sqlite_master repair requires the sqlite3 CLI"
-        );
-        return;
-    }
     let tracker = tracker_for("duplicate_fts_schema_rows_do_not_block_cli_reads_and_writes");
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path();
@@ -1436,52 +1424,29 @@ fn duplicate_fts_schema_rows_do_not_block_cli_reads_and_writes() {
         "initial full index should ingest both messages"
     );
 
-    let duplicate_legacy_fts_sql = "CREATE VIRTUAL TABLE fts_messages USING fts5(content, title, agent, workspace, source_path, created_at UNINDEXED, message_id UNINDEXED, tokenize='porter')";
-    let injection =
-        RusqliteConnection::open(&db_path).expect("open db for writable_schema fixture");
+    let injection = coding_agent_search::franken_sync::Connection::open(
+        db_path.to_string_lossy().as_ref(),
+    )
+    .expect("open db for broken fallback FTS fixture");
     injection
         .execute_batch(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS fts_messages USING fts5(
-                content,
-                title,
-                agent,
-                workspace,
-                source_path,
-                created_at UNINDEXED,
-                message_id UNINDEXED,
-                tokenize='porter'
-             );",
+            "DROP TABLE IF EXISTS fts_messages;
+             CREATE VIRTUAL TABLE fts_messages USING fts5(content, title, agent);
+             DROP TABLE fts_messages_data;",
         )
-        .expect("materialize canonical fts schema before duplicate injection");
-    injection
-        .execute_batch("PRAGMA writable_schema = ON;")
-        .expect("enable writable_schema");
-    injection
-        .execute(
-            "INSERT INTO sqlite_master(type, name, tbl_name, rootpage, sql)
-             VALUES('table', 'fts_messages', 'fts_messages', 0, ?1)",
-            [duplicate_legacy_fts_sql],
-        )
-        .expect("inject duplicate fts schema row");
-    injection
-        .execute(
-            "DELETE FROM meta WHERE key = ?1",
-            ["fts_frankensqlite_rebuild_generation"],
-        )
-        .expect("delete stale fts generation marker");
-    injection
-        .execute_batch("PRAGMA writable_schema = OFF;")
-        .expect("disable writable_schema");
+        .expect("inject non-canonical broken fallback FTS fixture");
     drop(injection);
 
-    let broken_read = RusqliteConnection::open(&db_path)
-        .expect("reopen db for broken-read assertion")
-        .query_row("SELECT COUNT(*) FROM fts_messages", [], |row| {
-            row.get::<_, i64>(0)
-        });
+    let broken_read = coding_agent_search::franken_sync::Connection::open(
+        db_path.to_string_lossy().as_ref(),
+    )
+    .expect("reopen db for broken-read assertion")
+    .query_row_map("SELECT COUNT(*) FROM fts_messages", &[], |row| {
+        row.get_typed::<i64>(0)
+    });
     assert!(
         broken_read.is_err(),
-        "the injected duplicate schema row should reproduce the unreadable pre-fix SQLite state"
+        "the injected broken fallback FTS shadow should reproduce an unreadable FTS state"
     );
 
     let existing_search = command_env
@@ -1522,6 +1487,7 @@ fn duplicate_fts_schema_rows_do_not_block_cli_reads_and_writes() {
         .current_dir(home)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
+        .env("CASS_PREFLIGHT_VALIDATE_FTS_MESSAGES", "1")
         .output()
         .expect("run index after duplicate schema injection");
     assert!(
