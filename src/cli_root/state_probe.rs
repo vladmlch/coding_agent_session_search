@@ -528,6 +528,12 @@ mod health_watermark_probe_tests {
             let mut conn =
                 crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
                     .expect("open fixture db");
+            conn.execute("PRAGMA application_id = 0x43415353;")
+                .expect("stamp application_id");
+            conn.execute("PRAGMA user_version = 1;")
+                .expect("stamp user_version");
+            conn.execute("PRAGMA journal_mode = WAL;")
+                .expect("enable WAL journal_mode");
             conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
                 .expect("create meta");
             conn.execute(
@@ -1165,6 +1171,8 @@ mod index_error_mapping_tests {
 
         std::fs::create_dir_all(db_path.parent().unwrap())?;
         let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())?;
+        conn.execute("PRAGMA application_id = 0x43415353;")?;
+        conn.execute("PRAGMA user_version = 1;")?;
         conn.execute("CREATE TABLE archive_identity (content TEXT)")?;
         conn.execute("INSERT INTO archive_identity VALUES ('keep this archive')")?;
         conn.close()?;
@@ -1221,6 +1229,8 @@ mod index_error_mapping_tests {
         let cache_data = temp.path().join("cache-data");
         let db_path = temp.path().join("archive.db");
         let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())?;
+        conn.execute("PRAGMA application_id = 0x43415353;")?;
+        conn.execute("PRAGMA user_version = 1;")?;
         conn.execute("CREATE TABLE archive_identity (content TEXT)")?;
         conn.execute("INSERT INTO archive_identity VALUES ('keep this archive')")?;
         conn.close()?;

@@ -314,15 +314,29 @@ pub(crate) fn output_search_budget_partial(
     // partial result on the diagnostics stream; stdout stays data-only.
     let budget_ms = payload["budget"]["budget_ms"].as_u64().unwrap_or_default();
     output_structured_value(payload, format)?;
+    emit_search_timeout_stderr_note(budget_ms, retry.as_deref(), true);
+    Ok(())
+}
+
+/// Emit the diagnostic stderr note whenever a bounded robot search times out
+/// so an empty or partial exit-0 result is never mistaken for a clean no-match.
+pub(crate) fn emit_search_timeout_stderr_note(
+    budget_ms: u64,
+    retry: Option<&str>,
+    empty_hits: bool,
+) {
+    let summary = if empty_hits {
+        "the empty hit list is incomplete, not a no-match result"
+    } else {
+        "the returned hit list is incomplete, not a full result"
+    };
     eprintln!(
-        "note: search did not finish within its {budget_ms} ms budget; the empty hit list is \
-         incomplete, not a no-match result (budget.timed_out=true){}",
+        "note: search did not finish within its {budget_ms} ms budget; {summary} \
+         (budget.timed_out=true){}",
         retry
-            .as_deref()
             .map(|retry| format!("; retry: {retry}"))
             .unwrap_or_default()
     );
-    Ok(())
 }
 
 pub(crate) struct CliSearchSetup {

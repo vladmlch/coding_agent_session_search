@@ -615,6 +615,13 @@ pub(crate) fn present_cli_search_results(input: SearchPresentationInput<'_>) -> 
             effective,
             zero_result_diagnosis.as_ref(),
         )?;
+        if timed_out {
+            emit_search_timeout_stderr_note(
+                budget.budget_ms,
+                budget.recommended_next_probe.as_deref(),
+                display_result.hits.is_empty(),
+            );
+        }
     } else if display_result.hits.is_empty() {
         // GH#414: when the --sessions-from filter provably selected zero
         // indexed sessions, say so — the empty result reflects the filter,
