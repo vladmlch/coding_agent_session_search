@@ -1,5 +1,5 @@
 //! Real-process checks for one-shot canonical transcript paging.
-//! Synthetic FrankenSQLite records only: never a user's archive or raw files.
+//! Synthetic SQLite records only: never a user's archive or raw files.
 
 use std::collections::BTreeMap;
 use std::io::Write;

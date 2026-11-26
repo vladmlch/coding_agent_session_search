@@ -334,7 +334,7 @@ fn scan_for_remote_invocations(path: &Path) -> Vec<Finding> {
 /// non-shell scripts. The tool name must stand alone — `.`, `-`, `/` and
 /// word characters fuse it into a larger token, so `~/.ssh/config`,
 /// `--include-ssh`, `ssh-keygen`, `use_ssh`, `SSH_KEY`, `asupersync` and
-/// `fsqlite` stay clean — while quoted argv literals (`"ssh"`, `'scp'`) and
+/// `rusqlite` stay clean — while quoted argv literals (`"ssh"`, `'scp'`) and
 /// `ssh.exe`-style Windows binary suffixes still match. `rch`/`dsr` are not
 /// listed: the plumbing rule already scans every extension raw.
 fn non_shell_remote_tool_re() -> regex::Regex {
@@ -683,7 +683,7 @@ fn scanner_non_shell_scan_ignores_fused_tokens_paths_and_env_names() {
     let path = tmp.join("clean.py");
     std::fs::write(
         &path,
-        b"KEY_DIR = Path.home() / \".ssh\" / \"config\"\nFLAG = \"--include-ssh\"\nUSE_SSH = False  # use_ssh is one fused token\nSSH_KEY = \"id\"\nCURLING_UP = True\nsubprocess.run([\"cargo\", \"test\", \"--\", \"--include-ssh\"])\nNAMES = [\"asupersync\", \"fsqlite\", \"ssh-keygen\", \"scp-like\"]\n",
+        b"KEY_DIR = Path.home() / \".ssh\" / \"config\"\nFLAG = \"--include-ssh\"\nUSE_SSH = False  # use_ssh is one fused token\nSSH_KEY = \"id\"\nCURLING_UP = True\nsubprocess.run([\"cargo\", \"test\", \"--\", \"--include-ssh\"])\nNAMES = [\"asupersync\", \"rusqlite\", \"ssh-keygen\", \"scp-like\"]\n",
     )
     .unwrap();
     let findings =
