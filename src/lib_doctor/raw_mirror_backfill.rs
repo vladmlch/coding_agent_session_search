@@ -160,11 +160,11 @@ pub(crate) fn for_each_message_conversation_id(
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let message_scan_sql = if message_indexes.contains("sqlite_autoindex_messages_1") {
-        // The UNIQUE(conversation_id, idx) autoindex is narrow: scanning it
+    let message_scan_sql = if message_indexes.contains("idx_messages_conv_idx") {
+        // The idx_messages_conv_idx unique index is narrow: scanning it
         // avoids loading the potentially enormous content column.
         "SELECT conversation_id \
-         FROM messages INDEXED BY sqlite_autoindex_messages_1"
+         FROM messages INDEXED BY idx_messages_conv_idx"
     } else {
         // Historical schemas may lack the modern uniqueness constraint.
         // A plain table scan remains exact and streaming.

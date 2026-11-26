@@ -15,8 +15,7 @@ const END: i64 = START + 60_000;
 fn archive(root: &Path) -> Connection {
     let db = root.join("agent_search.db");
     let conn = Connection::open(db.to_string_lossy().into_owned()).unwrap();
-    // The UNIQUE constraint is important: production streams the canonical
-    // sqlite_autoindex_messages_1 covering index, not idx_messages_conv_idx.
+    // Production streams the canonical idx_messages_conv_idx covering index.
     conn.execute_batch(
         "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
          INSERT INTO meta VALUES('schema_version', '20');
@@ -33,10 +32,9 @@ fn archive(root: &Path) -> Connection {
          CREATE INDEX idx_conversations_started_at ON conversations(started_at);
          CREATE TABLE messages(
              id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL,
-             idx INTEGER NOT NULL, role TEXT, content TEXT, created_at INTEGER,
-             UNIQUE(conversation_id, idx)
+             idx INTEGER NOT NULL, role TEXT, content TEXT, created_at INTEGER
          );
-         CREATE INDEX idx_messages_conv_idx ON messages(conversation_id, idx);",
+         CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(conversation_id, idx);",
     )
     .unwrap();
     conn

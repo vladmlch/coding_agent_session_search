@@ -34,10 +34,9 @@ pub const SCHEMA_V1_USER_VERSION: i64 = 1;
 /// * `conversations` — including the v15 tail columns
 ///   (`last_message_idx`, `last_message_created_at`) so fresh creation needs
 ///   no `ALTER TABLE`
-/// * `messages` — `UNIQUE(conversation_id, idx)` produces
-///   `sqlite_autoindex_messages_1`, which a large body of existing SQL pins
-///   with `INDEXED BY`; the explicit named
-///   `idx_messages_conv_idx` unique index is kept alongside it
+/// * `messages` — uniqueness and `(conversation_id, idx)` ordering are
+///   provided solely by the explicit named unique index
+///   `idx_messages_conv_idx` (no redundant table-level `UNIQUE` autoindex)
 /// * `snippets` (+ `idx_snippets_message_id`), `tags`, `conversation_tags`
 /// * `daily_stats`, `embedding_jobs` (+ active-job partial unique index)
 /// * `token_usage`, `token_daily_stats`, `model_pricing` (+ reference rows)
@@ -143,13 +142,11 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at INTEGER,
     content TEXT NOT NULL,
     extra_json TEXT,
-    extra_bin BLOB,
-    UNIQUE(conversation_id, idx)
+    extra_bin BLOB
 );
 
--- The table-level UNIQUE already produces sqlite_autoindex_messages_1, which
--- existing query plans pin with INDEXED BY; this named unique index is kept
--- per the schema-v1 contract so the object also exists under a stable name.
+-- Canonical unique index on (conversation_id, idx), pinned by INDEXED BY
+-- hints (no table-level UNIQUE autoindex).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_conv_idx
     ON messages(conversation_id, idx);
 
@@ -534,7 +531,7 @@ INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1');
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::franken_sync::Connection as FrankenConnection;
+    use crate::franken_sync::{Connection as FrankenConnection, compat::RowExt as _};
 
     /// Every statement the bootstrap must emit, pinned so a later edit
     /// cannot silently drop a canonical object or drift the stamps.
@@ -633,13 +630,18 @@ mod tests {
             .expect("fts query after delete");
         assert!(after.is_empty(), "deleted message rowid must leave fts_messages");
 
-        // `sqlite_autoindex_messages_1` stays present in 1.1c for existing INDEXED BY hints.
-        let autoindex = conn
+        // P1-2: `idx_messages_conv_idx` is the sole unique index on `messages(conversation_id, idx)`;
+        // no table-level autoindex is created.
+        let msg_indexes = conn
             .query(
                 "SELECT name FROM sqlite_master
-                 WHERE type = 'index' AND name = 'sqlite_autoindex_messages_1';",
+                 WHERE type = 'index' AND tbl_name = 'messages' ORDER BY name;",
             )
             .expect("query sqlite_master");
-        assert_eq!(autoindex.len(), 1);
+        let index_names: Vec<String> = msg_indexes
+            .iter()
+            .map(|r| r.get_typed::<String>(0).expect("index name"))
+            .collect();
+        assert_eq!(index_names, vec!["idx_messages_conv_idx".to_string()]);
     }
 }

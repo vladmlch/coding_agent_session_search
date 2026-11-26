@@ -18,14 +18,14 @@ fn minimal_database(path: &Path, indexed: bool) -> Result<Connection> {
     let connection = Connection::open(path.to_string_lossy().into_owned())?;
     connection.execute("CREATE TABLE conversations (id INTEGER PRIMARY KEY)")?;
     // Deliberately omit content and tail columns: the summary needs neither.
-    let unique = if indexed {
-        ", UNIQUE(conversation_id, idx)"
-    } else {
-        ""
-    };
-    connection.execute(&format!(
-        "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, idx INTEGER{unique})"
-    ))?;
+    connection.execute(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, idx INTEGER)",
+    )?;
+    if indexed {
+        connection.execute(
+            "CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(conversation_id, idx)",
+        )?;
+    }
     Ok(connection)
 }
 

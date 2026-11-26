@@ -316,12 +316,27 @@ pub(crate) fn run_sessions(
     // PLAN contract test in storage::sqlite), so each lookup is an indexed
     // range scan on messages(conversation_id, idx) and the roles are
     // tallied in Rust — cost scales with the returned page, not the corpus.
+    let has_conv_idx = conn
+        .query_map_collect(
+            "PRAGMA index_list(messages)",
+            &[],
+            |row: &crate::franken_sync::Row| row.get_typed::<String>(1),
+        )
+        .map(|names| names.iter().any(|name| name == "idx_messages_conv_idx"))
+        .unwrap_or(false);
+    let count_sql = if has_conv_idx {
+        "SELECT role
+         FROM messages INDEXED BY idx_messages_conv_idx
+         WHERE conversation_id = ?1"
+    } else {
+        "SELECT role
+         FROM messages
+         WHERE conversation_id = ?1"
+    };
     let count_session_messages =
         |conversation_id: i64| -> Result<(i64, i64), crate::franken_sync::FrankenError> {
             let roles: Vec<String> = conn.query_map_collect(
-                "SELECT role
-                 FROM messages INDEXED BY sqlite_autoindex_messages_1
-                 WHERE conversation_id = ?1",
+                count_sql,
                 &[ParamValue::from(conversation_id)],
                 |row: &crate::franken_sync::Row| row.get_typed::<String>(0),
             )?;

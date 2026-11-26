@@ -524,17 +524,34 @@ impl FrankenStorage {
         // SQLite's BLOB length both count UTF-8 bytes, so the bounded single-
         // table keyset preserves the existing `total_chars` contract without
         // trusting a potentially stale derived `message_metrics` row.
-        let first_message_scan_sql = "SELECT m.idx, COALESCE(LENGTH(CAST(m.content AS BLOB)), 0)
-             FROM messages m INDEXED BY sqlite_autoindex_messages_1
+        let has_conv_idx = self
+            .conn
+            .query_map_collect("PRAGMA index_list(messages)", fparams![], |row| {
+                row.get_typed::<String>(1)
+            })
+            .unwrap_or_default()
+            .iter()
+            .any(|name| name == "idx_messages_conv_idx");
+        let index_hint = if has_conv_idx {
+            " INDEXED BY idx_messages_conv_idx"
+        } else {
+            ""
+        };
+        let first_message_scan_sql = format!(
+            "SELECT m.idx, COALESCE(LENGTH(CAST(m.content AS BLOB)), 0)
+             FROM messages m{index_hint}
              WHERE m.conversation_id = ?1
              ORDER BY m.idx
-             LIMIT ?2";
-        let message_scan_sql = "SELECT m.idx, COALESCE(LENGTH(CAST(m.content AS BLOB)), 0)
-             FROM messages m INDEXED BY sqlite_autoindex_messages_1
+             LIMIT ?2"
+        );
+        let message_scan_sql = format!(
+            "SELECT m.idx, COALESCE(LENGTH(CAST(m.content AS BLOB)), 0)
+             FROM messages m{index_hint}
              WHERE m.conversation_id = ?1
                AND m.idx > ?2
              ORDER BY m.idx
-             LIMIT ?3";
+             LIMIT ?3"
+        );
         // #329: prepare this once and stream each bounded page through the row
         // handler. Re-preparing and materializing one Vec per conversation/page
         // retained engine execution state until the 967k-message field corpus
@@ -543,11 +560,11 @@ impl FrankenStorage {
         // neither memory nor planner work scales with unrelated messages.
         let first_message_scan_statement = self
             .conn
-            .prepare(first_message_scan_sql)
+            .prepare(&first_message_scan_sql)
             .with_context(|| "preparing daily_stats initial bounded message scan")?;
         let message_scan_statement = self
             .conn
-            .prepare(message_scan_sql)
+            .prepare(&message_scan_sql)
             .with_context(|| "preparing daily_stats bounded message scan")?;
 
         loop {

@@ -386,10 +386,9 @@ fn lexical_rebuild_batch_messages_query_avoids_sorter_temp_btrees() {
         .unwrap();
 
     assert!(
-        plan_details.iter().any(|detail| {
-            detail.contains("sqlite_autoindex_messages_1")
-                || detail.contains("idx_messages_conv_idx")
-        }),
+        plan_details
+            .iter()
+            .any(|detail| detail.contains("idx_messages_conv_idx")),
         "expected batched lexical rebuild fetch to use the conversation_id/idx composite index, got {plan_details:?}"
     );
     assert!(
@@ -937,7 +936,7 @@ fn lexical_rebuild_stream_queries_use_rowid_and_per_conversation_probes() {
     let message_plan_details: Vec<String> = storage
         .conn
         .query_map_collect(
-            "EXPLAIN QUERY PLAN                  SELECT id, idx, role, author, created_at, content                  FROM messages INDEXED BY sqlite_autoindex_messages_1                  WHERE conversation_id = ?1                  ORDER BY idx",
+            "EXPLAIN QUERY PLAN                  SELECT id, idx, role, author, created_at, content                  FROM messages INDEXED BY idx_messages_conv_idx                  WHERE conversation_id = ?1                  ORDER BY idx",
             fparams![first_id],
             |row| row.get_typed(3),
         )
@@ -945,8 +944,7 @@ fn lexical_rebuild_stream_queries_use_rowid_and_per_conversation_probes() {
     assert!(
         message_plan_details
             .iter()
-            .any(|detail| detail.contains("sqlite_autoindex_messages_1")
-                || detail.contains("idx_messages_conv_idx")),
+            .any(|detail| detail.contains("idx_messages_conv_idx")),
         "expected per-conversation lexical rebuild fetch to use the conversation_id/idx index, got {message_plan_details:?}"
     );
     assert!(

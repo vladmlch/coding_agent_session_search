@@ -314,6 +314,20 @@ pub(in crate::search::query) fn hydrate_message_content_by_conversation(
             .insert(line_idx);
     }
 
+    let has_conv_idx = franken_query_map_collect_retry(
+        conn,
+        "PRAGMA index_list(messages)",
+        &[],
+        |row| row.get_typed::<String>(1),
+    )
+    .map(|names| names.iter().any(|name| name == "idx_messages_conv_idx"))
+    .unwrap_or(false);
+    let index_hint = if has_conv_idx {
+        " INDEXED BY idx_messages_conv_idx"
+    } else {
+        ""
+    };
+
     let mut conversation_ids = wanted_by_conversation.keys().copied().collect::<Vec<_>>();
     conversation_ids.sort_unstable();
     let mut hydrated = HashMap::with_capacity(requests.len());
@@ -327,7 +341,7 @@ pub(in crate::search::query) fn hydrate_message_content_by_conversation(
         let placeholders = sql_placeholders(wanted_indices.len());
         let sql = format!(
             "SELECT m.conversation_id, m.idx, m.content
-             FROM messages m INDEXED BY sqlite_autoindex_messages_1
+             FROM messages m{index_hint}
              WHERE m.conversation_id = ? AND m.idx IN ({placeholders})
              ORDER BY m.idx"
         );

@@ -100,8 +100,7 @@ mod doctor_fts_tests {
 
     /// #355: a queryable-but-partial FTS shadow (interrupted rebuild) must not
     /// report as healthy. The messages table mirrors the production
-    /// `UNIQUE(conversation_id, idx)` so `sqlite_autoindex_messages_1` exists
-    /// for the indexable-count query.
+    /// `idx_messages_conv_idx` unique index for the indexable-count query.
     #[test]
     fn doctor_fts_probe_reports_partial_parity() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::TempDir::new()?;
@@ -123,9 +122,10 @@ mod doctor_fts_tests {
                 conversation_id INTEGER,
                 idx INTEGER,
                 content TEXT,
-                created_at INTEGER,
-                UNIQUE(conversation_id, idx)
+                created_at INTEGER
              );
+             CREATE UNIQUE INDEX idx_messages_conv_idx
+                ON messages(conversation_id, idx);
              CREATE VIRTUAL TABLE fts_messages USING fts5(
                 content,
                 title,

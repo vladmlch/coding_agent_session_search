@@ -78,9 +78,9 @@ fn query(cursor: Option<Cursor>, indexed: bool, projection: &str) -> String {
     // bound and the second predicate orders duplicate idx values. No cursor+1
     // arithmetic, OFFSET, or conversation-wide body collection is needed.
     let (hint, order, after, limit) = match (indexed, cursor.is_some()) {
-        (true, false) => (" INDEXED BY sqlite_autoindex_messages_1", "idx", "", "?2"),
+        (true, false) => (" INDEXED BY idx_messages_conv_idx", "idx", "", "?2"),
         (true, true) => (
-            " INDEXED BY sqlite_autoindex_messages_1",
+            " INDEXED BY idx_messages_conv_idx",
             "idx",
             " AND idx > ?2",
             "?3",
@@ -99,18 +99,18 @@ fn query(cursor: Option<Cursor>, indexed: bool, projection: &str) -> String {
     )
 }
 
-/// Whether `messages` carries the UNIQUE(conversation_id, idx) autoindex the
-/// indexed page shape relies on. Read from the schema rather than inferred
-/// from an `INDEXED BY` error: FrankenSQLite 0.4.12 rejects a missing hinted
-/// index for `ORDER BY idx, id` but silently scans for `ORDER BY idx`, and on a
-/// table without the constraint the indexed shape's `idx > ?2` cursor would
-/// skip rows that share an idx. A failed lookup takes the legacy shape, which
-/// is correct on any schema.
+/// Whether `messages` carries the unique `(conversation_id, idx)` index
+/// `idx_messages_conv_idx` the indexed page shape relies on. Read from the
+/// schema rather than inferred from an `INDEXED BY` error: FrankenSQLite
+/// 0.4.12 rejects a missing hinted index for `ORDER BY idx, id` but silently
+/// scans for `ORDER BY idx`, and on a table without the constraint the
+/// indexed shape's `idx > ?2` cursor would skip rows that share an idx. A
+/// failed lookup takes the legacy shape, which is correct on any schema.
 fn unique_conversation_index(connection: &Connection) -> bool {
     let mut columns: Vec<String> = Vec::new();
     connection
         .query_with_params_for_each(
-            "PRAGMA index_info(sqlite_autoindex_messages_1)",
+            "PRAGMA index_info(idx_messages_conv_idx)",
             &[],
             |row| {
                 columns.push(row.get_typed(2)?);
@@ -195,7 +195,7 @@ fn read_page(
                     && !saw_row
                     && error
                         .to_string()
-                        .contains("no such index: sqlite_autoindex_messages_1") =>
+                        .contains("no such index: idx_messages_conv_idx") =>
             {
                 *indexed = false;
             }

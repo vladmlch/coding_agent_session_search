@@ -50,7 +50,7 @@ impl Drop for ReadSnapshot<'_> {
 fn has_messages(connection: &Connection, parent: i64, indexed: &mut bool) -> Result<bool> {
     loop {
         let sql = if *indexed {
-            "SELECT 1 FROM messages INDEXED BY sqlite_autoindex_messages_1 WHERE conversation_id = ?1 LIMIT 1"
+            "SELECT 1 FROM messages INDEXED BY idx_messages_conv_idx WHERE conversation_id = ?1 LIMIT 1"
         } else {
             "SELECT 1 FROM messages WHERE conversation_id = ?1 LIMIT 1"
         };
@@ -72,7 +72,7 @@ fn has_messages(connection: &Connection, parent: i64, indexed: &mut bool) -> Res
                     && !found
                     && error
                         .to_string()
-                        .contains("no such index: sqlite_autoindex_messages_1") =>
+                        .contains("no such index: idx_messages_conv_idx") =>
             {
                 *indexed = false;
             }

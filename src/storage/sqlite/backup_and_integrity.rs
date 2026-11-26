@@ -395,7 +395,7 @@ pub(super) const FTS_FRANKEN_CONTENT_REVISION_PENDING: i64 = -1;
 /// `(conversation_id, idx)` uniqueness index without opening the message table,
 /// crossing the Rust row handler per message, or admitting orphan parent IDs.
 pub(crate) const FTS_INDEXABLE_MESSAGE_COUNT_SQL: &str = "SELECT COUNT(*) \
-     FROM messages INDEXED BY sqlite_autoindex_messages_1 \
+     FROM messages INDEXED BY idx_messages_conv_idx \
      WHERE conversation_id IN (SELECT rowid FROM conversations)";
 /// Exact intersection stream driven by the (potentially much smaller) derived
 /// shadow. The supported two-table join scans `fts_messages_docsize` once and

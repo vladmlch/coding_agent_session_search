@@ -5,15 +5,15 @@ use std::io;
 
 fn database(path: &std::path::Path, indexed: bool) -> Result<Connection> {
     let connection = Connection::open(path.to_string_lossy().into_owned())?;
-    let unique = if indexed {
-        ", UNIQUE(conversation_id, idx)"
-    } else {
-        ""
-    };
-    connection.execute(&format!(
+    connection.execute(
         "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER,
-         idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT{unique})"
-    ))?;
+         idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT)",
+    )?;
+    if indexed {
+        connection.execute(
+            "CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(conversation_id, idx)",
+        )?;
+    }
     Ok(connection)
 }
 
@@ -124,7 +124,7 @@ fn callback_errors_never_trigger_missing_index_fallback_or_lose_their_type() -> 
             delivered += 1;
             Err(io::Error::new(
                 io::ErrorKind::Interrupted,
-                "no such index: sqlite_autoindex_messages_1",
+                "no such index: idx_messages_conv_idx",
             )
             .into())
         })

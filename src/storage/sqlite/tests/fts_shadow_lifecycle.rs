@@ -240,7 +240,7 @@ fn fts_indexable_count_and_intersection_plans_are_bounded_and_exact() {
     let message_index_rootpage: i64 = storage
         .raw()
         .query_row_map(
-            "SELECT rootpage FROM sqlite_master WHERE name = 'sqlite_autoindex_messages_1'",
+            "SELECT rootpage FROM sqlite_master WHERE name = 'idx_messages_conv_idx'",
             fparams![],
             |row| row.get_typed(0),
         )

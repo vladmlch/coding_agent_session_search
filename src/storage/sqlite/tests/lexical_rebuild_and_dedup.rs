@@ -560,7 +560,7 @@ fn fetch_messages_for_lexical_rebuild_caps_each_message_of_a_long_conversation()
         .query_map_collect(
             "EXPLAIN SELECT id, idx, role, author, created_at, \
                  substr(content, 1, 1025), COALESCE(octet_length(content), 0) \
-                 FROM messages INDEXED BY sqlite_autoindex_messages_1 \
+                 FROM messages INDEXED BY idx_messages_conv_idx \
                  WHERE conversation_id = ?1 ORDER BY idx",
             fparams![conversation_id],
             |row| Ok((row.get_typed(1)?, row.get_typed::<String>(5).ok())),
@@ -594,7 +594,7 @@ fn fetch_messages_for_lexical_rebuild_caps_each_message_of_a_long_conversation()
         .query_map_collect(
             "EXPLAIN QUERY PLAN SELECT id, idx, role, author, created_at, \
                  substr(content, 1, 1025), COALESCE(octet_length(content), 0) \
-                 FROM messages INDEXED BY sqlite_autoindex_messages_1 \
+                 FROM messages INDEXED BY idx_messages_conv_idx \
                  WHERE conversation_id = ?1 ORDER BY idx",
             fparams![conversation_id],
             |row| row.get_typed(3),

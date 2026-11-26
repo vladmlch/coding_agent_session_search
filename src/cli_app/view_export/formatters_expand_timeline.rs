@@ -953,14 +953,28 @@ pub(crate) fn run_timeline(
         Option<String>,
         Option<String>,
     )> = rows;
+    let has_conv_idx = conn
+        .query_map_collect(
+            "PRAGMA index_list(messages)",
+            &[],
+            |row: &crate::franken_sync::Row| row.get_typed::<String>(1),
+        )
+        .map(|names| names.iter().any(|name| name == "idx_messages_conv_idx"))
+        .unwrap_or(false);
+    let count_sql = if has_conv_idx {
+        "SELECT idx FROM messages INDEXED BY idx_messages_conv_idx
+         WHERE conversation_id = ?1"
+    } else {
+        "SELECT idx FROM messages
+         WHERE conversation_id = ?1"
+    };
     for session in &mut sessions {
         // COUNT(*) with a WHERE clause also scans the whole messages table in
         // this engine version (see run_sessions). Stream the covering index's
         // idx column instead: no message bodies or per-session Vec of rows,
         // even for a single conversation with hundreds of thousands of turns.
         conn.query_with_params_for_each(
-            "SELECT idx FROM messages INDEXED BY sqlite_autoindex_messages_1
-             WHERE conversation_id = ?1",
+            count_sql,
             &[crate::franken_sync::SqliteValue::Integer(session.0)],
             |_| {
                 session.6 += 1;

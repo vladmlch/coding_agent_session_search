@@ -18,7 +18,7 @@ const FIRST_PARENTS: &str = "SELECT id FROM conversations ORDER BY id ASC LIMIT 
 #[cfg(test)]
 const NEXT_PARENTS: &str = "SELECT id FROM conversations WHERE id > ?1 ORDER BY id ASC LIMIT ?2";
 #[cfg(test)]
-const INDEXED_MESSAGE: &str = "SELECT 1 FROM messages INDEXED BY sqlite_autoindex_messages_1
+const INDEXED_MESSAGE: &str = "SELECT 1 FROM messages INDEXED BY idx_messages_conv_idx
     WHERE conversation_id = ?1 LIMIT 1";
 #[cfg(test)]
 const LEGACY_MESSAGE: &str = "SELECT 1 FROM messages WHERE conversation_id = ?1 LIMIT 1";
@@ -172,7 +172,7 @@ pub(super) fn nonempty_conversations(
                 if !indexed
                     || !error
                         .to_string()
-                        .contains("no such index: sqlite_autoindex_messages_1")
+                        .contains("no such index: idx_messages_conv_idx")
                 {
                     return Err(error).context("probe canonical messages for unchanged coverage");
                 }

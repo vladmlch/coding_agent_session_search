@@ -1090,7 +1090,7 @@ fn rebuild_daily_stats_reuses_streaming_statement_across_large_message_pages() {
         .query_map_collect(
             "EXPLAIN QUERY PLAN \
              SELECT m.idx, COALESCE(LENGTH(CAST(m.content AS BLOB)), 0) \
-             FROM messages m INDEXED BY sqlite_autoindex_messages_1 \
+             FROM messages m INDEXED BY idx_messages_conv_idx \
              WHERE m.conversation_id = ?1 AND m.idx > ?2 \
              ORDER BY m.idx \
              LIMIT ?3",
@@ -1101,8 +1101,8 @@ fn rebuild_daily_stats_reuses_streaming_statement_across_large_message_pages() {
     assert!(
         plan_details
             .iter()
-            .any(|detail| detail.contains("sqlite_autoindex_messages_1")),
-        "daily_stats message scan must use the conversation_id/idx autoindex: {plan_details:?}"
+            .any(|detail| detail.contains("idx_messages_conv_idx")),
+        "daily_stats message scan must use idx_messages_conv_idx: {plan_details:?}"
     );
     assert!(
         !plan_details

@@ -519,9 +519,9 @@ fn doctor_inventory_queries_stream_metadata_and_count_messages_in_one_narrow_pas
              id INTEGER PRIMARY KEY,
              conversation_id INTEGER NOT NULL,
              idx INTEGER NOT NULL,
-             content TEXT NOT NULL,
-             UNIQUE(conversation_id, idx)
+             content TEXT NOT NULL
          );
+         CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(conversation_id, idx);
          INSERT INTO agents(id, slug) VALUES(1, 'codex');
          INSERT INTO sources(id, kind) VALUES('local', 'local');
          INSERT INTO conversations(id, agent_id, source_id, source_path, started_at)
@@ -583,7 +583,7 @@ fn doctor_inventory_queries_stream_metadata_and_count_messages_in_one_narrow_pas
         .query_map_collect(
             "EXPLAIN QUERY PLAN
              SELECT conversation_id
-             FROM messages INDEXED BY sqlite_autoindex_messages_1",
+             FROM messages INDEXED BY idx_messages_conv_idx",
             &[],
             |row: &crate::franken_sync::Row| row.get_typed(3),
         )
@@ -591,7 +591,7 @@ fn doctor_inventory_queries_stream_metadata_and_count_messages_in_one_narrow_pas
     // FrankenSQLite currently renders a full covering-index walk as the
     // generic `SCAN messages`; the production SQL's INDEXED BY clause is
     // the enforceable index contract (and would fail preparation if the
-    // autoindex were absent). The plan still must remain a single scan with
+    // index were absent). The plan still must remain a single scan with
     // no temp materialization.
     assert_eq!(
         message_plan.len(),

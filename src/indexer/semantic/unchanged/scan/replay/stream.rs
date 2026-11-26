@@ -7,7 +7,7 @@ use crate::model::types::{Message, MessageRole};
 use anyhow::{Context, Result};
 
 const INDEXED: &str = "SELECT id, idx, role, author, created_at, content
-    FROM messages INDEXED BY sqlite_autoindex_messages_1
+    FROM messages INDEXED BY idx_messages_conv_idx
     WHERE conversation_id = ?1 ORDER BY idx";
 const LEGACY: &str = "SELECT id, idx, role, author, created_at, content
     FROM messages WHERE conversation_id = ?1 ORDER BY idx";
@@ -66,7 +66,7 @@ pub(super) fn messages(
                     && !saw_row
                     && error
                         .to_string()
-                        .contains("no such index: sqlite_autoindex_messages_1") =>
+                        .contains("no such index: idx_messages_conv_idx") =>
             {
                 // Only missing legacy schema metadata permits another query.
                 // Never replay delivered rows or retry an arbitrary SQL error.

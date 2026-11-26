@@ -503,12 +503,14 @@ fn fresh_db_creates_all_indexes() {
         .query_map_collect("PRAGMA index_list(messages)", &[], |r| r.get_typed(1))
         .unwrap();
     assert!(
-        message_indexes.contains(&"sqlite_autoindex_messages_1".to_string()),
-        "messages UNIQUE(conversation_id, idx) autoindex should exist, found: {message_indexes:?}"
+        message_indexes.contains(&"idx_messages_conv_idx".to_string()),
+        "messages idx_messages_conv_idx unique index should exist, found: {message_indexes:?}"
     );
     assert!(
-        !message_indexes.contains(&"idx_messages_conv_idx".to_string()),
-        "fresh schema should not retain redundant idx_messages_conv_idx, found: {message_indexes:?}"
+        !message_indexes
+            .iter()
+            .any(|name| name.starts_with("sqlite_autoindex_messages_")),
+        "fresh schema should not retain redundant table-level messages autoindex, found: {message_indexes:?}"
     );
 }
 
@@ -540,12 +542,14 @@ fn migration_v16_drops_redundant_message_conv_idx() {
         .query_map_collect("PRAGMA index_list(messages)", &[], |r| r.get_typed(1))
         .unwrap();
     assert!(
-        message_indexes.contains(&"sqlite_autoindex_messages_1".to_string()),
-        "v16 must retain the UNIQUE(conversation_id, idx) autoindex, found: {message_indexes:?}"
+        message_indexes.contains(&"idx_messages_conv_idx".to_string()),
+        "messages idx_messages_conv_idx unique index should exist, found: {message_indexes:?}"
     );
     assert!(
-        !message_indexes.contains(&"idx_messages_conv_idx".to_string()),
-        "v16 should drop the redundant named message index, found: {message_indexes:?}"
+        !message_indexes
+            .iter()
+            .any(|name| name.starts_with("sqlite_autoindex_messages_")),
+        "schema should not retain redundant table-level messages autoindex, found: {message_indexes:?}"
     );
 }
 

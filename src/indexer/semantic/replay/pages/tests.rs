@@ -5,15 +5,15 @@ use std::path::Path;
 
 fn database(path: &Path, indexed: bool) -> Result<Connection> {
     let connection = Connection::open(path.to_string_lossy().into_owned())?;
-    let unique = if indexed {
-        ", UNIQUE(conversation_id, idx)"
-    } else {
-        ""
-    };
-    connection.execute(&format!(
+    connection.execute(
         "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER,
-         idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT{unique})"
-    ))?;
+         idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT)",
+    )?;
+    if indexed {
+        connection.execute(
+            "CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(conversation_id, idx)",
+        )?;
+    }
     Ok(connection)
 }
 
@@ -316,7 +316,7 @@ fn empty_data_limits_and_errors_never_turn_into_successful_partial_replay() -> R
         delivered += 1;
         Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "no such index: sqlite_autoindex_messages_1",
+            "no such index: idx_messages_conv_idx",
         )
         .into())
     })
@@ -358,8 +358,10 @@ fn gh534_replay_page_queries_seek_the_conversation_key() -> Result<()> {
     )?;
     reversed.execute(
         "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER,
-         idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT,
-         UNIQUE(idx, conversation_id))",
+         idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT)",
+    )?;
+    reversed.execute(
+        "CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(idx, conversation_id)",
     )?;
     assert!(!unique_conversation_index(&reversed));
     reversed.close_without_checkpoint()?;
@@ -401,7 +403,7 @@ fn gh534_replay_page_queries_seek_the_conversation_key() -> Result<()> {
         )?;
         assert!(
             plan.iter().any(|detail| detail.starts_with(
-                "SEARCH messages USING INDEX sqlite_autoindex_messages_1 (conversation_id=?"
+                "SEARCH messages USING INDEX idx_messages_conv_idx (conversation_id=?"
             )),
             "{label}: {plan:?}"
         );

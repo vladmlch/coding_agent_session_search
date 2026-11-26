@@ -202,8 +202,8 @@ pub(super) fn truncate_lexical_rebuild_message_content(messages: &mut [Message],
 }
 
 impl FrankenStorage {
-    /// Messages of one conversation, counted through the UNIQUE(conversation_id,
-    /// idx) autoindex where the schema has it: FrankenSQLite runs
+    /// Messages of one conversation, counted through `idx_messages_conv_idx`
+    /// where the schema has it: FrankenSQLite runs
     /// `COUNT(*) ... WHERE conversation_id = ?` as a whole-table scan.
     pub(super) fn conversation_message_count(&self, conversation_id: i64) -> Result<usize> {
         let indexed: bool = self
@@ -212,9 +212,9 @@ impl FrankenStorage {
                 row.get_typed::<String>(1)
             })?
             .iter()
-            .any(|name| name == "sqlite_autoindex_messages_1");
+            .any(|name| name == "idx_messages_conv_idx");
         let sql = if indexed {
-            "SELECT idx FROM messages INDEXED BY sqlite_autoindex_messages_1 WHERE conversation_id = ?1"
+            "SELECT idx FROM messages INDEXED BY idx_messages_conv_idx WHERE conversation_id = ?1"
         } else {
             "SELECT idx FROM messages WHERE conversation_id = ?1"
         };
@@ -966,7 +966,7 @@ impl FrankenStorage {
     /// Fetch messages for a conversation.
     pub fn fetch_messages(&self, conversation_id: i64) -> Result<Vec<Message>> {
         let hinted_sql = "SELECT id, idx, role, author, created_at, content, extra_json, extra_bin \
-             FROM messages INDEXED BY sqlite_autoindex_messages_1 \
+             FROM messages INDEXED BY idx_messages_conv_idx \
              WHERE conversation_id = ?1 ORDER BY idx";
         let fallback_sql = "SELECT id, idx, role, author, created_at, content, extra_json, extra_bin \
              FROM messages \
@@ -995,7 +995,7 @@ impl FrankenStorage {
             .or_else(|err| {
                 if err
                     .to_string()
-                    .contains("no such index: sqlite_autoindex_messages_1")
+                    .contains("no such index: idx_messages_conv_idx")
                 {
                     return self.conn.query_map_collect(
                         fallback_sql,
@@ -1175,7 +1175,7 @@ impl FrankenStorage {
                 "SELECT idx, COALESCE(octet_length(content), 0) FROM messages{} \
                  WHERE conversation_id = ?1 ORDER BY idx",
                 if hinted {
-                    " INDEXED BY sqlite_autoindex_messages_1"
+                    " INDEXED BY idx_messages_conv_idx"
                 } else {
                     ""
                 }
@@ -1198,7 +1198,7 @@ impl FrankenStorage {
             Ok(footprints)
         };
         read(&sql(true)).or_else(|err| {
-            if format!("{err:#}").contains("no such index: sqlite_autoindex_messages_1") {
+            if format!("{err:#}").contains("no such index: idx_messages_conv_idx") {
                 return read(&sql(false));
             }
             Err(err)
@@ -1239,7 +1239,7 @@ impl FrankenStorage {
                      FROM messages{} \
                      WHERE conversation_id = ?1{range_clause} ORDER BY idx",
                 if hinted {
-                    " INDEXED BY sqlite_autoindex_messages_1"
+                    " INDEXED BY idx_messages_conv_idx"
                 } else {
                     ""
                 }
@@ -1283,7 +1283,7 @@ impl FrankenStorage {
             }
         };
         run(&sql(true)).or_else(|err| {
-            if format!("{err:#}").contains("no such index: sqlite_autoindex_messages_1") {
+            if format!("{err:#}").contains("no such index: idx_messages_conv_idx") {
                 return run(&sql(false));
             }
             Err(err)

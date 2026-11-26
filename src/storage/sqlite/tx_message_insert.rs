@@ -517,6 +517,20 @@ pub(super) fn franken_existing_message_lookup(
         });
     }
 
+    let has_conv_idx = tx
+        .query_params("PRAGMA index_list(messages)", fparams![])
+        .map(|rows| {
+            rows.into_iter().any(|row| {
+                row.get_typed::<String>(1).ok().as_deref() == Some("idx_messages_conv_idx")
+            })
+        })
+        .unwrap_or(false);
+    let index_hint = if has_conv_idx {
+        " INDEXED BY idx_messages_conv_idx"
+    } else {
+        ""
+    };
+
     let min_idx = incoming_messages
         .iter()
         .map(|msg| msg.idx)
@@ -527,14 +541,14 @@ pub(super) fn franken_existing_message_lookup(
         .map(|msg| msg.idx)
         .max()
         .unwrap_or(min_idx);
-    let idx_rows = tx.query_params(
+    let idx_rows_sql = format!(
         "SELECT idx
-         FROM messages INDEXED BY sqlite_autoindex_messages_1
+         FROM messages{index_hint}
          WHERE conversation_id = ?1
            AND idx >= ?2
-           AND idx <= ?3",
-        fparams![conversation_id, min_idx, max_idx],
-    )?;
+           AND idx <= ?3"
+    );
+    let idx_rows = tx.query_params(&idx_rows_sql, fparams![conversation_id, min_idx, max_idx])?;
     record_message_lookup_bounded_queries(1, idx_rows.len());
 
     let mut existing_indices = HashSet::with_capacity(idx_rows.len());
@@ -585,33 +599,41 @@ pub(super) fn franken_existing_message_lookup(
 
     let (full_scan_sql, bounded_sql) = if include_row_native_ids {
         (
-            "SELECT idx, role, author, created_at, content, extra_json, extra_bin
-             FROM messages INDEXED BY sqlite_autoindex_messages_1
-             WHERE conversation_id = ?1",
-            "SELECT idx, role, author, created_at, content, extra_json, extra_bin
-             FROM messages INDEXED BY sqlite_autoindex_messages_1
-             WHERE conversation_id = ?1
-               AND created_at IS NOT NULL
-               AND created_at >= ?2
-               AND created_at <= ?3",
+            format!(
+                "SELECT idx, role, author, created_at, content, extra_json, extra_bin
+                 FROM messages{index_hint}
+                 WHERE conversation_id = ?1"
+            ),
+            format!(
+                "SELECT idx, role, author, created_at, content, extra_json, extra_bin
+                 FROM messages{index_hint}
+                 WHERE conversation_id = ?1
+                   AND created_at IS NOT NULL
+                   AND created_at >= ?2
+                   AND created_at <= ?3"
+            ),
         )
     } else {
         (
-            "SELECT idx, role, author, created_at, content
-             FROM messages INDEXED BY sqlite_autoindex_messages_1
-             WHERE conversation_id = ?1",
-            "SELECT idx, role, author, created_at, content
-             FROM messages INDEXED BY sqlite_autoindex_messages_1
-             WHERE conversation_id = ?1
-               AND created_at IS NOT NULL
-               AND created_at >= ?2
-               AND created_at <= ?3",
+            format!(
+                "SELECT idx, role, author, created_at, content
+                 FROM messages{index_hint}
+                 WHERE conversation_id = ?1"
+            ),
+            format!(
+                "SELECT idx, role, author, created_at, content
+                 FROM messages{index_hint}
+                 WHERE conversation_id = ?1
+                   AND created_at IS NOT NULL
+                   AND created_at >= ?2
+                   AND created_at <= ?3"
+            ),
         )
     };
 
     let mut replay = MessageReplayFingerprintSet::default();
     if requires_full_scan {
-        let rows = tx.query_params(full_scan_sql, fparams![conversation_id])?;
+        let rows = tx.query_params(&full_scan_sql, fparams![conversation_id])?;
         record_message_lookup_full_scan_query(rows.len());
         let content_lookup = existing_message_lookup_from_rows(
             rows,
@@ -625,7 +647,7 @@ pub(super) fn franken_existing_message_lookup(
         replay.absorb(content_lookup.replay);
     } else if let Some((min_created_at, max_created_at)) = created_bounds {
         let rows = tx.query_params(
-            bounded_sql,
+            &bounded_sql,
             fparams![conversation_id, min_created_at, max_created_at],
         )?;
         record_message_lookup_bounded_queries(1, rows.len());

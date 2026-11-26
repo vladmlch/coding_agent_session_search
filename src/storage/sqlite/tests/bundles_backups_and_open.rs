@@ -769,16 +769,15 @@ fn open_accepts_equivalent_snippets_index_without_duplicate() {
     );
 }
 
-// review 2026-11-02 S3: tail readers must not depend on the index V16 dropped.
+// review 2026-11-02 S3 / P1-2: tail readers use the canonical named index.
 #[test]
 fn lexical_rebuild_tail_sql_uses_live_message_index() {
     for sql in [
         footprint_tail_sql::TAIL_MAX_IDX_SQL,
         footprint_tail_sql::MISSING_TAIL_SQL,
     ] {
-        assert!(!sql.contains("idx_messages_conv_idx"), "{sql}");
         assert!(
-            sql.contains("INDEXED BY sqlite_autoindex_messages_1"),
+            sql.contains("INDEXED BY idx_messages_conv_idx"),
             "{sql}"
         );
     }
@@ -1184,4 +1183,142 @@ fn schema_version_returns_current() {
         version, CURRENT_SCHEMA_VERSION,
         "Schema version should equal CURRENT_SCHEMA_VERSION"
     );
+}
+
+#[test]
+fn legacy_fts_config_shadow_fixture_open_insert_and_read_without_missing_index() {
+    use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+    use crate::sources::provenance::LOCAL_SOURCE_ID;
+    use crate::storage::sqlite::SchemaRebuildRequired;
+
+    let fixture_db = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("gh503")
+        .join("legacy_fts_config_shadow.db");
+    let dir = TempDir::new().unwrap();
+    let staged_db = dir.path().join("agent_search.db");
+    std::fs::copy(&fixture_db, &staged_db).unwrap();
+
+    // Legacy unstamped archives are refused by C3 archive_disposition before any
+    // `INDEXED BY` query executes.
+    let direct_err = FrankenStorage::open(&staged_db)
+        .err()
+        .expect("unstamped legacy fixture must be refused by schema-v1 open");
+    assert!(
+        direct_err.downcast_ref::<SchemaRebuildRequired>().is_some(),
+        "expected SchemaRebuildRequired, got {direct_err:#}"
+    );
+
+    // Standard rebuild-aware open backs up and quarantines the legacy archive
+    // so the subsequent open bootstraps clean schema v1 (`idx_messages_conv_idx`).
+    match SqliteStorage::open_or_rebuild(&staged_db) {
+        Err(MigrationError::RebuildRequired { backup_path, .. }) => {
+            assert!(backup_path.is_some(), "legacy archive should be backed up");
+        }
+        Ok(_) => panic!("expected RebuildRequired for legacy fixture, got Ok(FrankenStorage)"),
+        Err(err) => panic!("expected RebuildRequired for legacy fixture, got Err({err:?})"),
+    }
+
+    let storage = SqliteStorage::open(&staged_db).expect("open fresh schema-v1 archive");
+    let message_indexes: Vec<String> = storage
+        .raw()
+        .query_map_collect("PRAGMA index_list(messages)", fparams![], |row| {
+            row.get_typed(1)
+        })
+        .unwrap();
+    assert!(
+        message_indexes.contains(&"idx_messages_conv_idx".to_string()),
+        "rebuilt schema-v1 archive must contain idx_messages_conv_idx: {message_indexes:?}"
+    );
+    assert!(
+        !message_indexes
+            .iter()
+            .any(|name| name.starts_with("sqlite_autoindex_messages_")),
+        "rebuilt schema-v1 archive must not retain table-level messages autoindex: {message_indexes:?}"
+    );
+
+    let agent_id = storage
+        .ensure_agent(&Agent {
+            id: None,
+            slug: "claude_code".into(),
+            name: "Claude Code".into(),
+            version: None,
+            kind: AgentKind::Cli,
+        })
+        .unwrap();
+    let mut conversation = Conversation {
+        id: None,
+        agent_slug: "claude_code".into(),
+        workspace: Some(PathBuf::from("/tmp/workspace")),
+        external_id: Some("legacy-rebuild-conv".into()),
+        title: Some("Legacy fixture open".into()),
+        source_path: PathBuf::from("/tmp/legacy-rebuild-conv.jsonl"),
+        started_at: Some(1_700_000_000_000),
+        ended_at: Some(1_700_000_000_100),
+        approx_tokens: None,
+        metadata_json: serde_json::Value::Null,
+        messages: vec![Message {
+            id: None,
+            idx: 0,
+            role: MessageRole::User,
+            author: Some("user".into()),
+            created_at: Some(1_700_000_000_010),
+            content: "first message".into(),
+            extra_json: serde_json::Value::Null,
+            snippets: Vec::new(),
+        }],
+        source_id: LOCAL_SOURCE_ID.into(),
+        origin_host: None,
+    };
+    storage
+        .insert_conversation_tree(agent_id, None, &conversation)
+        .unwrap();
+
+    // Re-inserting with an appended message exercises existing-message lookup
+    // (`INDEXED BY idx_messages_conv_idx`) in tx_message_insert.
+    conversation.messages.push(Message {
+        id: None,
+        idx: 1,
+        role: MessageRole::Agent,
+        author: Some("assistant".into()),
+        created_at: Some(1_700_000_000_020),
+        content: "second message".into(),
+        extra_json: serde_json::Value::Null,
+        snippets: Vec::new(),
+    });
+    storage
+        .insert_conversation_tree(agent_id, None, &conversation)
+        .unwrap();
+
+    let conversation_id: i64 = storage
+        .raw()
+        .query_row_map(
+            "SELECT id FROM conversations WHERE external_id = ?1",
+            fparams!["legacy-rebuild-conv"],
+            |row| row.get_typed(0),
+        )
+        .unwrap();
+
+    let fetched = storage.fetch_messages(conversation_id).unwrap();
+    assert_eq!(fetched.len(), 2);
+    assert_eq!(fetched[0].content, "first message");
+    assert_eq!(fetched[1].content, "second message");
+    assert_eq!(storage.conversation_message_count(conversation_id).unwrap(), 2);
+
+    let mut streamed = Vec::new();
+    storage
+        .for_each_lexical_rebuild_message(conversation_id, None, |msg| {
+            streamed.push(msg.idx);
+            Ok(true)
+        })
+        .unwrap();
+    assert_eq!(streamed, vec![0, 1]);
+
+    let footprints = storage
+        .list_conversation_footprints_for_lexical_rebuild()
+        .unwrap();
+    assert_eq!(footprints.len(), 1);
+    let stats = storage.rebuild_daily_stats().unwrap();
+    assert_eq!(stats.total_sessions, 1);
 }

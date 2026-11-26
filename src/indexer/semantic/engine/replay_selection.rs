@@ -182,7 +182,7 @@ pub(in crate::indexer::semantic::engine) fn semantic_conversation_has_message_af
     };
     let hinted_probe = format!(
         "SELECT 1
-         FROM messages INDEXED BY sqlite_autoindex_messages_1
+         FROM messages INDEXED BY idx_messages_conv_idx
          WHERE conversation_id = ?1{message_cursor_predicate}
          LIMIT 1"
     );
@@ -202,7 +202,7 @@ pub(in crate::indexer::semantic::engine) fn semantic_conversation_has_message_af
         .or_else(|err| {
             if !err
                 .to_string()
-                .contains("no such index: sqlite_autoindex_messages_1")
+                .contains("no such index: idx_messages_conv_idx")
             {
                 return Err(err);
             }
