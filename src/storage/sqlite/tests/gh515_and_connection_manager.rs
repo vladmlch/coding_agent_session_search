@@ -278,7 +278,9 @@ fn token_daily_stats_rebuild_resumes_from_persisted_cursor() {
     )
     .unwrap();
     {
-        let mut tx = raw.transaction().unwrap();
+        let mut tx = raw
+            .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+            .unwrap();
         write_token_daily_stats_rebuild_cursor(
             &tx,
             &TokenDailyStatsRebuildCursor {
@@ -315,7 +317,9 @@ fn token_daily_stats_rebuild_resumes_from_persisted_cursor() {
     )
     .unwrap();
     {
-        let mut tx = raw.transaction().unwrap();
+        let mut tx = raw
+            .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+            .unwrap();
         write_token_daily_stats_rebuild_cursor(
             &tx,
             &TokenDailyStatsRebuildCursor {

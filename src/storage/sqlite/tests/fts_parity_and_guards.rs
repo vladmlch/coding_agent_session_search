@@ -265,10 +265,10 @@ fn fts_exact_rowid_probe_5k_is_bounded_against_two_million_unrelated_rows() {
     let storage = FrankenStorage::open(&db_path).unwrap();
     seed_atomic_fts_rebuild_fixture(&storage);
 
-    // Grow the two synthetic ranges geometrically. FrankenSQLite caps a
-    // recursive CTE at 1,000 iterations, so a recursive 2M-row fixture
-    // silently measured the wrong corpus. This needs only O(log N) INSERT
-    // statements and proves the actual requested cardinality below.
+    // Grow the two synthetic ranges geometrically rather than using a
+    // recursive CTE (bounded to 1,000 iterations in older fixtures).
+    // This needs only O(log N) INSERT statements and proves the actual
+    // requested cardinality below.
     let seed_geometric_range = |base: i64, count: i64, stride: i64| {
         storage
             .raw()
@@ -980,7 +980,7 @@ fn autocommit_retain_disable_tries_compat_then_canonical_pragma() {
 
     let selected = disable_autocommit_retain(|pragma| {
         attempts.push(pragma);
-        if pragma == "PRAGMA fsqlite.autocommit_retain = OFF;" {
+        if pragma == AUTOCOMMIT_RETAIN_OFF_PRAGMAS[0] {
             Err("compat namespace unavailable")
         } else {
             Ok(())
@@ -988,7 +988,7 @@ fn autocommit_retain_disable_tries_compat_then_canonical_pragma() {
     })
     .expect("canonical pragma should disable autocommit retain");
 
-    assert_eq!(selected, "PRAGMA autocommit_retain = OFF;");
+    assert_eq!(selected, AUTOCOMMIT_RETAIN_OFF_PRAGMAS[1]);
     assert_eq!(attempts, AUTOCOMMIT_RETAIN_OFF_PRAGMAS);
 }
 
@@ -1009,8 +1009,9 @@ fn autocommit_retain_disable_fails_closed_when_no_pragma_works() {
         "error should force callers away from unbounded snapshot retention: {message}"
     );
     assert!(
-        message.contains("PRAGMA fsqlite.autocommit_retain = OFF;")
-            && message.contains("PRAGMA autocommit_retain = OFF;"),
+        AUTOCOMMIT_RETAIN_OFF_PRAGMAS
+            .iter()
+            .all(|pragma| message.contains(pragma)),
         "error should preserve attempted PRAGMAs for diagnostics: {message}"
     );
 }

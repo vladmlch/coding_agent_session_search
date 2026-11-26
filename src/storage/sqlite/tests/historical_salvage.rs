@@ -363,7 +363,7 @@ fn drop_recreate_repairs_corrupt_fts_shadow_structure() {
         storage
             .insert_conversation_tree(agent_id, None, &conversation)
             .unwrap();
-        storage.rebuild_fts_via_frankensqlite().unwrap();
+        storage.rebuild_fts().unwrap();
     }
 
     // Corrupt the %_data structure record (rowid 10) via a fresh connection

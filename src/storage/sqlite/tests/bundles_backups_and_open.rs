@@ -4,7 +4,6 @@ use crate::franken_sync::compat::{
 };
 #[cfg(unix)]
 use anyhow::Result;
-use anyhow::anyhow;
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
@@ -787,7 +786,7 @@ fn lexical_rebuild_tail_sql_uses_live_message_index() {
 #[test]
 fn gh477_readonly_openers_recover_only_derived_wal_index() {
     // Stock SQLite supplies two real WAL generations and a foreign lock
-    // owner; all application opens and reads below use FrankenSQLite.
+    // owner; all application opens and reads below use cass's SQLite layer.
     let script = r#"
 import os, pathlib, shutil, sqlite3, sys
 p = pathlib.Path(sys.argv[1])
@@ -922,7 +921,7 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
                     err.downcast_ref::<crate::franken_sync::FrankenError>(),
                     Some(crate::franken_sync::FrankenError::BusyRecovery)
                 ));
-                // e9f0v: fsqlite 0.4.7 retried a strict read-only bootstrap
+                // e9f0v: prior engine 0.4.7 retried a strict read-only bootstrap
                 // on BusyRecovery for a 30 s floor. A stale WAL index must be
                 // refused at once.
                 let refusals = refusals_started.elapsed();
@@ -1031,7 +1030,7 @@ fn dedicated_owner_readonly_open_reads_nonempty_wal_without_mutating_it() {
         .get_typed(0)
         .expect("count should be an integer");
     assert_eq!(count, 3, "dirty-WAL reads must preserve committed rows");
-    // fsqlite 0.3.8 admits write STATEMENTS on a readonly connection as
+    // Prior engine 0.3.8 admitted write STATEMENTS on a readonly connection as
     // long as they touch no pages (`WHERE 1 = 0` plans to zero row
     // writes and returns Ok(0)); SQLite proper refuses at prepare. Pin
     // the enforcement that matters — a write that would actually mutate

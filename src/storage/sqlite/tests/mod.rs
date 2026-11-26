@@ -222,14 +222,11 @@ pub(super) fn reference_indexable_message_count(storage: &FrankenStorage) -> i64
         .expect("count indexable messages with the unforced reference join")
 }
 
-/// Open a rusqlite connection on `db_path` for the narrow purpose of
+/// Open a raw rusqlite connection on `db_path` for the narrow purpose of
 /// injecting (or inspecting the raw projection of) sqlite_master
-/// corruption patterns in test fixtures. Frankensqlite intentionally does
-/// not support `PRAGMA writable_schema` writes or raw inserts to
-/// sqlite_master (see AGENTS.md: "PRAGMA writable_schema: Not supported for
-/// write operations"), so these fixtures retain rusqlite as the standard-
-/// SQLite interop layer. All callers are in this test module and run under
-/// #[cfg(test)]; no production code path touches rusqlite here.
+/// corruption patterns in test fixtures. All callers are in this test
+/// module and run under #[cfg(test)]; no production code path touches
+/// raw rusqlite directly through this helper.
 pub(super) fn rusqlite_test_fixture_conn(db_path: &Path) -> rusqlite::Connection {
     rusqlite::Connection::open(db_path).expect("open rusqlite test fixture connection")
 }
