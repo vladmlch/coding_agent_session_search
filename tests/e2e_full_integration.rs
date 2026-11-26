@@ -2,7 +2,7 @@
 //!
 //! Exercises the complete cass pipeline with multiple agent types:
 //! 1. Create test session fixtures (Codex + Claude Code formats)
-//! 2. Run full indexing via CLI (agent detection + frankensqlite storage + tantivy index)
+//! 2. Run full indexing via CLI (agent detection + SQLite storage + tantivy index)
 //! 3. Search via CLI (lexical, JSON robot output)
 //! 4. Verify data consistency across the pipeline
 //!
@@ -437,7 +437,7 @@ fn e2e_database_integrity() {
         .expect("orphan conv check");
     assert_eq!(orphan_convs, 0, "No orphan conversations should exist");
 
-    // The current contentless FTS table is considered healthy if frankensqlite can
+    // The current contentless FTS table is considered healthy if SQLite can
     // query it and at least one row is visible through the canonical doctor probe.
     let fts_probe_rows: Vec<i64> = conn
         .query_map_collect("SELECT rowid FROM fts_messages LIMIT 1", &[], |r| {
@@ -485,7 +485,7 @@ fn e2e_database_integrity() {
 // 4. STATS COMMAND AFTER INDEX
 // ============================================================================
 
-/// Verify the stats command works after indexing (uses frankensqlite queries).
+/// Verify the stats command works after indexing (uses SQLite queries).
 #[test]
 fn e2e_stats_after_index() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -526,7 +526,7 @@ fn e2e_stats_after_index() {
         String::from_utf8_lossy(&index_output.stderr)
     );
 
-    // Run stats command (exercises the frankensqlite-migrated run_stats path)
+    // Run stats command (exercises the SQLite-backed run_stats path)
     let stats_output = Command::new(cass_bin())
         .args(["stats", "--data-dir"])
         .arg(&data_dir)
@@ -553,7 +553,7 @@ fn e2e_stats_after_index() {
 // 5. DIAG COMMAND INTEGRATION
 // ============================================================================
 
-/// Verify the diag command works (exercises frankensqlite-migrated run_diag path).
+/// Verify the diag command works (exercises SQLite-backed run_diag path).
 #[test]
 fn e2e_diag_after_index() {
     let tmp = tempfile::TempDir::new().unwrap();

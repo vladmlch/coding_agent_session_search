@@ -12,12 +12,9 @@ use serde_json::json;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// Run a fixture batch atomically (BEGIN/COMMIT) with a bounded retry: fsqlite
-/// 0.3.x can abort the whole batch with a transient `BusySnapshot` while a
-/// previously-dropped session's epoch unwinds (tempdir inode reuse); the
-/// atomic wrapper makes a wholesale re-run safe.
+/// Run a fixture batch atomically (BEGIN IMMEDIATE/COMMIT) with a bounded retry on transient busy states.
 fn run_fixture_batch(conn: &FrankenConnection, sql: &str) {
-    let wrapped = format!("BEGIN;\n{sql}\nCOMMIT;");
+    let wrapped = format!("BEGIN IMMEDIATE;\n{sql}\nCOMMIT;");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut delay = std::time::Duration::from_millis(10);
     loop {
@@ -48,7 +45,7 @@ const _: () = {
 
 fn open_fixture_db(path: &Path) -> FrankenConnection {
     let path = path.to_string_lossy();
-    FrankenConnection::open(path.as_ref()).expect("open frankensqlite fixture database")
+    FrankenConnection::open(path.as_ref()).expect("open SQLite fixture database")
 }
 
 // =============================================================================
@@ -169,6 +166,8 @@ fn test_handles_missing_optional_columns() {
         let conn = open_fixture_db(&db_path);
         conn.execute_batch(
             r#"
+            PRAGMA application_id = 0x43415353;
+            PRAGMA user_version = 1;
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO meta (key, value) VALUES ('schema_version', '8');
             CREATE TABLE agents (
@@ -302,6 +301,8 @@ fn test_search_without_fts() {
             &conn,
             &format!(
                 r#"
+            PRAGMA application_id = 0x43415353;
+            PRAGMA user_version = 1;
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO meta (key, value) VALUES ('schema_version', '{}');
             CREATE TABLE agents (
@@ -382,7 +383,7 @@ fn test_path_dependency_compile_contracts() {
     use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
 
     let conn = coding_agent_search::franken_sync::Connection::open(":memory:")
-        .expect("open frankensqlite memory db");
+        .expect("open SQLite memory db");
     conn.execute("CREATE TABLE contract_check (value INTEGER)")
         .expect("create contract table");
     let _params_contract = coding_agent_search::franken_sync::params![7_i64];
