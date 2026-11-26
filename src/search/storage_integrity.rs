@@ -804,24 +804,66 @@ fn read_only_lock_probe_uri(db_path: &std::path::Path) -> String {
 
 #[cfg(unix)]
 fn inspect_native_writer_lock(db_path: &std::path::Path) -> LockAdmissionProbe {
+    use crate::franken_sync::compat::{OpenFlags as FrankenOpenFlags, open_with_flags};
     use rusqlite::OpenFlags;
 
-    // Open read-only with URI `readonly_shm=1` so C SQLite checks locks
-    // through its inode table without calling raw `close()` on a live
-    // same-process fd and without creating or mutating `-shm`/`-wal`.
-    let uri = read_only_lock_probe_uri(db_path);
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-        | OpenFlags::SQLITE_OPEN_URI
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = match rusqlite::Connection::open_with_flags(&uri, flags) {
-        Ok(conn) => conn,
-        Err(err) => return lock_admission_outcome_from_rusqlite_error(&err),
-    };
-    let _ = conn.busy_timeout(std::time::Duration::ZERO);
-    match conn.query_row("PRAGMA schema_version;", [], |row| row.get::<usize, i64>(0)) {
-        Ok(_) => LockAdmissionProbe::Available,
-        Err(err) => lock_admission_outcome_from_rusqlite_error(&err),
+    let wal_exists = wal_sidecar_path(db_path).symlink_metadata().is_ok();
+    let shm_exists = shm_sidecar_path(db_path).symlink_metadata().is_ok();
+
+    if wal_exists && shm_exists {
+        // Open read-only with URI `readonly_shm=1` so C SQLite checks locks
+        // through its inode table without calling raw `close()` on a live
+        // same-process fd and without creating or mutating `-shm`/`-wal`.
+        let uri = read_only_lock_probe_uri(db_path);
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = match rusqlite::Connection::open_with_flags(&uri, flags) {
+            Ok(conn) => conn,
+            Err(err) => return lock_admission_outcome_from_rusqlite_error(&err),
+        };
+        let _ = conn.busy_timeout(std::time::Duration::ZERO);
+        return match conn.query_row("PRAGMA schema_version;", [], |row| row.get::<usize, i64>(0)) {
+            Ok(_) => LockAdmissionProbe::Available,
+            Err(err) => lock_admission_outcome_from_rusqlite_error(&err),
+        };
     }
+
+    if !wal_exists && !shm_exists {
+        // When neither `-wal` nor `-shm` exists, opening with `readonly_shm=1`
+        // on a cleanly closed WAL archive causes C SQLite to create a 0-byte
+        // `-wal` sidecar in place. Bound by the 16 MiB snapshot budget and
+        // delegate to `open_strict_readonly` so WAL archives inspect a private
+        // snapshot and rollback-mode archives check locks in place.
+        match isolated_snapshot_preflight_bytes(db_path) {
+            Ok(total) if total <= SCHEMA_SNAPSHOT_MAX_BYTES => {}
+            _ => return LockAdmissionProbe::Unclassified,
+        }
+        let path_str = db_path.to_string_lossy();
+        let mut conn = match open_with_flags(
+            path_str.as_ref(),
+            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY | FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
+        ) {
+            Ok(conn) => conn,
+            Err(err) => return lock_admission_outcome_from_franken_error(&err),
+        };
+        let outcome = match conn.try_raw() {
+            Ok(raw) => {
+                let _ = raw.busy_timeout(std::time::Duration::ZERO);
+                match raw.query_row("PRAGMA schema_version;", [], |row| row.get::<usize, i64>(0)) {
+                    Ok(_) => LockAdmissionProbe::Available,
+                    Err(err) => lock_admission_outcome_from_rusqlite_error(&err),
+                }
+            }
+            Err(err) => lock_admission_outcome_from_franken_error(&err),
+        };
+        if conn.close_without_checkpoint_in_place().is_err() {
+            conn.close_best_effort_in_place();
+        }
+        return outcome;
+    }
+
+    LockAdmissionProbe::Unclassified
 }
 
 #[cfg(not(unix))]
@@ -830,6 +872,23 @@ fn inspect_native_writer_lock(_db_path: &std::path::Path) -> LockAdmissionProbe 
     // this diagnostic non-mutating there and rely on the typed raw read/query
     // errors below until a side-effect-free lock-inspection API is available.
     LockAdmissionProbe::Unclassified
+}
+
+#[cfg(unix)]
+fn lock_admission_outcome_from_franken_error(
+    err: &crate::franken_sync::FrankenError,
+) -> LockAdmissionProbe {
+    if matches!(
+        err,
+        crate::franken_sync::FrankenError::Busy
+            | crate::franken_sync::FrankenError::DatabaseLocked { .. }
+            | crate::franken_sync::FrankenError::LockFailed { .. }
+            | crate::franken_sync::FrankenError::BusySnapshot { .. }
+    ) {
+        LockAdmissionProbe::BusyOrLocked
+    } else {
+        LockAdmissionProbe::Unclassified
+    }
 }
 
 #[cfg(unix)]

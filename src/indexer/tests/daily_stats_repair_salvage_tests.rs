@@ -777,7 +777,7 @@ import pathlib, shutil, sqlite3, sys
 p = pathlib.Path(sys.argv[1])
 seed = str(p) + '.seed'
 c = sqlite3.connect(seed)
-c.executescript('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t(n INTEGER); INSERT INTO t VALUES(10);')
+c.executescript('PRAGMA application_id=1128354643; PRAGMA user_version=1; PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t(n INTEGER); INSERT INTO t VALUES(10);')
 old = pathlib.Path(seed + '-shm').read_bytes()
 c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()
 c.execute('INSERT INTO t VALUES(20)')

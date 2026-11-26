@@ -951,6 +951,7 @@ pub(crate) fn validate_doctor_backup_restore_candidate(
         )
     })?;
     let mut saw_ok = false;
+    let mut saw_leaked_pages_only = false;
     let mut diagnostic_rows = 0usize;
     let mut diagnostic_failure = None;
     let probe = connection.query_with_params_for_each("PRAGMA quick_check(1);", &[], |row| {
@@ -969,10 +970,16 @@ pub(crate) fn validate_doctor_backup_restore_candidate(
         if diagnostic.eq_ignore_ascii_case("ok") {
             saw_ok = true;
         } else if !diagnostic.starts_with("note:") {
-            diagnostic_failure = Some("private restore quick_check reported damage");
-            return Err(crate::franken_sync::FrankenError::Internal(
-                "private restore quick_check reported damage".to_string(),
-            ));
+            if verification.backup_kind == "leaked-pages-repair"
+                && crate::doctor_recover::integrity_is_leaked_pages_only(diagnostic, &[])
+            {
+                saw_leaked_pages_only = true;
+            } else {
+                diagnostic_failure = Some("private restore quick_check reported damage");
+                return Err(crate::franken_sync::FrankenError::Internal(
+                    "private restore quick_check reported damage".to_string(),
+                ));
+            }
         }
         Ok(())
     });
@@ -1002,7 +1009,7 @@ pub(crate) fn validate_doctor_backup_restore_candidate(
             err.error_code()
         )
     })?;
-    if !saw_ok {
+    if !saw_ok && !(verification.backup_kind == "leaked-pages-repair" && saw_leaked_pages_only) {
         return Err(
             "private restore candidate quick_check returned no successful verdict".to_string(),
         );

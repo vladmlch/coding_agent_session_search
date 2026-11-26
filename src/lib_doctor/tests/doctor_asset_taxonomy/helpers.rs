@@ -359,6 +359,10 @@ pub(crate) fn test_doctor_raw_mirror_report_for_candidate(
 pub(crate) fn seed_candidate_source_db(db_path: &Path) {
     let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())
         .expect("open source db");
+    conn.execute("PRAGMA application_id = 1128354643;")
+        .expect("set application_id");
+    conn.execute("PRAGMA user_version = 1;")
+        .expect("set user_version");
     conn.execute("PRAGMA journal_mode = WAL;")
         .expect("set wal mode");
     conn.execute("CREATE TABLE conversations (id INTEGER PRIMARY KEY);")

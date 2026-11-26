@@ -1208,6 +1208,7 @@ fn prepare_and_evaluate(
     fixture: &StorageFixture,
 ) -> Result<FixtureVerdict, String> {
     copy_tree(template_dd, fixture_dd).map_err(|e| format!("clone baseline data dir: {e}"))?;
+    retarget_fixture_lexical_checkpoint(fixture_dd)?;
     apply_corruption(fixture_dd, &fixture.corruption)?;
     let db_bytes =
         std::fs::read(db_path(fixture_dd)).map_err(|e| format!("read corrupted DB: {e}"))?;
