@@ -928,7 +928,7 @@ fn doctor_archive_post_repair_probe_fails_closed_on_unopenable_db_path() {
             .failure_reason
             .as_deref()
             .unwrap_or_default()
-            .contains("production frankensqlite manager"),
+            .contains("production SQLite connection manager"),
         "failure should name production open path: {probe:#?}"
     );
 }

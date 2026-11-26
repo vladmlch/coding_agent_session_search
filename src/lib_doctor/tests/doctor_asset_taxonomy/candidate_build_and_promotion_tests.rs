@@ -820,7 +820,7 @@ fn doctor_repair_plan_never_promotes_candidate_after_timeout_unknown_archive() {
 #[test]
 fn doctor_deferred_archive_collectors_are_explicitly_unknown_and_select_no_authority() {
     let reason = doctor_archive_wide_collectors_deferred_reason(
-        Some("frankensqlite_full_page_integrity_probe_deferred: large archive"),
+        Some("full_page_integrity_probe_deferred: large archive"),
         false,
         false,
         false,

@@ -588,11 +588,9 @@ fn doctor_inventory_queries_stream_metadata_and_count_messages_in_one_narrow_pas
             |row: &crate::franken_sync::Row| row.get_typed(3),
         )
         .expect("explain narrow message scan");
-    // FrankenSQLite currently renders a full covering-index walk as the
-    // generic `SCAN messages`; the production SQL's INDEXED BY clause is
-    // the enforceable index contract (and would fail preparation if the
-    // index were absent). The plan still must remain a single scan with
-    // no temp materialization.
+    // The production SQL's INDEXED BY clause is the enforceable covering-index
+    // contract (and would fail preparation if the index were absent). The plan
+    // still must remain a single scan with no temp materialization.
     assert_eq!(
         message_plan.len(),
         1,
@@ -1533,7 +1531,7 @@ fn doctor_read_only_next_command_routes_by_failing_asset_class() {
     // 2l1b0.73: a leak-only integrity failure routes to its in-place
     // repair, even beside another failing archive check...
     let leak_message = format!(
-        "Database failed frankensqlite integrity_check: database disk image is malformed: page 8196 is never used (2715 conversations, 3683202 messages){}",
+        "Database failed SQLite integrity_check: database disk image is malformed: page 8196 is never used (2715 conversations, 3683202 messages){}",
         doctor_leaked_pages_remedy_suffix(true)
     );
     let fail_leak = doctor_check_report("database", "fail", &leak_message, false, false);
@@ -1544,7 +1542,7 @@ fn doctor_read_only_next_command_routes_by_failing_asset_class() {
     );
     // ...while any other integrity failure keeps the generic planner.
     let other_message = format!(
-        "Database failed frankensqlite integrity_check: database disk image is malformed: page 7 is referenced multiple times (1 conversations, 2 messages){}",
+        "Database failed SQLite integrity_check: database disk image is malformed: page 7 is referenced multiple times (1 conversations, 2 messages){}",
         doctor_leaked_pages_remedy_suffix(false)
     );
     let fail_other = doctor_check_report("database", "fail", &other_message, false, false);
