@@ -221,15 +221,21 @@ fn isolated_search_demo_data(test_home: &Path) -> Result<PathBuf, Box<dyn Error>
     let dst_root = test_home.join("search_demo_data");
     for entry in WalkDir::new(&src) {
         let entry = entry?;
-        // Machine-local legacy VFS namespace lock sidecars (if an older build
-        // ever opened the fixture DB) must not reach the clone: their foreign
-        // lock state can break the copied DB's open.
+        // Machine-local legacy VFS namespace lock sidecars and untracked WAL/SHM/
+        // journal sidecars (left behind if another test opened the committed
+        // fixture in place) must not reach the clone: stale or mismatched
+        // sidecars break strict read-only opens of the copied DB.
         if entry
             .path()
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| {
-                name.ends_with("-fsqlite-ns-gate") || name.ends_with("-fsqlite-ns-use")
+                name.ends_with("-fsqlite-ns-gate")
+                    || name.ends_with("-fsqlite-ns-use")
+                    || matches!(
+                        name,
+                        "agent_search.db-wal" | "agent_search.db-shm" | "agent_search.db-journal"
+                    )
             })
         {
             continue;
@@ -3056,11 +3062,15 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
     {
         let conn = FrankenConnection::open(staging_db.to_string_lossy().into_owned())
             .expect("reopen staging db to finalize single-file image");
-        conn.execute_batch(
-            "PRAGMA wal_checkpoint(TRUNCATE);
-             PRAGMA journal_mode = DELETE;",
-        )
-        .expect("checkpoint and switch to delete journal mode");
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint staging db");
+        let journal_mode: String = conn
+            .query_row_map("PRAGMA journal_mode = DELETE;", &[], |row| row.get_typed(0))
+            .expect("switch staging db to delete journal mode");
+        assert!(
+            journal_mode.eq_ignore_ascii_case("delete"),
+            "expected DELETE journal mode, got {journal_mode:?}"
+        );
         let app_id: i64 = conn
             .query_row_map("PRAGMA application_id;", &[], |row| row.get_typed(0))
             .expect("application_id");
@@ -3078,5 +3088,43 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
         conn.close().expect("close finalized staging db");
     }
 
+    let header = fs::read(&staging_db).expect("read finalized staging db header");
+    assert_eq!(
+        &header[18..20],
+        &[1_u8, 1_u8],
+        "finalized fixture must carry legacy DELETE header format bytes [1, 1]"
+    );
+
     fs::rename(&staging_db, &target_db).expect("atomically replace search_demo_data/agent_search.db");
+
+    for stale in [
+        "agent_search.db-wal",
+        "agent_search.db-shm",
+        "agent_search.db-journal",
+        "agent_search.db-fsqlite-ns-gate",
+        "agent_search.db-fsqlite-ns-use",
+        "index-run.lock",
+        "index-run.lock.meta",
+    ] {
+        match fs::remove_file(fixture_dir.join(stale)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => panic!("remove stale fixture sidecar {stale}: {err}"),
+        }
+    }
+    for absent in [
+        "agent_search.db-wal",
+        "agent_search.db-shm",
+        "agent_search.db-journal",
+    ] {
+        assert!(
+            !fixture_dir.join(absent).exists(),
+            "regenerated fixture must not leave {absent}"
+        );
+    }
+
+    let ro = FrankenStorage::open_readonly(&target_db)
+        .expect("reopen regenerated search_demo_data/agent_search.db readonly");
+    ro.close_without_checkpoint()
+        .expect("close regenerated readonly handle");
 }
