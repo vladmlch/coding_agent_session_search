@@ -816,8 +816,6 @@ fn prune_apply_keeps_blob_referenced_by_retained_manifest() {
 
 #[test]
 fn prune_apply_keep_tag_pins_linked_manifest_and_blob() {
-    use crate::franken_sync::compat::ConnectionExt as _;
-
     let temp = tempfile::TempDir::new().expect("tempdir");
     let data_dir = temp.path().join("cass-data");
     std::fs::create_dir_all(&data_dir).expect("create data dir");
@@ -846,27 +844,26 @@ fn prune_apply_keep_tag_pins_linked_manifest_and_blob() {
     let db_path = data_dir.join("agent_search.db");
     let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
         .expect("open keep-tag db");
-    conn.execute_compat(
-        "CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)",
-        crate::franken_sync::params![],
+    conn.execute_batch(
+        "PRAGMA application_id = 1128354643;
+         PRAGMA user_version = 1;",
     )
-    .expect("create tags");
-    conn.execute_compat(
+    .expect("stamp schema v1");
+    let tx = conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+        .expect("begin immediate keep-tag setup");
+    tx.execute("CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)")
+        .expect("create tags");
+    tx.execute(
         "CREATE TABLE conversation_tags (conversation_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, PRIMARY KEY (conversation_id, tag_id))",
-        crate::franken_sync::params![],
     )
     .expect("create conversation_tags");
-    conn.execute_compat(
-        "INSERT INTO tags (id, name) VALUES (1, 'keep')",
-        crate::franken_sync::params![],
-    )
-    .expect("insert tag");
-    conn.execute_compat(
-        "INSERT INTO conversation_tags (conversation_id, tag_id) VALUES (7, 1)",
-        crate::franken_sync::params![],
-    )
-    .expect("insert conversation tag");
-    drop(conn);
+    tx.execute("INSERT INTO tags (id, name) VALUES (1, 'keep')")
+        .expect("insert tag");
+    tx.execute("INSERT INTO conversation_tags (conversation_id, tag_id) VALUES (7, 1)")
+        .expect("insert conversation tag");
+    tx.commit().expect("commit keep-tag setup");
+    conn.close().expect("close keep-tag db");
 
     let report = prune(
         &data_dir,

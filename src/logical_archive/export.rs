@@ -107,12 +107,52 @@ pub fn parent(path: &Path) -> Result<&Path> {
 
 pub fn path_text(path: &Path) -> Result<&str> {
     path.to_str()
-        .ok_or_else(|| anyhow!("FrankenSQLite database paths must be valid UTF-8"))
+        .ok_or_else(|| anyhow!("SQLite database paths must be valid UTF-8"))
 }
 
 pub fn quoted(name: &str) -> Result<String> {
     ensure!(codec::identifier(name), "invalid logical SQL identifier");
     Ok(format!("\"{name}\""))
+}
+
+fn sqlite_readonly_immutable_uri(path: &Path) -> Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let absolute = std::fs::canonicalize(path)
+        .unwrap_or_else(|_| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
+    #[cfg(unix)]
+    let raw_bytes: &[u8] = {
+        use std::os::unix::ffi::OsStrExt as _;
+        absolute.as_os_str().as_bytes()
+    };
+    #[cfg(not(unix))]
+    let raw_text = path_text(&absolute)?.replace('\\', "/");
+    #[cfg(not(unix))]
+    let raw_bytes = raw_text.as_bytes();
+
+    let mut encoded = String::with_capacity(raw_bytes.len() + 24);
+    #[cfg(not(unix))]
+    if !raw_bytes.starts_with(b"/") {
+        encoded.push('/');
+    }
+    let mut prev_was_slash = false;
+    for &byte in raw_bytes {
+        if byte == b'/' {
+            if !prev_was_slash {
+                encoded.push('/');
+            }
+            prev_was_slash = true;
+            continue;
+        }
+        prev_was_slash = false;
+        if byte <= b' ' || matches!(byte, b'%' | b'?' | b'#') || byte >= 0x80 {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        } else {
+            encoded.push(char::from(byte));
+        }
+    }
+    Ok(format!("file:{encoded}?mode=ro&immutable=1"))
 }
 
 pub fn open_source(path: &Path) -> Result<Connection> {
@@ -121,7 +161,7 @@ pub fn open_source(path: &Path) -> Result<Connection> {
         metadata.is_file() && !metadata.file_type().is_symlink(),
         "source archive must be a regular, non-symlink file"
     );
-    let connection = open_with_flags(path_text(path)?, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let connection = Connection::open_schema_only_with_wal_index_recovery(path_text(path)?)
         .map_err(|error| source_failure("cannot open source archive read-only", error))?;
     connection
         .execute("PRAGMA busy_timeout = 5000")
@@ -132,6 +172,33 @@ pub fn open_source(path: &Path) -> Result<Connection> {
     connection
         .execute("BEGIN")
         .map_err(|error| source_failure("cannot begin source snapshot", error))?;
+    Ok(connection)
+}
+
+/// Open a private, verified single-file snapshot with `?immutable=1` (DOC-1).
+/// Callers must prove the path is a regular non-symlink file with no sidecars
+/// and no active writers before calling.
+pub(super) fn open_immutable_snapshot(path: &Path) -> Result<Connection> {
+    let metadata = fs::symlink_metadata(path).context("cannot inspect source archive")?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "source archive must be a regular, non-symlink file"
+    );
+    let uri = sqlite_readonly_immutable_uri(path)?;
+    let connection = open_with_flags(
+        &uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|error| source_failure("cannot open immutable snapshot read-only", error))?;
+    connection
+        .execute("PRAGMA busy_timeout = 5000")
+        .map_err(|error| source_failure("cannot set snapshot busy timeout", error))?;
+    connection
+        .execute("PRAGMA query_only = ON")
+        .map_err(|error| source_failure("cannot enforce read-only snapshot queries", error))?;
+    connection
+        .execute("BEGIN")
+        .map_err(|error| source_failure("cannot begin immutable snapshot", error))?;
     Ok(connection)
 }
 
@@ -541,6 +608,65 @@ fn cells_for_version(values: &[SqliteValue], format_version: u32) -> Result<Vec<
         .collect()
 }
 
+pub(super) fn value_ref_to_cell(value: rusqlite::types::ValueRef<'_>) -> Result<Cell> {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Null => Ok(Cell::Null),
+        ValueRef::Integer(value) => Ok(Cell::Integer(value)),
+        ValueRef::Real(value) => {
+            ensure!(value.is_finite(), "non-finite REAL is not portable");
+            Ok(Cell::Real(format!("{:016x}", value.to_bits())))
+        }
+        ValueRef::Text(bytes) => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| anyhow!("logical text cell contains invalid UTF-8"))?;
+            Ok(Cell::Text(text.to_owned()))
+        }
+        ValueRef::Blob(bytes) => Ok(Cell::Blob(STANDARD.encode(bytes))),
+    }
+}
+
+fn row_cells_for_version(
+    row: &rusqlite::Row<'_>,
+    column_count: usize,
+    format_version: u32,
+) -> Result<Vec<Cell>> {
+    use rusqlite::types::ValueRef;
+    let limit = row_limit(format_version)?;
+    let mut bytes = 0usize;
+    for index in 0..column_count {
+        let value = row
+            .get_ref(index)
+            .map_err(|error| anyhow!("cannot decode logical cell: {error}"))?;
+        let size = match value {
+            ValueRef::Text(text) => text.len(),
+            ValueRef::Blob(blob) => blob
+                .len()
+                .checked_add(2)
+                .and_then(|n| n.checked_div(3))
+                .and_then(|n| n.checked_mul(4))
+                .ok_or_else(|| anyhow!("oversized logical BLOB"))?,
+            _ => 0,
+        };
+        bytes = bytes
+            .checked_add(size)
+            .ok_or_else(|| anyhow!("oversized logical row"))?;
+        ensure!(
+            bytes < limit,
+            "logical row exceeds {} MiB",
+            limit / (1024 * 1024)
+        );
+    }
+    let mut out = Vec::with_capacity(column_count);
+    for index in 0..column_count {
+        let value = row
+            .get_ref(index)
+            .map_err(|error| anyhow!("cannot decode logical cell: {error}"))?;
+        out.push(value_ref_to_cell(value)?);
+    }
+    Ok(out)
+}
+
 /// Only structural coordinates may enter diagnostics. Text/blob primary keys
 /// can themselves contain private session data, so report their row position
 /// without printing the key. A single integer key makes a failed message easy
@@ -549,6 +675,17 @@ pub(super) fn row_location(table: &Table, position: u64, values: &[SqliteValue])
     let mut location = format!("logical table {}, row {position}", table.name);
     if let [key] = table.primary_key.as_slice()
         && let Some(SqliteValue::Integer(value)) = values.get(*key)
+    {
+        use std::fmt::Write as _;
+        let _ = write!(location, " ({}={value})", table.columns[*key]);
+    }
+    location
+}
+
+fn raw_row_location(table: &Table, position: u64, row: &rusqlite::Row<'_>) -> String {
+    let mut location = format!("logical table {}, row {position}", table.name);
+    if let [key] = table.primary_key.as_slice()
+        && let Ok(rusqlite::types::ValueRef::Integer(value)) = row.get_ref(*key)
     {
         use std::fmt::Write as _;
         let _ = write!(location, " ({}={value})", table.columns[*key]);
@@ -709,63 +846,73 @@ pub(super) fn snapshot_for_version(
                 )
             })?;
         let sql = ordered_scan_sql(connection, &table)?;
-        let mut failure = None;
         let mut rows_written = 0u64;
-        let streamed = connection.query_with_params_for_each(&sql, &[], |row| {
-            let result = (|| -> Result<()> {
-                // This is a one-based position in the table's exported PK
-                // order. row_location labels an integer key separately.
-                let row_number = rows_written
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow!("logical table row position overflow"))?;
-                let converted = if format_version == codec::CHUNKED_VERSION {
-                    cells(row.values())
-                } else {
-                    cells_for_version(row.values(), format_version)
-                };
-                let record = Record::Row {
-                    values: converted.map_err(|error| {
+        let map_sql_err = |error: rusqlite::Error| -> FrankenError {
+            let mapped = FrankenError::from(error);
+            if matches!(mapped, FrankenError::Interrupted | FrankenError::Abort)
+                && matches!(connection.execute(""), Err(FrankenError::Abort))
+            {
+                return FrankenError::Abort;
+            }
+            mapped
+        };
+        connection
+            .execute("")
+            .map_err(|error| scan_failure(&table.name, 1, error))?;
+        let raw = connection
+            .try_raw()
+            .map_err(|error| scan_failure(&table.name, 1, error))?;
+        let mut stmt = raw
+            .prepare(&sql)
+            .map_err(|error| scan_failure(&table.name, 1, map_sql_err(error)))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|error| scan_failure(&table.name, 1, map_sql_err(error)))?;
+        loop {
+            connection.execute("").map_err(|error| {
+                scan_failure(&table.name, rows_written.saturating_add(1), error)
+            })?;
+            match rows.next() {
+                Err(error) => {
+                    return Err(scan_failure(
+                        &table.name,
+                        rows_written.saturating_add(1),
+                        map_sql_err(error),
+                    ));
+                }
+                Ok(None) => break,
+                Ok(Some(row)) => {
+                    // This is a one-based position in the table's exported PK
+                    // order. raw_row_location labels an integer key separately.
+                    let row_number = rows_written
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("logical table row position overflow"))?;
+                    let converted = row_cells_for_version(row, table.columns.len(), format_version)
+                        .map_err(|error| {
+                            row_failure(
+                                raw_row_location(&table, row_number, row),
+                                "cell conversion",
+                                error,
+                            )
+                        })?;
+                    let record = Record::Row { values: converted };
+                    let prepared = validator.prepare(&record).map_err(|error| {
                         row_failure(
-                            row_location(&table, row_number, row.values()),
-                            "cell conversion",
+                            raw_row_location(&table, row_number, row),
+                            "record validation/encoding",
                             error,
                         )
-                    })?,
-                };
-                let prepared = validator.prepare(&record).map_err(|error| {
-                    row_failure(
-                        row_location(&table, row_number, row.values()),
-                        "record validation/encoding",
-                        error,
-                    )
-                })?;
-                prepared.write_to(output).map_err(|error| {
-                    io_failure(
-                        format!(
-                            "cannot write {}",
-                            row_location(&table, row_number, row.values())
-                        ),
-                        error,
-                    )
-                })?;
-                rows_written = row_number;
-                Ok(())
-            })();
-            if let Err(error) = result {
-                failure = Some(error);
-                return Err(FrankenError::Internal(
-                    "logical archive stream aborted".to_owned(),
-                ));
+                    })?;
+                    prepared.write_to(output).map_err(|error| {
+                        io_failure(
+                            format!("cannot write {}", raw_row_location(&table, row_number, row)),
+                            error,
+                        )
+                    })?;
+                    rows_written = row_number;
+                }
             }
-            Ok(())
-        });
-        if let Some(error) = failure {
-            // Do not hide the actionable row/stage behind a table-only
-            // context, or return the engine's callback-aborted sentinel.
-            return Err(error);
         }
-        streamed
-            .map_err(|error| scan_failure(&table.name, rows_written.saturating_add(1), error))?;
     }
     let completion = validator.completion();
     output

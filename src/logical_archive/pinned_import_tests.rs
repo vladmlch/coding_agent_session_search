@@ -180,17 +180,15 @@ fn unchanged_current_schema_still_delegates_to_exact_restore_and_reimport() -> R
     let root = tempfile::tempdir()?;
     let (input, expected) = backup(root.path(), "original", "PRIVATE-ORIGINAL")?;
     let destination = root.path().join("restored.db");
-    let created =
-        super::super::migrate::import_compatible(&input, &destination, ARCHIVE_ID, false)?;
-    assert!(created.created);
-    assert!(created.migration.is_none());
-    assert_eq!((created.header, created.completion), expected);
+    let (header, completion, created) =
+        import_file_with_policy(&input, &destination, ARCHIVE_ID, false)?;
+    assert!(created);
+    assert_eq!((header, completion), expected);
     let before = fs::read(&destination)?;
-    let repeated =
-        super::super::migrate::import_compatible(&input, &destination, ARCHIVE_ID, true)?;
-    assert!(!repeated.created);
-    assert!(repeated.migration.is_none());
-    assert_eq!((repeated.header, repeated.completion), expected);
+    let (header, completion, repeated) =
+        import_file_with_policy(&input, &destination, ARCHIVE_ID, true)?;
+    assert!(!repeated);
+    assert_eq!((header, completion), expected);
     assert_eq!(fs::read(&destination)?, before);
     Ok(())
 }

@@ -535,11 +535,16 @@ fn invalid_utf8_text_is_refused_without_lossy_backup_or_private_diagnostic() -> 
         "INSERT INTO messages VALUES (47, CAST(?1 AS TEXT), NULL, NULL)",
         &[SqliteValue::Blob(raw.into())],
     )?;
-    let row = connection.query_row("SELECT body FROM messages WHERE id = 47")?;
-    assert!(matches!(
-        &row.values()[0],
-        SqliteValue::Text(text) if std::str::from_utf8(text.as_bytes()).is_err()
-    ));
+    let has_invalid_utf8 =
+        connection
+            .try_raw()?
+            .query_row("SELECT body FROM messages WHERE id = 47", [], |row| {
+                Ok(matches!(
+                    row.get_ref(0)?,
+                    rusqlite::types::ValueRef::Text(bytes) if std::str::from_utf8(bytes).is_err()
+                ))
+            })?;
+    assert!(has_invalid_utf8);
     connection.close()?;
     let before = contents(source.path());
 
@@ -590,9 +595,10 @@ fn cells_preserve_large_text_blob_and_nulls_within_the_v2_bound() -> Result<()> 
 
 #[test]
 fn cells_refuse_invalid_utf8_without_private_diagnostic() {
-    let text = String::from_utf8_lossy(b"PRIVATE-INVALID-UTF8\x80\xff").into_owned();
-    let error = cells(&[SqliteValue::Text(text)])
-        .expect_err("invalid UTF-8 must not become replacement characters");
+    let error = value_ref_to_cell(rusqlite::types::ValueRef::Text(
+        b"PRIVATE-INVALID-UTF8\x80\xff",
+    ))
+    .expect_err("invalid UTF-8 must not become replacement characters");
     let message = error.to_string();
     assert!(message.contains("invalid UTF-8"));
     assert!(!message.contains("PRIVATE-INVALID-UTF8"));
@@ -996,7 +1002,7 @@ fn database_error_diagnostics_hide_private_payloads_and_preserve_typed_causes() 
     );
     let message = corruption.to_string();
     assert!(message.starts_with(context), "{message}");
-    assert!(message.contains("FrankenSQLite Corrupt (code 11)"));
+    assert!(message.contains("SQLite Corrupt (code 11)"));
     assert!(!message.contains("PRIVATE-DATABASE-PAYLOAD"));
     assert!(matches!(
         corruption.downcast_ref::<FrankenError>(),
@@ -1012,7 +1018,7 @@ fn database_error_diagnostics_hide_private_payloads_and_preserve_typed_causes() 
     );
     let message = read_error.to_string();
     assert!(message.starts_with(context), "{message}");
-    assert!(message.contains("FrankenSQLite IoErr (code 10)"));
+    assert!(message.contains("SQLite IoErr (code 10)"));
     assert!(message.contains("I/O PermissionDenied"));
     assert!(!message.contains("PRIVATE-DATABASE-PATH"));
     assert!(matches!(
@@ -1230,10 +1236,7 @@ fn engine_cancellation_after_emitted_rows_retains_source_cause_and_progress() ->
         message.contains(&format!("after {} complete rows", rows_seen.get())),
         "{message}"
     );
-    assert!(
-        message.contains("FrankenSQLite Abort (code 4)"),
-        "{message}"
-    );
+    assert!(message.contains("SQLite Abort (code 4)"), "{message}");
     assert!(!message.contains("PRIVATE-CANCELLED-TRANSCRIPT"));
     assert!(error.chain().any(|cause| {
         matches!(
@@ -1278,7 +1281,7 @@ fn wal_writer_committing_during_export_cannot_mix_snapshot_generations() -> Resu
                 && values[0] == Cell::Integer(3)
                 && !changed.replace(true)
             {
-                assert!(reader.as_async().in_transaction());
+                assert!(reader.in_transaction());
                 // Commit from another thread, as a real concurrent writer
                 // does. Calling the blocking API here, on the thread whose
                 // own read is suspended in this callback, re-enters the
@@ -1327,7 +1330,7 @@ fn wal_writer_committing_during_export_cannot_mix_snapshot_generations() -> Resu
         }])
     );
     assert_eq!(receipt, codec::verify(&mut output.bytes.as_slice())?);
-    assert!(reader.as_async().in_transaction());
+    assert!(reader.in_transaction());
     let mut saw_old_body = false;
     let mut saw_old_meta = false;
     let mut saw_old_job = false;

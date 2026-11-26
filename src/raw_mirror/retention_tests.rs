@@ -373,14 +373,22 @@ fn tagged_old_snapshot_stays_pinned_under_pressure() {
             .as_ref(),
     )
     .unwrap();
-    conn.execute("CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute_batch(
+        "PRAGMA application_id = 1128354643;
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    let tx = conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
         .unwrap();
-    conn.execute("CREATE TABLE conversation_tags (conversation_id INTEGER, tag_id INTEGER)")
+    tx.execute("CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT)")
         .unwrap();
-    conn.execute("INSERT INTO tags VALUES (1, 'pinned')")
+    tx.execute("CREATE TABLE conversation_tags (conversation_id INTEGER, tag_id INTEGER)")
         .unwrap();
-    conn.execute("INSERT INTO conversation_tags VALUES (42, 1)")
+    tx.execute("INSERT INTO tags VALUES (1, 'pinned')").unwrap();
+    tx.execute("INSERT INTO conversation_tags VALUES (42, 1)")
         .unwrap();
+    tx.commit().unwrap();
     conn.close_in_place().unwrap();
     let mut policy = fixture.policy();
     policy.keep_tags = vec!["pinned".to_string()];
