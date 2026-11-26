@@ -67,14 +67,13 @@ pub mod viewer_extensions;
 /// the runtimes before the CRT starts destroying thread-local storage.
 #[doc(hidden)]
 pub fn shutdown_thread_local_bridge_runtimes() -> bool {
-    let fsqlite_shutdown = franken_sync::shutdown_driver();
     let quill_shutdown = search::quill_bridge::shutdown_driver();
     // SQLite connectors cache a separate runtime inside FAD. Drop it before
     // Windows process teardown terminates its worker threads (GH #519).
     // Evaluate every shutdown before combining results: a timeout in one
     // bridge must not leave another runtime cached until process exit.
     let fad_shutdown = franken_agent_detection::connectors::sqlite_sync::shutdown_driver();
-    fsqlite_shutdown && quill_shutdown && fad_shutdown
+    quill_shutdown && fad_shutdown
 }
 
 pub(crate) mod cli_app;

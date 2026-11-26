@@ -14,13 +14,10 @@ rustflags = ["-Z", "threads=4"]
 # config file) or its own ~/.cargo/config.toml.
 
 [env]
-# fsqlite 0.3.x builds very large debug-mode futures; a single statement poll
-# can overflow the default 2 MiB test-thread stack even with dependencies at
-# opt-level 1 (see the [profile.dev.package."*"] note in Cargo.toml). 128 MiB
-# is a reservation, not a commitment — Linux commits pages lazily — and it
-# applies only to processes cargo launches from this repo, so the shipped
-# binary is unaffected.
-RUST_MIN_STACK = "134217728"
+# Large debug-mode futures/parsers in tests can overflow the default 2 MiB
+# test-thread stack. 16 MiB is a virtual reservation, not a commitment, and
+# applies only to processes cargo launches from this repo.
+RUST_MIN_STACK = "16777216"
 
 # Coverage exclusion patterns for cargo-llvm-cov
 # These paths are excluded from coverage reports

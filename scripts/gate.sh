@@ -503,8 +503,6 @@ done
 # removes it.
 BIN_SKIPS=(
     search_service::
-    logical_archive::import::publication_tests::publication_materializes_wal_rows_without_borrowing_replay_sidecars # svhcf
-    logical_archive::export::ordering_tests::explicit_or_unattested_collations_keep_binary_order_and_verify # p94yt
 )
 bin_skip_args=()
 for skip in "${BIN_SKIPS[@]}"; do
@@ -620,9 +618,9 @@ run_stages() {
     echo "STAGE=job-complete EXIT=0"
 }
 
-# Match .cargo/config.toml: storage futures have exceeded a 16 MiB stack.
+# Match .cargo/config.toml: keep debug test-thread stack headroom above 2 MiB.
 # This is virtual address reservation; pages are committed as needed.
-export RUST_MIN_STACK=134217728
+export RUST_MIN_STACK=16777216
 export UBS_MODULE_TIMEOUT="$UBS_TIMEOUT"
 
 # The receipt survives a RED run for post-mortem (GATE_RECEIPT_FILE overrides).
