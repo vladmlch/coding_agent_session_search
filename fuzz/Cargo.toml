@@ -29,41 +29,7 @@ path = ".."
 frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "f75d1d551c5fe73d0d4870a26b723faf6921de33" }
 
 # Fuzz targets - each gets its own binary
-
-[[bin]]
-name = "fuzz_decrypt"
-path = "fuzz_targets/decrypt.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_kdf"
-path = "fuzz_targets/kdf.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_manifest"
-path = "fuzz_targets/manifest.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_chunked"
-path = "fuzz_targets/chunked.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_config"
-path = "fuzz_targets/config.rs"
-test = false
-doc = false
-bench = false
+# Encryption fuzz targets removed: pages::encrypt pruned in Phase-0 (87c8e8135).
 
 [[bin]]
 name = "fuzz_query_parser"

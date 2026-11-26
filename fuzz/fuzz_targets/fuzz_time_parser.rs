@@ -12,7 +12,7 @@
 
 #![no_main]
 
-use coding_agent_search::ui::time_parser::parse_time_input;
+use coding_agent_search::time_parser::parse_time_input;
 use libfuzzer_sys::fuzz_target;
 
 const MAX_INPUT_BYTES: usize = 8 * 1024;
