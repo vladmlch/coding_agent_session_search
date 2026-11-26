@@ -53,45 +53,11 @@ mod response_schema_tests {
     }
 
     #[test]
-    fn analytics_incidents_schema_is_discoverable_and_explicit() {
+    fn analytics_incidents_schema_removed_with_phase0_cli() {
         let schemas = build_response_schemas();
-        let schema = &schemas["analytics-incidents"];
-        assert_eq!(
-            schema["properties"]["command"]["const"],
-            "analytics/incidents"
-        );
-        assert_eq!(
-            schema["properties"]["data"]["properties"]["schema_version"]["const"],
-            2
-        );
-
-        let data_required = schema["properties"]["data"]["required"]
-            .as_array()
-            .expect("analytics incidents data required fields");
-        for field in [
-            "discovery",
-            "top_sessions",
-            "total_sessions",
-            "total_hits",
-            "top_sessions_truncated",
-            "redaction",
-        ] {
-            assert!(
-                data_required
-                    .iter()
-                    .any(|required| required.as_str() == Some(field)),
-                "analytics incidents schema omits required field {field}"
-            );
-        }
-        assert_eq!(
-            schema["properties"]["data"]["properties"]["redaction"]["properties"]["hash_strategy"]
-                ["const"],
-            "blake3_256_v1"
-        );
-        assert_eq!(
-            schema["properties"]["data"]["properties"]["top_sessions"]["items"]["properties"]["suggested_command"]
-                ["properties"]["argv"]["type"],
-            "array"
+        assert!(
+            !schemas.contains_key("analytics-incidents"),
+            "retired analytics-incidents schema must not be advertised"
         );
     }
 

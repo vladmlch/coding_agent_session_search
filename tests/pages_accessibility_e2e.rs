@@ -648,10 +648,44 @@ mod tests {
 
     #[test]
     fn test_index_html_has_form_labels() {
-        // Check that form elements have labels
+        // Phase-0 removed the password auth form from index.html; verify no
+        // unlabelled fields exist in index.html and every live form control in
+        // search.js and viewer.js carries <label for="..."> or aria-label="...".
+        let audit = audit_html(TEST_HTML);
         assert!(
-            TEST_HTML.contains("<label for="),
-            "index.html should have form labels"
+            !audit.warnings.iter().any(|w| w.rule == "label"),
+            "index.html must have no unlabelled form inputs: {:?}",
+            audit.warnings
+        );
+
+        let search_js = include_str!("../src/pages_assets/search.js");
+        let viewer_js = include_str!("../src/pages_assets/viewer.js");
+        let control_re = regex::Regex::new(r"(?s)<(input|select|textarea)\b[^>]*>").unwrap();
+        let id_re = regex::Regex::new(r#"id="([^"]+)""#).unwrap();
+
+        let mut checked_controls = 0usize;
+        for (name, src) in [
+            ("index.html", TEST_HTML),
+            ("search.js", search_js),
+            ("viewer.js", viewer_js),
+        ] {
+            for m in control_re.find_iter(src) {
+                checked_controls += 1;
+                let tag = m.as_str();
+                let has_aria_label = tag.contains("aria-label=\"");
+                let has_for_label = id_re
+                    .captures(tag)
+                    .and_then(|caps| caps.get(1))
+                    .is_some_and(|id| src.contains(&format!("<label for=\"{}\"", id.as_str())));
+                assert!(
+                    has_aria_label || has_for_label,
+                    "{name} form control lacks <label for=...> or aria-label: {tag}"
+                );
+            }
+        }
+        assert!(
+            checked_controls >= 5,
+            "expected at least 5 controls across search.js and viewer.js, found {checked_controls}"
         );
     }
 

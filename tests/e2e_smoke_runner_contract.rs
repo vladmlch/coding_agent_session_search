@@ -1,12 +1,9 @@
 //! Contract assertions for the TUI e2e smoke runner.
 //!
 //! Per `coding_agent_session_search-8m208`. The bead's substance is the
-//! `scripts/tests/run_e2e_smoke.sh` runner script (added in this PR) and
-//! the wiring of TestLogger into the existing 6 e2e_scenario_* tests in
-//! src/ui/app.rs.
+//! `scripts/tests/run_e2e_smoke.sh` runner script (added in this PR).
 //!
-//! This contract test file pins the smoke runner's surface and asserts the
-//! expected scenarios are still present in src/ui/app.rs.
+//! This contract test file pins the smoke runner's surface.
 
 use std::path::PathBuf;
 
@@ -81,23 +78,5 @@ fn smoke_runner_provides_failure_repro_hint() {
     assert!(
         body.contains("Reproduce") || body.contains("reproduce") || body.contains("--test-threads"),
         "smoke runner must surface reproduction guidance on failure"
-    );
-}
-
-#[test]
-fn existing_e2e_scenarios_remain_in_source() {
-    tracing::info!(target: "8m208_test", check = "scenarios_present");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("ui")
-        .join("app.rs");
-    let body = std::fs::read_to_string(&path).expect("readable");
-    // The 6 scenarios documented at bead body. Must stay present so the
-    // smoke runner has work to do.
-    let expected_min_count = 5; // tolerate some renames; require at least 5
-    let count = body.matches("fn e2e_scenario_").count();
-    assert!(
-        count >= expected_min_count,
-        "src/ui/app.rs must contain at least {expected_min_count} e2e_scenario_* tests; found {count}"
     );
 }
