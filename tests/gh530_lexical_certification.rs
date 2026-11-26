@@ -80,11 +80,13 @@ fn assert_cli_committed_count(
         .expect("index dir lives under data/index/...")
         .join("agent_search.db");
     let storage = SqliteStorage::open_readonly(&db_path).unwrap();
-    let region_docs =
+    let region_docs = usize::try_from(
         coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
             storage.raw(),
         )
-        .unwrap();
+        .unwrap(),
+    )
+    .unwrap();
     let expected_region_docs = expected_conversations * 3;
     assert_eq!(
         region_docs,

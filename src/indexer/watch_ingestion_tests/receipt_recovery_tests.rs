@@ -9,13 +9,13 @@ fn pending_region_mark_count(handles: &Handles) -> Result<i64> {
     use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 
     let storage = handles.storage.lock().unwrap();
-    storage.raw().query_row_map(
+    Ok(storage.raw().query_row_map(
         "SELECT COUNT(*) FROM viewer_search_region_marks WHERE docs_state = ?1",
         &[ParamValue::from(
             crate::viewer_extensions::search_regions::DOCS_PENDING,
         )],
         |row| row.get_typed(0),
-    )
+    )?)
 }
 
 fn active_retry_and_restart(kind: ConnectorKind) -> Result<()> {
