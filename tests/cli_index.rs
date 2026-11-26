@@ -109,12 +109,7 @@ fn background_index_defers_migration_repair_of_a_large_unmigrated_archive() {
         "{error}"
     );
     assert_eq!(fs::metadata(&db_path).unwrap().len(), 8192);
-    for suffix in [
-        "-wal",
-        "-fsqlite-ns-gate",
-        ".pre-migration-bak",
-        ".fsqlite-migration-state",
-    ] {
+    for suffix in ["-wal", "-shm", "-journal"] {
         let mut sidecar = db_path.clone().into_os_string();
         sidecar.push(suffix);
         assert!(
@@ -123,15 +118,13 @@ fn background_index_defers_migration_repair_of_a_large_unmigrated_archive() {
         );
     }
 
-    // Negative control: a completed migration marker lets the run proceed
-    // (this 8 KiB file is not a database, so it then fails differently).
-    let mut marker = db_path.clone().into_os_string();
-    marker.push(".fsqlite-migration-state");
-    fs::write(
-        &marker,
-        br#"{"last_upgrade_version":1,"last_run_at":0,"repairs_applied":[]}"#,
-    )
-    .unwrap();
+    // Negative control: a schema-v1 stamped header lets the run proceed
+    // (this 8 KiB file is not a valid database body, so it then fails differently).
+    let mut stamped = vec![0_u8; 8192];
+    stamped[..16].copy_from_slice(b"SQLite format 3\0");
+    stamped[60..64].copy_from_slice(&1_i32.to_be_bytes());
+    stamped[68..72].copy_from_slice(&0x4341_5353_i32.to_be_bytes());
+    fs::write(&db_path, stamped).unwrap();
     let proceeded = run();
     assert_ne!(
         error_kind(&proceeded).map(|error| error["kind"].clone()),
@@ -1489,14 +1482,33 @@ fn index_handles_existing_schema_13_db() {
     fs::create_dir_all(&data_dir).unwrap();
     let db_path = data_dir.join("agent_search.db");
 
-    // Seed an existing DB and force schema_version=13 to guard against
-    // regressions where v13 is treated as unsupported.
+    // Seed a current schema-v1 DB and verify `cass index` succeeds when
+    // meta.schema_version = '1'.
     let storage = SqliteStorage::open(&db_path).expect("seed sqlite db");
-    storage
-        .raw()
-        .execute("UPDATE meta SET value = '13' WHERE key = 'schema_version'")
+    storage.close().expect("close seeded sqlite db");
+
+    let mut ok_cmd = base_cmd(tmp.path());
+    ok_cmd.args(["index", "--data-dir", data_dir.to_str().unwrap(), "--json"]);
+    let ok_output = ok_cmd.output().expect("run index on schema v1");
+    let ok_stdout = String::from_utf8_lossy(&ok_output.stdout);
+    let ok_stderr = String::from_utf8_lossy(&ok_output.stderr);
+    assert!(
+        ok_output.status.success(),
+        "index should succeed for existing schema v1 db. stdout: {ok_stdout}, stderr: {ok_stderr}"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&ok_output.stdout).expect("index --json should emit valid JSON");
+    assert_eq!(payload.get("success").and_then(|v| v.as_bool()), Some(true));
+
+    // Setting meta.schema_version = '13' (> CURRENT_SCHEMA_VERSION=1) must fail
+    // closed without replacing the archive.
+    let conn = coding_agent_search::franken_sync::Connection::open(
+        db_path.to_string_lossy().into_owned(),
+    )
+    .expect("open db to set schema_version=13");
+    conn.execute("UPDATE meta SET value = '13' WHERE key = 'schema_version'")
         .expect("set schema_version to 13");
-    drop(storage);
+    conn.close().expect("close db");
 
     let mut cmd = base_cmd(tmp.path());
     cmd.args(["index", "--data-dir", data_dir.to_str().unwrap(), "--json"]);
@@ -1505,17 +1517,13 @@ fn index_handles_existing_schema_13_db() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "index should succeed for existing schema v13 db. stdout: {stdout}, stderr: {stderr}"
+        !output.status.success(),
+        "index must fail closed when meta.schema_version=13 > supported v1. stdout: {stdout}, stderr: {stderr}"
     );
     assert!(
-        !stderr.contains("unsupported schema version 13"),
-        "stderr should not contain schema-v13 rejection. stderr: {stderr}"
+        stderr.contains("schema_version 13 is newer than supported version 1"),
+        "stderr should report schema_version 13 rejection. stderr: {stderr}"
     );
-
-    let payload: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("index --json should emit valid JSON");
-    assert_eq!(payload.get("success").and_then(|v| v.as_bool()), Some(true));
 }
 
 /// Creates a Codex session file with the modern envelope format.
@@ -2722,9 +2730,8 @@ fn plain_index_self_heals_when_entire_lexical_index_directory_is_missing() {
 /// run drain.
 ///
 /// The fixture serializes embedded newlines as JSON escapes so the connector
-/// receives one valid oversized message. This regression passed with the
-/// pinned FrankenSQLite 0.3.18 engine and stays in the default suite; the
-/// separate archive-scale GH#413 acceptance remains tracked in bead cjugu.
+/// receives one valid oversized message. This regression stays in the default
+/// suite; the separate archive-scale GH#413 acceptance remains tracked in bead cjugu.
 #[test]
 fn gh413_full_rebuild_drains_when_one_conversation_exceeds_the_inflight_budget() {
     let tmp = TempDir::new().unwrap();
@@ -4331,7 +4338,7 @@ fn gh382_final_wal_checkpoint_is_bounded_and_leaves_the_wal_for_the_next_run() {
     assert_eq!(archive_contents(), expected_messages);
     let parked_elapsed = elapsed;
     // A WAL that still carries frames is larger than its 32-byte header; a
-    // truncated one (frankensqlite keeps the header on TRUNCATE) is exactly 32.
+    // truncated one (SQLite keeps the header on TRUNCATE) is exactly 32.
     const WAL_HEADER_BYTES: u64 = 32;
     let wal_bytes_after_parked_run = fs::metadata(&wal_path).map(|meta| meta.len()).unwrap_or(0);
     assert!(
@@ -5361,7 +5368,7 @@ fn payload_mismatches(expected: &[String], stored: &[String]) -> (usize, usize) 
     (remaining.values().sum(), unexpected)
 }
 
-/// gi7k7 (#516): FrankenSQLite's 0.4.10 data-integrity advisory (bd-obwsy)
+/// gi7k7 (#516): The 0.4.10 data-integrity advisory (bd-obwsy)
 /// covers inserts inside an explicit transaction that could corrupt a table
 /// b-tree, which stock SQLite reports as "Rowid N out of order". Every
 /// `cass index` batch writes variable-width rows inside explicit
@@ -5784,8 +5791,7 @@ fn rvt_connector_conversations(payload: &serde_json::Value, name: &str) -> i64 {
 
 /// The global `last_scan_ts` marker is persisted best-effort (bead zz8ni):
 /// `persist_final_index_run_metadata` swallows a final write that exhausts
-/// its BEGIN-CONCURRENT retries, so a lost writer race never fails a
-/// completed run. When the marker is absent, the next run's cutoff
+/// its writer retries, so a lost writer race never fails a completed run. When the marker is absent, the next run's cutoff
 /// machinery (`connector_local_scan_since_ts_from_state`) loses every
 /// connector cutoff and rescans the whole universe. That pre-existing
 /// behavior would make the unchanged-source assertions below flake for

@@ -6,7 +6,7 @@
 //!
 //! This is the regression matrix that proves the uojcg.2.1 hygiene chokepoint
 //! holds across the *classes* of noise the report and operators actually hit:
-//! frankensqlite tracing bursts (observed polluting `cass view`), slow-query /
+//! dependency tracing bursts (observed polluting `cass view`), slow-query /
 //! drop-close / database-busy WARN messages from the storage layer, and
 //! host-pressure (OOM / disk) diagnostics. For every (noise-class × robot
 //! command) pair, stdout must remain a single valid JSON document and stderr must
@@ -31,19 +31,19 @@ fn noise_classes() -> Vec<(&'static str, &'static str)> {
     vec![
         (
             "dependency-burst",
-            "trace,fsqlite=trace,fsqlite_core=trace,fsqlite_vdbe=trace,fsqlite_mvcc=trace,frankensearch=trace,asupersync=trace",
+            "trace,rusqlite=trace,tantivy=trace,frankensearch=trace,asupersync=trace",
         ),
         (
             "slow-query-warn",
-            "warn,fsqlite=warn,fsqlite.execution=warn,fsqlite.planner=warn",
+            "warn,rusqlite=warn,tantivy=warn,frankensearch=warn",
         ),
         (
             "drop-close-warn",
-            "warn,fsqlite=warn,fsqlite.connection=warn,fsqlite.pager=warn",
+            "warn,rusqlite=warn,coding_agent_search::franken_sync=warn,tantivy=warn",
         ),
         (
             "database-busy",
-            "warn,fsqlite=warn,fsqlite.wal=warn,fsqlite_mvcc=warn",
+            "warn,rusqlite=warn,coding_agent_search::storage::sqlite=warn",
         ),
         (
             "host-pressure-oom-disk",
@@ -79,7 +79,7 @@ fn assert_parseable_and_bounded(label: &str, stdout: &str, stderr: &str) -> Valu
     );
 
     let lower = stderr.to_lowercase();
-    for dep in ["fsqlite", "frankensearch", "asupersync"] {
+    for dep in ["rusqlite", "tantivy", "frankensearch", "asupersync"] {
         assert!(
             !lower.contains(dep),
             "{label}: stderr leaked `{dep}` dependency tracing; stderr:\n{stderr}"
@@ -149,7 +149,7 @@ fn robot_commands_stay_parseable_across_all_noise_classes() {
 
 #[test]
 fn view_stays_clean_under_dependency_burst() {
-    // The exact failure the report observed: `cass view` polluted by frankensqlite
+    // The exact failure the report observed: `cass view` polluted by dependency
     // tracing. Under the heaviest burst, the JSON payload must not interleave with
     // dependency spans.
     let (_, burst) = noise_classes()[0];

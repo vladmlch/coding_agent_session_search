@@ -221,9 +221,9 @@ fn isolated_search_demo_data(test_home: &Path) -> Result<PathBuf, Box<dyn Error>
     let dst_root = test_home.join("search_demo_data");
     for entry in WalkDir::new(&src) {
         let entry = entry?;
-        // Machine-local frankensqlite namespace lock sidecars (created by
-        // any local run that opens the fixture DB) must not reach the
-        // clone: their foreign lock state fails the copied DB's open.
+        // Machine-local legacy VFS namespace lock sidecars (if an older build
+        // ever opened the fixture DB) must not reach the clone: their foreign
+        // lock state can break the copied DB's open.
         if entry
             .path()
             .file_name()
@@ -2584,4 +2584,499 @@ fn models_check_update_is_rejected_as_removed() {
         "models check-update must be rejected; stdout:\n{}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+#[test]
+#[ignore = "regenerates tests/fixtures/search_demo_data/agent_search.db on schema v1"]
+fn regenerate_search_demo_data_schema_v1_fixture() {
+    use coding_agent_search::franken_sync::{
+        Connection as FrankenConnection, compat::ConnectionExt, compat::RowExt, params,
+    };
+
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("search_demo_data");
+    let target_db = fixture_dir.join("agent_search.db");
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".agent_search_v1_")
+        .tempdir_in(&fixture_dir)
+        .expect("create staging dir inside search_demo_data");
+    let staging_db = staging_dir.path().join("agent_search.db");
+
+    {
+        let storage = FrankenStorage::open(&staging_db).expect("initialize schema-v1 staging db");
+        let conn = storage.raw();
+        conn.execute_batch("BEGIN IMMEDIATE;").expect("begin immediate");
+
+        conn.execute_compat(
+            "INSERT OR REPLACE INTO sources (id, kind, host_label, machine_id, platform, config_json, created_at, updated_at) \
+             VALUES (?1, ?2, NULL, NULL, NULL, NULL, ?3, ?4)",
+            params!["local", "local", 1_773_602_791_000_i64, 1_773_602_791_000_i64],
+        )
+        .expect("insert source");
+
+        conn.execute_compat(
+            "INSERT INTO agents (id, slug, name, version, kind, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+            params![1_i64, "aider", "aider", "cli", 1_773_603_242_063_i64, 1_773_603_242_063_i64],
+        )
+        .expect("insert agent");
+
+        for (id, path) in [
+            (1_i64, "/data/projects/coding_agent_session_search"),
+            (2_i64, "/data/projects/coding_agent_session_search/tests/fixtures/aider"),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO workspaces (id, path, display_name) VALUES (?1, ?2, NULL)",
+                params![id, path],
+            )
+            .expect("insert workspace");
+        }
+
+        let metadata_json = r#"{"cass":{"origin":{"source_id":"local","kind":"local","host":null}}}"#;
+        let metadata_bin: &[u8] = &[
+            0x81, 0xa4, b'c', b'a', b's', b's', 0x81, 0xa6, b'o', b'r', b'i', b'g', b'i', b'n',
+            0x83, 0xa9, b's', b'o', b'u', b'r', b'c', b'e', b'_', b'i', b'd', 0xa5, b'l', b'o',
+            b'c', b'a', b'l', 0xa4, b'k', b'i', b'n', b'd', 0xa5, b'l', b'o', b'c', b'a', b'l',
+            0xa4, b'h', b'o', b's', b't', 0xc0,
+        ];
+
+        for (
+            id,
+            workspace_id,
+            external_id,
+            title,
+            source_path,
+            started_at,
+            ended_at,
+            total_input_tokens,
+            total_output_tokens,
+            grand_total_tokens,
+            user_message_count,
+            assistant_message_count,
+        ) in [
+            (
+                1_i64,
+                1_i64,
+                "/data/projects/coding_agent_session_search/.aider.chat.history.md",
+                "Aider Chat: coding_agent_session_search",
+                "/data/projects/coding_agent_session_search/.aider.chat.history.md",
+                1_764_619_673_394_i64,
+                1_764_619_673_394_i64,
+                90_i64,
+                10_i64,
+                100_i64,
+                1_i64,
+                0_i64,
+            ),
+            (
+                2_i64,
+                2_i64,
+                "/data/projects/coding_agent_session_search/tests/fixtures/aider/.aider.chat.history.md",
+                "Aider Chat: aider",
+                "/data/projects/coding_agent_session_search/tests/fixtures/aider/.aider.chat.history.md",
+                1_764_621_401_399_i64,
+                1_764_621_401_399_i64,
+                8_i64,
+                18_i64,
+                26_i64,
+                2_i64,
+                2_i64,
+            ),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO conversations (\
+                    id, agent_id, workspace_id, source_id, external_id, title, source_path, \
+                    started_at, ended_at, approx_tokens, metadata_json, origin_host, metadata_bin, \
+                    total_input_tokens, total_output_tokens, total_cache_read_tokens, \
+                    total_cache_creation_tokens, grand_total_tokens, estimated_cost_usd, \
+                    primary_model, api_call_count, tool_call_count, user_message_count, \
+                    assistant_message_count\
+                 ) VALUES (\
+                    ?1, 1, ?2, 'local', ?3, ?4, ?5, ?6, ?7, NULL, ?8, NULL, ?9, \
+                    ?10, ?11, NULL, NULL, ?12, NULL, NULL, 0, 0, ?13, ?14\
+                 )",
+                params![
+                    id,
+                    workspace_id,
+                    external_id,
+                    title,
+                    source_path,
+                    started_at,
+                    ended_at,
+                    metadata_json,
+                    metadata_bin,
+                    total_input_tokens,
+                    total_output_tokens,
+                    grand_total_tokens,
+                    user_message_count,
+                    assistant_message_count,
+                ],
+            )
+            .expect("insert conversation");
+        }
+
+        for (id, conversation_id, idx, role, author, content) in [
+            (
+                1_i64,
+                1_i64,
+                0_i64,
+                "system",
+                "system",
+                "# aider chat started at 2025-12-01 20:07:47",
+            ),
+            (
+                2_i64,
+                1_i64,
+                1_i64,
+                "user",
+                "user",
+                "/data/projects/coding_agent_session_search/.venv/bin/aider --no-git --message hello world\n\
+                 Using openrouter/deepseek/deepseek-r1:free model with API key from environment.\n\
+                 Aider v0.86.1\n\
+                 Model: openrouter/deepseek/deepseek-r1:free with diff edit format, prompt cache, infinite output\n\
+                 Git repo: none\n\
+                 Repo-map: disabled\n\
+                 https://aider.chat/HISTORY.html#release-notes",
+            ),
+            (3_i64, 2_i64, 0_i64, "user", "user", "/add src/main.rs"),
+            (
+                4_i64,
+                2_i64,
+                1_i64,
+                "agent",
+                "assistant",
+                "Added src/main.rs to the chat.\n\n#### /add src/main.rs",
+            ),
+            (5_i64, 2_i64, 2_i64, "user", "user", "Please refactor."),
+            (
+                6_i64,
+                2_i64,
+                3_i64,
+                "agent",
+                "assistant",
+                "Sure, here is the code.",
+            ),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO messages (id, conversation_id, idx, role, author, created_at, content, extra_json, extra_bin) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, '{}', NULL)",
+                params![id, conversation_id, idx, role, author, content],
+            )
+            .expect("insert message");
+        }
+
+        for (agent_slug, source_id) in [
+            ("aider", "all"),
+            ("aider", "local"),
+            ("all", "all"),
+            ("all", "local"),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO daily_stats (day_id, agent_slug, source_id, session_count, message_count, total_chars, last_updated) \
+                 VALUES (2161, ?1, ?2, 2, 6, 511, 1773603242089)",
+                params![agent_slug, source_id],
+            )
+            .expect("insert daily_stats");
+        }
+
+        for (
+            token_id,
+            message_id,
+            conversation_id,
+            workspace_id,
+            created_at_ms,
+            role,
+            content_chars,
+            content_tokens_est,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        ) in [
+            (
+                7_i64,
+                1_i64,
+                1_i64,
+                1_i64,
+                1_764_619_673_394_i64,
+                "system",
+                43_i64,
+                10_i64,
+                None::<i64>,
+                Some(10_i64),
+                10_i64,
+            ),
+            (
+                8_i64,
+                2_i64,
+                1_i64,
+                1_i64,
+                1_764_619_673_394_i64,
+                "user",
+                360_i64,
+                90_i64,
+                Some(90_i64),
+                None::<i64>,
+                90_i64,
+            ),
+            (
+                9_i64,
+                3_i64,
+                2_i64,
+                2_i64,
+                1_764_621_401_399_i64,
+                "user",
+                16_i64,
+                4_i64,
+                Some(4_i64),
+                None::<i64>,
+                4_i64,
+            ),
+            (
+                10_i64,
+                4_i64,
+                2_i64,
+                2_i64,
+                1_764_621_401_399_i64,
+                "agent",
+                53_i64,
+                13_i64,
+                None::<i64>,
+                Some(13_i64),
+                13_i64,
+            ),
+            (
+                11_i64,
+                5_i64,
+                2_i64,
+                2_i64,
+                1_764_621_401_399_i64,
+                "user",
+                16_i64,
+                4_i64,
+                Some(4_i64),
+                None::<i64>,
+                4_i64,
+            ),
+            (
+                12_i64,
+                6_i64,
+                2_i64,
+                2_i64,
+                1_764_621_401_399_i64,
+                "agent",
+                23_i64,
+                5_i64,
+                None::<i64>,
+                Some(5_i64),
+                5_i64,
+            ),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO message_metrics (\
+                    message_id, created_at_ms, hour_id, day_id, agent_slug, workspace_id, source_id, \
+                    role, content_chars, content_tokens_est, api_input_tokens, api_output_tokens, \
+                    api_cache_read_tokens, api_cache_creation_tokens, api_thinking_tokens, \
+                    api_service_tier, api_data_source, tool_call_count, has_tool_calls, has_plan, \
+                    model_name, model_family, model_tier, provider\
+                 ) VALUES (\
+                    ?1, ?2, 51884, 2161, 'aider', ?3, 'local', ?4, ?5, ?6, ?7, ?8, \
+                    NULL, NULL, NULL, NULL, 'estimated', 0, 0, 0, NULL, 'unknown', 'unknown', 'unknown'\
+                 )",
+                params![
+                    message_id,
+                    created_at_ms,
+                    workspace_id,
+                    role,
+                    content_chars,
+                    content_tokens_est,
+                    input_tokens,
+                    output_tokens,
+                ],
+            )
+            .expect("insert message_metrics");
+
+            conn.execute_compat(
+                "INSERT INTO token_usage (\
+                    id, message_id, conversation_id, agent_id, workspace_id, source_id, timestamp_ms, \
+                    day_id, model_name, model_family, model_tier, service_tier, provider, \
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
+                    thinking_tokens, total_tokens, estimated_cost_usd, role, content_chars, \
+                    has_tool_calls, tool_call_count, data_source\
+                 ) VALUES (\
+                    ?1, ?2, ?3, 1, ?4, 'local', ?5, 2161, NULL, 'unknown', 'unknown', NULL, 'unknown', \
+                    ?6, ?7, NULL, NULL, NULL, ?8, NULL, ?9, ?10, 0, 0, 'estimated'\
+                 )",
+                params![
+                    token_id,
+                    message_id,
+                    conversation_id,
+                    workspace_id,
+                    created_at_ms,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                    role,
+                    content_chars,
+                ],
+            )
+            .expect("insert token_usage");
+        }
+
+        for (agent_slug, source_id, model_family) in [
+            ("aider", "all", "unknown"),
+            ("aider", "local", "all"),
+            ("aider", "local", "unknown"),
+            ("all", "all", "all"),
+            ("all", "local", "unknown"),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO token_daily_stats (\
+                    day_id, agent_slug, source_id, model_family, api_call_count, user_message_count, \
+                    assistant_message_count, tool_message_count, total_input_tokens, total_output_tokens, \
+                    total_cache_read_tokens, total_cache_creation_tokens, total_thinking_tokens, \
+                    grand_total_tokens, total_content_chars, total_tool_calls, estimated_cost_usd, \
+                    session_count, last_updated\
+                 ) VALUES (\
+                    2161, ?1, ?2, ?3, 6, 3, 2, 0, 98, 28, 0, 0, 0, 126, 511, 0, 0.0, 2, 1773603242089\
+                 )",
+                params![agent_slug, source_id, model_family],
+            )
+            .expect("insert token_daily_stats");
+        }
+
+        for (
+            workspace_id,
+            message_count,
+            user_message_count,
+            assistant_message_count,
+            total_tokens,
+            user_tokens,
+            assistant_tokens,
+            input_tokens,
+            output_tokens,
+        ) in [
+            (1_i64, 2_i64, 1_i64, 0_i64, 100_i64, 90_i64, 0_i64, 90_i64, 10_i64),
+            (2_i64, 4_i64, 2_i64, 2_i64, 26_i64, 8_i64, 18_i64, 8_i64, 18_i64),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO usage_daily (\
+                    day_id, agent_slug, workspace_id, source_id, message_count, user_message_count, \
+                    assistant_message_count, tool_call_count, plan_message_count, api_coverage_message_count, \
+                    content_tokens_est_total, content_tokens_est_user, content_tokens_est_assistant, \
+                    api_tokens_total, api_input_tokens_total, api_output_tokens_total, \
+                    api_cache_read_tokens_total, api_cache_creation_tokens_total, api_thinking_tokens_total, \
+                    last_updated, plan_content_tokens_est_total, plan_api_tokens_total\
+                 ) VALUES (\
+                    2161, 'aider', ?1, 'local', ?2, ?3, ?4, 0, 0, 0, ?5, ?6, ?7, ?5, ?8, ?9, 0, 0, 0, 1773603242089, 0, 0\
+                 )",
+                params![
+                    workspace_id,
+                    message_count,
+                    user_message_count,
+                    assistant_message_count,
+                    total_tokens,
+                    user_tokens,
+                    assistant_tokens,
+                    input_tokens,
+                    output_tokens,
+                ],
+            )
+            .expect("insert usage_daily");
+
+            conn.execute_compat(
+                "INSERT INTO usage_hourly (\
+                    hour_id, agent_slug, workspace_id, source_id, message_count, user_message_count, \
+                    assistant_message_count, tool_call_count, plan_message_count, api_coverage_message_count, \
+                    content_tokens_est_total, content_tokens_est_user, content_tokens_est_assistant, \
+                    api_tokens_total, api_input_tokens_total, api_output_tokens_total, \
+                    api_cache_read_tokens_total, api_cache_creation_tokens_total, api_thinking_tokens_total, \
+                    last_updated, plan_content_tokens_est_total, plan_api_tokens_total\
+                 ) VALUES (\
+                    51884, 'aider', ?1, 'local', ?2, ?3, ?4, 0, 0, 0, ?5, ?6, ?7, ?5, ?8, ?9, 0, 0, 0, 1773603242089, 0, 0\
+                 )",
+                params![
+                    workspace_id,
+                    message_count,
+                    user_message_count,
+                    assistant_message_count,
+                    total_tokens,
+                    user_tokens,
+                    assistant_tokens,
+                    input_tokens,
+                    output_tokens,
+                ],
+            )
+            .expect("insert usage_hourly");
+
+            conn.execute_compat(
+                "INSERT INTO usage_models_daily (\
+                    day_id, agent_slug, workspace_id, source_id, model_family, model_tier, \
+                    message_count, user_message_count, assistant_message_count, tool_call_count, \
+                    plan_message_count, api_coverage_message_count, content_tokens_est_total, \
+                    content_tokens_est_user, content_tokens_est_assistant, api_tokens_total, \
+                    api_input_tokens_total, api_output_tokens_total, api_cache_read_tokens_total, \
+                    api_cache_creation_tokens_total, api_thinking_tokens_total, last_updated\
+                 ) VALUES (\
+                    2161, 'aider', ?1, 'local', 'unknown', 'unknown', ?2, ?3, ?4, 0, 0, 0, ?5, ?6, ?7, ?5, ?8, ?9, 0, 0, 0, 1773603242089\
+                 )",
+                params![
+                    workspace_id,
+                    message_count,
+                    user_message_count,
+                    assistant_message_count,
+                    total_tokens,
+                    user_tokens,
+                    assistant_tokens,
+                    input_tokens,
+                    output_tokens,
+                ],
+            )
+            .expect("insert usage_models_daily");
+        }
+
+        for (key, value) in [
+            ("schema_version", "1"),
+            ("last_scan_ts", "1773603242046"),
+            ("last_indexed_at", "1773603242222"),
+        ] {
+            conn.execute_compat(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .expect("insert meta");
+        }
+
+        conn.execute_batch("COMMIT;").expect("commit fixture data");
+        storage.rebuild_fts().expect("rebuild fts_messages");
+        storage.close().expect("close storage before single-file finalize");
+    }
+
+    {
+        let conn = FrankenConnection::open(staging_db.to_string_lossy().into_owned())
+            .expect("reopen staging db to finalize single-file image");
+        conn.execute_batch(
+            "PRAGMA wal_checkpoint(TRUNCATE);
+             PRAGMA journal_mode = DELETE;",
+        )
+        .expect("checkpoint and switch to delete journal mode");
+        let app_id: i64 = conn
+            .query_row_map("PRAGMA application_id;", &[], |row| row.get_typed(0))
+            .expect("application_id");
+        let user_version: i64 = conn
+            .query_row_map("PRAGMA user_version;", &[], |row| row.get_typed(0))
+            .expect("user_version");
+        let integrity: String = conn
+            .query_row_map("PRAGMA integrity_check;", &[], |row| row.get_typed(0))
+            .expect("integrity_check");
+        let fk_errors = conn.query("PRAGMA foreign_key_check;").expect("fk_check");
+        assert_eq!(app_id, 0x4341_5353);
+        assert_eq!(user_version, 1);
+        assert_eq!(integrity, "ok");
+        assert!(fk_errors.is_empty(), "foreign_key_check: {fk_errors:?}");
+        conn.close().expect("close finalized staging db");
+    }
+
+    fs::rename(&staging_db, &target_db).expect("atomically replace search_demo_data/agent_search.db");
 }

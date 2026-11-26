@@ -1402,6 +1402,24 @@ fn list_conversation_footprints_for_lexical_rebuild_tolerates_legacy_search_demo
         );
     }
 
+    // Reset the schema-v1 stamp and tail cache on our private copy so this
+    // regression stays independent of whether the checked-in demo fixture has
+    // already been regenerated on schema v1.
+    {
+        let reset_conn =
+            crate::franken_sync::Connection::open(staged_db.to_string_lossy().into_owned()).unwrap();
+        reset_conn
+            .execute_batch(
+                "PRAGMA application_id = 0;
+                 PRAGMA user_version = 0;
+                 PRAGMA wal_checkpoint(TRUNCATE);
+                 PRAGMA journal_mode = DELETE;",
+            )
+            .unwrap();
+        let _ = reset_conn.execute_batch("DELETE FROM conversation_tail_state;");
+        reset_conn.close().unwrap();
+    }
+
     let rebuild_err = FrankenStorage::open_readonly(&staged_db)
         .err()
         .expect("unstamped legacy fixture must be refused by schema-v1 open_readonly");
