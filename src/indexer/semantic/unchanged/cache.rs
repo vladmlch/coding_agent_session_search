@@ -11,8 +11,11 @@ use serde::Serialize;
 struct FileStampV1 {
     len: u64,
     modified: (u64, u32),
-    changed: (i64, i64),
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed: Option<(i64, i64)>,
     identity: (u64, u64),
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edge_digest: Option<[u8; 32]>,
 }
 
 impl FileStampV1 {
@@ -27,6 +30,7 @@ impl FileStampV1 {
             modified: (seconds, nanos),
             changed: stamp.changed,
             identity: stamp.identity,
+            edge_digest: stamp.edge_digest,
         })
     }
 }

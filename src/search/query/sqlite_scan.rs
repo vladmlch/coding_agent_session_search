@@ -473,15 +473,17 @@ impl SearchClient {
         } else {
             String::new()
         };
+        let content_hash = if !raw_content.is_empty() {
+            stable_hit_hash(&raw_content, &source_path, line_number, created_at)
+        } else if !scan_content.is_empty() {
+            stable_hit_hash(&scan_content, &source_path, line_number, created_at)
+        } else {
+            stable_hit_hash(&snippet, &source_path, line_number, created_at)
+        };
         let content = if request.field_mask.needs_content() {
             raw_content
         } else {
             String::new()
-        };
-        let content_hash = if content.is_empty() {
-            stable_hit_hash(&snippet, &source_path, line_number, created_at)
-        } else {
-            stable_hit_hash(&content, &source_path, line_number, created_at)
         };
 
         let hit = SearchHit {

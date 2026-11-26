@@ -361,15 +361,20 @@ impl SearchClient {
         } else {
             String::new()
         };
+        let content_hash = if input.raw_content.is_empty() {
+            stable_hit_hash(&snippet, &input.source_path, line_number, input.created_at)
+        } else {
+            stable_hit_hash(
+                &input.raw_content,
+                &input.source_path,
+                line_number,
+                input.created_at,
+            )
+        };
         let content = if field_mask.needs_content() {
             input.raw_content
         } else {
             String::new()
-        };
-        let content_hash = if content.is_empty() {
-            stable_hit_hash(&snippet, &input.source_path, line_number, input.created_at)
-        } else {
-            stable_hit_hash(&content, &input.source_path, line_number, input.created_at)
         };
 
         SearchHit {

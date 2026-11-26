@@ -156,6 +156,10 @@ fn backfill_file_stamp_with_ctime(
         _ => return None,
     };
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    if !include_ctime && metadata.len() == 0 {
+        // An empty 0-byte SQLite -wal carries zero frames, equivalent to absent.
+        return Some(None);
+    }
     let identity = (metadata.dev(), metadata.ino());
     let edge_digest = if include_ctime {
         None
