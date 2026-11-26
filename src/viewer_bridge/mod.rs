@@ -421,6 +421,9 @@ struct Session {
     /// progress still dies with exit(70). Production callers never set
     /// this variable (and it stays `None` in every production session).
     test_stuck_op: Option<String>,
+    /// Cooperative deadline of the currently executing request, used to arm
+    /// `rusqlite::InterruptHandle` guards inside `StrictArchive::snapshot_stamped`.
+    active_deadline: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -428,9 +431,15 @@ impl Session {
         if self.archive.is_none() {
             self.archive = Some(StrictArchive::open(&self.db)?);
         }
-        self.archive
+        let interrupt = self
+            .active_deadline
+            .map(|at| (at, deadline::arm_snapshot_interrupt as reader::ArmInterruptFn));
+        let archive = self
+            .archive
             .as_mut()
-            .ok_or_else(|| refuse("canonical_db_missing", "Archive not loaded"))
+            .ok_or_else(|| refuse("canonical_db_missing", "Archive not loaded"))?;
+        archive.set_snapshot_interrupt(interrupt);
+        Ok(archive)
     }
 
     fn readers(&mut self) -> Result<Rc<ReaderSet>> {
@@ -961,6 +970,37 @@ impl Session {
     }
 
     fn handle(&mut self, request: Request, deadline: &deadline::Deadline) -> Result<(Value, bool)> {
+        self.active_deadline = Some(deadline.at());
+        if let Some(archive) = self.archive.as_mut() {
+            archive.set_snapshot_interrupt(Some((deadline.at(), deadline::arm_snapshot_interrupt)));
+        }
+        let outcome = self.handle_inner(request, deadline);
+        self.active_deadline = None;
+        if let Some(archive) = self.archive.as_mut() {
+            archive.set_snapshot_interrupt(None);
+        }
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if error.downcast_ref::<protocol::Refusal>().is_none()
+                    && (is_sql_interrupted(&error)
+                        || (deadline.exceeded() && is_sql_error(&error)))
+                {
+                    return Err(deadline::Deadline::refusal(
+                        "sqlite_query",
+                        format!("SQLite operation interrupted at deadline ({error:#})"),
+                    ));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn handle_inner(
+        &mut self,
+        request: Request,
+        deadline: &deadline::Deadline,
+    ) -> Result<(Value, bool)> {
         // Test-only stuck-op hook (`CASS_TEST_VIEWER_BRIDGE_STUCK_OP`): park
         // the serve thread before the op starts, so the pinned regression
         // test can prove the hard backstop still kills a request that
@@ -1066,7 +1106,7 @@ impl Session {
                 // prior accepted patch's certification must be durable
                 // before a dependent read can observe a later generation,
                 // and serializing converges keeps the WAL boundary
-                // single-writer-shaped for fsqlite.
+                // single-writer-shaped for SQLite.
                 self.flush_converge_lane();
                 let result =
                     self.writer()?
@@ -1259,6 +1299,35 @@ impl Session {
         };
         Ok((result, false))
     }
+}
+
+fn is_sql_interrupted(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<coding_agent_search::franken_sync::FrankenError>()
+            .is_some_and(|e| {
+                matches!(
+                    e,
+                    coding_agent_search::franken_sync::FrankenError::Interrupted
+                )
+            })
+            || cause.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+                matches!(
+                    e,
+                    rusqlite::Error::SqliteFailure(ffi, _)
+                        if ffi.code == rusqlite::ErrorCode::OperationInterrupted
+                )
+            })
+    })
+}
+
+fn is_sql_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<coding_agent_search::franken_sync::FrankenError>()
+            .is_some()
+            || cause.downcast_ref::<rusqlite::Error>().is_some()
+    })
 }
 
 fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Write) -> Result<()> {
@@ -1455,6 +1524,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             .ok()
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty()),
+        active_deadline: None,
     };
     let result = serve(
         &mut session,

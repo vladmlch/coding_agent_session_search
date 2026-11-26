@@ -17,7 +17,16 @@ const EDGE_HASH_BYTES: usize = 65_536;
 /// Canonical schema profile this strict reader is qualified against. Kept
 /// pinned on purpose: a newer canonical schema must fail qualification
 /// instead of being read under stale assumptions.
-pub(crate) const STRICT_SCHEMA_VERSION: i64 = 23;
+pub(crate) const STRICT_SCHEMA_VERSION: i64 =
+    coding_agent_search::storage::sqlite::CURRENT_SCHEMA_VERSION;
+
+/// Type-erased cooperative-deadline interrupt guard factory passed in by the
+/// bridge server so `reader.rs` stays decoupled from `deadline.rs` when
+/// mounted standalone in integration tests.
+pub(super) type ArmInterruptFn = fn(
+    coding_agent_search::franken_sync::InterruptHandle,
+    std::time::Instant,
+) -> Box<dyn std::any::Any>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ArchiveStamp {
@@ -407,10 +416,10 @@ fn schema_version(connection: &Connection) -> Result<i64> {
         ));
     }
     let text: String = rows[0].get_typed(0)?;
-    if text != "23" {
+    if text != "1" {
         return Err(refuse(
             "incompatible_schema",
-            "Bridge requires the pinned schema-23 profile",
+            "Bridge requires the pinned schema-1 profile",
         ));
     }
     Ok(STRICT_SCHEMA_VERSION)
@@ -431,6 +440,8 @@ pub struct StrictArchive {
     /// this filesystem reports a real inode change-time, so every
     /// `observe` pays the content hash — the pre-token behavior.
     meta_revision: Option<String>,
+    /// Optional cooperative-deadline interrupt hook for [`Self::snapshot_stamped`].
+    snapshot_interrupt: Option<(std::time::Instant, ArmInterruptFn)>,
 }
 
 /// Extension-lane visibility observed through the strict read connection.
@@ -489,6 +500,7 @@ impl StrictArchive {
                 } else {
                     None
                 },
+                snapshot_interrupt: None,
             });
         }
         unreachable!()
@@ -628,6 +640,16 @@ impl StrictArchive {
         })
     }
 
+    /// Attach (or clear) the per-request cooperative-deadline interrupt hook
+    /// used inside [`Self::snapshot_stamped`].
+    #[allow(dead_code)] // Called by the bridge server; standalone integration tests mount reader.rs directly.
+    pub(super) fn set_snapshot_interrupt(
+        &mut self,
+        interrupt: Option<(std::time::Instant, ArmInterruptFn)>,
+    ) {
+        self.snapshot_interrupt = interrupt;
+    }
+
     pub fn snapshot<T>(
         &mut self,
         read: impl FnOnce(&Connection) -> Result<T>,
@@ -647,8 +669,14 @@ impl StrictArchive {
         read: impl FnOnce(&Connection, &str) -> Result<T>,
     ) -> Result<(T, String)> {
         let before = self.observe()?;
+        let guard = self
+            .snapshot_interrupt
+            .map(|(at, arm)| arm(self.connection.interrupt_handle(), at));
         self.connection.execute("BEGIN DEFERRED")?;
         let result = read(&self.connection, &before);
+        // Disarm and synchronize with any in-flight `interrupt()` BEFORE
+        // `ROLLBACK` so snapshot cleanup never fails with `SQLITE_INTERRUPT`.
+        drop(guard);
         let release = self.connection.execute("ROLLBACK");
         if let Err(error) = release {
             return Err(refuse(

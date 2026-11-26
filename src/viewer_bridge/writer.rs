@@ -1,4 +1,4 @@
-//! The sole writable lane of the bridge: one owned writable FrankenSQLite
+//! The sole writable lane of the bridge: one owned writable SQLite
 //! connection, opened only under the explicit local `--enable-viewer-writes`
 //! authorization, serializing every extension mutation behind a single
 //! boundary type. `StrictArchive` remains a second, strictly read-only
@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use coding_agent_search::franken_sync::compat::{
     OpenFlags, RowExt, open_with_flags, param_slice_to_values,
 };
-use coding_agent_search::franken_sync::{Connection, params};
+use coding_agent_search::franken_sync::{Connection, TransactionBehavior, params};
 use serde_json::{Value, json};
 
 use super::annotations;
@@ -93,16 +93,19 @@ impl OwnedWriter {
     /// Serialized writer boundary: one immediate transaction per mutation;
     /// the logical-revision bump and the payload share the commit.
     fn transact<T>(&self, write: impl FnOnce(&Connection, i64) -> Result<T>) -> Result<T> {
-        self.connection.execute("BEGIN IMMEDIATE").map_err(|e| {
-            refuse(
-                "writer_unavailable",
-                format!("Extension writer lane is contended: {e}"),
-            )
-        })?;
+        let mut tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| {
+                refuse(
+                    "writer_unavailable",
+                    format!("Extension writer lane is contended: {e}"),
+                )
+            })?;
         let now = now_ms();
         match write(&self.connection, now) {
             Ok(value) => {
-                self.connection.execute("COMMIT").map_err(|e| {
+                tx.commit().map_err(|e| {
                     refuse(
                         "canonical_write_failed",
                         format!("Extension write commit failed: {e}"),
@@ -112,7 +115,7 @@ impl OwnedWriter {
             }
             Err(error) => {
                 // Best-effort release; the write error is the one to report.
-                let _ = self.connection.execute("ROLLBACK");
+                let _ = tx.rollback();
                 Err(error)
             }
         }
