@@ -459,7 +459,7 @@ fn rebuild_tantivy_from_db_deferred_startup_ignores_stale_zero_count_and_persist
 /// cause. Every render site formats with `{err:#}`; if the chain itself
 /// were collapsed (e.g. a `map_err` swapping in a fresh error), users
 /// would again see only "opening readonly storage ..." while the real
-/// frankensqlite failure (a corrupt FTS5 structure record, a bad header)
+/// SQLite failure (a corrupt FTS5 structure record, a bad header)
 /// stays invisible.
 #[test]
 fn storage_fingerprint_error_keeps_root_cause_in_alternate_display() {

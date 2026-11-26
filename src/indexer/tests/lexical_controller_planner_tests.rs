@@ -1335,6 +1335,8 @@ fn lexical_rebuild_shard_plan_without_tail_metadata_uses_conservative_id_only_pl
     let db_path = temp.path().join("legacy-canonical.db");
     let db_path_str = db_path.to_string_lossy().into_owned();
     let conn = crate::franken_sync::Connection::open(db_path_str).unwrap();
+    conn.execute("PRAGMA application_id = 0x43415353").unwrap();
+    conn.execute("PRAGMA user_version = 1").unwrap();
     conn.execute_compat(
         "CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_path TEXT NOT NULL)",
         &[] as &[ParamValue],
@@ -1439,6 +1441,8 @@ fn lexical_rebuild_shard_plan_with_sparse_tail_metadata_uses_conservative_id_onl
     let db_path = temp.path().join("sparse-tail-canonical.db");
     let db_path_str = db_path.to_string_lossy().into_owned();
     let conn = crate::franken_sync::Connection::open(db_path_str).unwrap();
+    conn.execute("PRAGMA application_id = 0x43415353").unwrap();
+    conn.execute("PRAGMA user_version = 1").unwrap();
     conn.execute_compat(
         "CREATE TABLE conversations (
             id INTEGER PRIMARY KEY,
