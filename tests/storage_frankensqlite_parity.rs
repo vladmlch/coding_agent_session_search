@@ -1,12 +1,12 @@
-//! FrankenStorage parity tests.
+//! Storage parity tests.
 //!
-//! These tests exercise FrankenStorage (the primary frankensqlite-backed storage
-//! engine) against the full range of SQL patterns cass uses. `SqliteStorage` is a
-//! type alias for `FrankenStorage`.
+//! These tests exercise `FrankenStorage` (the primary `franken_sync`/bundled-rusqlite
+//! storage engine) against the full range of SQL patterns cass uses. `SqliteStorage`
+//! is a type alias for `FrankenStorage`.
 //!
 //! Covers: CRUD operations, queries (JOIN, GROUP BY, ORDER BY, LIMIT, LIKE, FTS),
 //! transaction behavior, edge cases (Unicode, NULL, empty DB, large content),
-//! and cross-format file reads (rusqlite ↔ frankensqlite interop).
+//! and cross-format file reads (`rusqlite` ↔ `FrankenStorage` interop).
 
 use coding_agent_search::franken_sync::compat::{ConnectionExt as _, ParamValue, RowExt as _};
 use coding_agent_search::model::types::{
@@ -148,7 +148,7 @@ fn gh402_populated_archive_reopens_readonly_after_page_reclamation_without_mutat
             "DELETE FROM conversations WHERE id <> ?1",
             &[ParamValue::from(retained_conversation_id)],
         )
-        .expect("reclaim pages through an ordinary FrankenSQLite DELETE");
+        .expect("reclaim pages through an ordinary SQLite DELETE");
     assert_eq!(
         storage
             .total_conversation_count()
@@ -166,9 +166,8 @@ fn gh402_populated_archive_reopens_readonly_after_page_reclamation_without_mutat
     storage.close().expect("close populated archive cleanly");
 
     // Copy only the checkpointed main database to a fresh path. The copied
-    // inode has no machine-local FrankenSQLite namespace sidecars, so the
-    // opens below exercise first contact instead of reusing the writer's
-    // already-established namespace state.
+    // inode has no legacy namespace sidecars, so the opens below exercise
+    // first contact cleanly.
     let first_contact_db_path = dir.path().join("reserved-empty-first-contact.db");
     std::fs::copy(&db_path, &first_contact_db_path)
         .expect("copy reclaimed-page archive without namespace sidecars");
@@ -1212,7 +1211,7 @@ fn transition_rusqlite_db_readable_by_frankenstorage_basic() {
     // Verify sources readable
     let src = frank.get_source("local").unwrap();
     // Bead 7k7pl: pin the EXACT id — migration must preserve the
-    // well-known "local" id through the rusqlite→frankensqlite
+    // well-known "local" id through the legacy→schema-v1
     // transition. A regression that renamed the id would slip past
     // `.is_some()` while silently breaking source lookup by id.
     let src = src.expect("local source must exist after transition");

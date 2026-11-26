@@ -1,13 +1,13 @@
-//! Stress tests for frankensqlite concurrent writers under realistic cass workloads.
+//! Stress tests for concurrent SQLite writers under realistic cass workloads.
 //!
-//! Tests BEGIN CONCURRENT (MVCC) behavior: parallel writes, read-write mix,
+//! Tests concurrent WAL-mode behavior: parallel writes, read-write mix,
 //! crash recovery, large transactions, and retry convergence.
 //!
 //! Bead: coding_agent_session_search-2tax6
 
 use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt, TransactionExt};
 use coding_agent_search::franken_sync::params as fparams;
-use coding_agent_search::franken_sync::{Connection, FrankenError};
+use coding_agent_search::franken_sync::{Connection, FrankenError, TransactionBehavior};
 use coding_agent_search::storage::sqlite::{
     ConnectionManagerConfig, FrankenConnectionManager, FrankenStorage,
 };
@@ -17,15 +17,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-/// Create a frankensqlite DB with cass schema applied.
+/// Create a SQLite DB with cass schema applied.
 fn setup_db(dir: &TempDir) -> std::path::PathBuf {
     let db_path = dir.path().join("stress.db");
-    let fs = FrankenStorage::open(&db_path).expect("create frankensqlite db");
+    let fs = FrankenStorage::open(&db_path).expect("create cass db");
     drop(fs);
     db_path
 }
 
-/// Create a minimal frankensqlite DB with just a simple table.
+/// Create a minimal SQLite DB with just a simple table.
 /// Sets WAL mode and busy_timeout — required for concurrent writes.
 fn setup_simple_db(dir: &TempDir) -> std::path::PathBuf {
     let db_path = dir.path().join("simple.db");
@@ -134,7 +134,10 @@ fn stress_parallel_connector_writes() {
                     let val = format!("thread-{thread_id}-seq-{seq}");
                     let mut guard = m.concurrent_writer().expect("acquire writer");
                     with_retry(50, || {
-                        let mut tx = guard.storage().raw().transaction()?;
+                        let mut tx = guard
+                            .storage()
+                            .raw()
+                            .transaction_with_behavior(TransactionBehavior::Immediate)?;
                         tx.execute_compat(
                             "INSERT INTO items (thread_id, seq, val) VALUES (?1, ?2, ?3)",
                             fparams![thread_id, seq, val.as_str()],
@@ -218,7 +221,10 @@ fn stress_write_heavy_contention() {
                 for batch in 0..batches_per_thread {
                     with_retry(50, || {
                         let mut guard = m.concurrent_writer().expect("acquire writer");
-                        let mut tx = guard.storage().raw().transaction()?;
+                        let mut tx = guard
+                            .storage()
+                            .raw()
+                            .transaction_with_behavior(TransactionBehavior::Immediate)?;
                         for row_in_batch in 0..rows_per_batch {
                             let seq = batch * rows_per_batch + row_in_batch;
                             // Generate a unique ID per thread and seq to avoid auto-increment collisions
@@ -320,7 +326,7 @@ fn stress_read_write_mix() {
 
                 while start.elapsed() < duration {
                     let result = with_retry(30, || {
-                        let mut tx = conn.transaction()?;
+                        let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                         tx.execute_compat(
                             "INSERT INTO items (thread_id, seq, val) VALUES (?1, ?2, 'rw-mix')",
                             fparams![thread_id, seq],
@@ -372,9 +378,9 @@ fn stress_read_write_mix() {
     let rows = conn.query("SELECT COUNT(*) FROM items").unwrap();
     let final_count: i64 = rows[0].get_typed(0).unwrap();
 
-    // The DB count is authoritative. Under MVCC, a commit may return an error
-    // after the data was actually persisted (partial commit edge case), so we
-    // verify structural integrity rather than exact write counting.
+    // The DB count is authoritative. Under concurrent retries, a commit error
+    // check should rely on the committed DB state, so we verify structural
+    // integrity rather than exact write counting.
     assert!(final_count > 0, "writers should have committed rows");
     assert!(total_reads > 0, "readers should have completed queries");
 
@@ -428,16 +434,18 @@ fn stress_crash_recovery_uncommitted_data_absent() {
     // Commit some data first
     {
         let conn = open_configured(&db_path);
-        let mut tx = conn.transaction().unwrap();
+        let mut tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
         tx.execute("INSERT INTO items (thread_id, seq, val) VALUES (0, 0, 'committed')")
             .unwrap();
         tx.commit().unwrap();
     }
 
-    // Begin concurrent write but DO NOT commit - drop connection
+    // Begin immediate write but DO NOT commit - drop connection
     {
         let conn = open_configured(&db_path);
-        conn.execute("BEGIN CONCURRENT").unwrap();
+        conn.execute("BEGIN IMMEDIATE").unwrap();
         conn.execute("INSERT INTO items (thread_id, seq, val) VALUES (1, 0, 'uncommitted')")
             .unwrap();
         // Drop without COMMIT — should auto-rollback
@@ -593,7 +601,7 @@ fn stress_writer_process_exit_preserves_exact_rows_and_pinned_reader() {
         reader.execute("ROLLBACK").unwrap();
         reader.close_without_checkpoint().unwrap();
 
-        // Independent C SQLite reads the WAL before a FrankenSQLite opener
+        // Independent C SQLite reads the WAL before the next opener
         // can repair or checkpoint it. Never use immutable=1: it ignores WAL.
         let mut oracle = Command::new("python3");
         oracle
@@ -652,7 +660,9 @@ fn stress_large_transaction() {
 
     {
         let conn = open_configured(&db_path);
-        let mut tx = conn.transaction().unwrap();
+        let mut tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
 
         for i in 0..num_rows {
             let val = format!("large-txn-row-{i}");
@@ -718,13 +728,11 @@ fn stress_retry_convergence_conflicting_writes() {
                 for _ in 0..increments_per_thread {
                     let mut attempt = 0;
                     loop {
-                        // fsqlite 0.3.x can refuse transaction open or the
-                        // first read with a transient BusySnapshot while a
-                        // peer's publication advances; that is exactly the
-                        // convergence contract this stress test exercises, so
-                        // route those through the same retry path as commit
-                        // conflicts.
-                        let mut tx = match conn.transaction() {
+                        // Under concurrent write contention, beginning or
+                        // executing a transaction can hit a transient busy
+                        // error; route those through the same retry path as
+                        // commit conflicts.
+                        let mut tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
                             Ok(tx) => tx,
                             Err(e) => {
                                 attempt += 1;
@@ -737,8 +745,7 @@ fn stress_retry_convergence_conflicting_writes() {
                         let rows = match tx.query("SELECT val FROM counter WHERE id = 1") {
                             Ok(rows) => rows,
                             Err(e) => {
-                                drop(tx);
-                                let _ = conn.execute("ROLLBACK");
+                                let _ = tx.rollback();
                                 attempt += 1;
                                 retries.fetch_add(1, Ordering::Relaxed);
                                 assert!(attempt <= 50, "too many retries on read: {e}");
@@ -754,7 +761,7 @@ fn stress_retry_convergence_conflicting_writes() {
                             fparams![new_val],
                         ) {
                             // Execute failed — likely conflict
-                            let _ = conn.execute("ROLLBACK");
+                            let _ = tx.rollback();
                             attempt += 1;
                             retries.fetch_add(1, Ordering::Relaxed);
                             if attempt > 50 {
@@ -858,7 +865,10 @@ fn stress_connection_manager_parallel_writers() {
                 for seq in 0..writes_per_thread {
                     let mut guard = m.concurrent_writer().expect("acquire writer");
                     with_retry(50, || {
-                        let mut tx = guard.storage().raw().transaction()?;
+                        let mut tx = guard
+                            .storage()
+                            .raw()
+                            .transaction_with_behavior(TransactionBehavior::Immediate)?;
                         let val = format!("cm-{tid}-{seq}");
                         tx.execute_compat(
                             "INSERT INTO cm_stress (tid, val) VALUES (?1, ?2)",

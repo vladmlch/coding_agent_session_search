@@ -94,18 +94,19 @@ fn test_migration_v1_requires_rebuild() {
     create_v1_db(&db_path);
 
     match SqliteStorage::open_or_rebuild(&db_path) {
-        Err(MigrationError::RebuildRequired {
-            reason,
-            backup_path,
-        }) => {
-            assert!(reason.contains("too old for in-place migration"));
-
-            let backup_path = backup_path.expect("legacy db should be backed up");
-            assert!(backup_path.exists());
-            assert!(!db_path.exists());
+        Err(MigrationError::Other(reason)) => {
+            assert!(
+                reason.contains("rebuild required")
+                    && reason.contains("lacks the schema-v1 identity stamp"),
+                "unexpected schema-v1 refusal reason for unstamped legacy V1 db: {reason}"
+            );
+            assert!(
+                db_path.exists(),
+                "refused unstamped legacy V1 db should remain untouched on disk"
+            );
         }
-        Ok(_) => panic!("expected rebuild-required result for V1 schema, got Ok(_)"),
-        Err(err) => panic!("expected rebuild-required result for V1 schema, got {err}"),
+        Ok(_) => panic!("expected schema-v1 stamp refusal for V1 schema, got Ok(_)"),
+        Err(err) => panic!("expected MigrationError::Other(SchemaRebuildRequired), got {err}"),
     }
 }
 

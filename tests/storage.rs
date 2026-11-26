@@ -4,11 +4,11 @@ use coding_agent_search::franken_sync::Connection as FrankenConnection;
 use coding_agent_search::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::sources::provenance::{LOCAL_SOURCE_ID, Source, SourceKind};
-use coding_agent_search::storage::sqlite::{MigrationError, SqliteStorage};
+use coding_agent_search::storage::sqlite::{MigrationError, SchemaRebuildRequired, SqliteStorage};
 
 fn open_fixture_db(path: impl AsRef<Path>) -> FrankenConnection {
     let path = path.as_ref().to_string_lossy();
-    FrankenConnection::open(path.as_ref()).expect("open frankensqlite fixture database")
+    FrankenConnection::open(path.as_ref()).expect("open SQLite fixture database")
 }
 
 fn sample_agent() -> Agent {
@@ -62,17 +62,42 @@ fn schema_version_uses_schema_migrations_after_open() {
         storage.schema_version().unwrap(),
         coding_agent_search::storage::sqlite::CURRENT_SCHEMA_VERSION
     );
+    let app_id: i64 = storage
+        .raw()
+        .query_row_map("PRAGMA application_id;", &[], |r| r.get_typed(0))
+        .unwrap();
+    let user_version: i64 = storage
+        .raw()
+        .query_row_map("PRAGMA user_version;", &[], |r| r.get_typed(0))
+        .unwrap();
+    let legacy_migrations: i64 = storage
+        .raw()
+        .query_row_map(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_schema_migrations'",
+            &[],
+            |r| r.get_typed(0),
+        )
+        .unwrap();
+    assert_eq!(app_id, 0x4341_5353);
+    assert_eq!(user_version, 1);
+    assert_eq!(
+        legacy_migrations, 0,
+        "schema v1 should not create _schema_migrations"
+    );
 
-    // `_schema_migrations` is authoritative now, so removing the legacy
-    // compatibility row must not break schema version reporting.
+    // `meta.schema_version` is authoritative alongside the header stamp;
+    // deleting `meta` clears `schema_version()` to 0 and makes reopen refuse.
     storage.raw().execute("DELETE FROM meta").unwrap();
+    assert_eq!(storage.schema_version().unwrap(), 0);
+    drop(storage);
+    let reopen = SqliteStorage::open(&db_path);
     assert!(
-        matches!(
-            storage.schema_version(),
-            Ok(coding_agent_search::storage::sqlite::CURRENT_SCHEMA_VERSION)
-        ),
-        "schema_version should continue reading from _schema_migrations after meta cleanup, got: {:?}",
-        storage.schema_version()
+        reopen
+            .as_ref()
+            .err()
+            .and_then(|err| err.downcast_ref::<SchemaRebuildRequired>())
+            .is_some(),
+        "reopen after clearing meta.schema_version should refuse with SchemaRebuildRequired"
     );
 }
 
@@ -105,8 +130,8 @@ fn rebuild_fts_repopulates_rows() {
         )
         .unwrap();
     assert_eq!(
-        fts_table_count, 0,
-        "fresh storage keeps db-resident FTS as a derived asset"
+        fts_table_count, 1,
+        "schema v1 initializes fts_messages on open"
     );
 
     storage
@@ -337,10 +362,14 @@ fn large_batch_insert_can_materialize_derived_fts() {
         )
         .unwrap();
     assert_eq!(
-        fts_table_count, 0,
-        "db-resident FTS should remain absent until explicitly rebuilt"
+        fts_table_count, 1,
+        "schema v1 initializes fts_messages on open"
     );
 
+    storage
+        .raw()
+        .execute("DROP TABLE IF EXISTS fts_messages")
+        .unwrap();
     storage.rebuild_fts().unwrap();
     let fts_count: i64 = storage
         .raw()
@@ -410,14 +439,11 @@ fn open_ignores_stale_meta_schema_version_once_schema_migrations_exist() {
     drop(storage); // Close connection before reopening
 
     let reopen = SqliteStorage::open(&db_path);
-    assert!(
-        reopen.is_ok(),
-        "open() should rely on _schema_migrations, not the legacy meta mirror"
-    );
-    assert_eq!(
-        reopen.unwrap().schema_version().unwrap(),
-        coding_agent_search::storage::sqlite::CURRENT_SCHEMA_VERSION
-    );
+    let err = reopen.err().expect("open() must refuse mismatched meta.schema_version");
+    let rebuild = err
+        .downcast_ref::<SchemaRebuildRequired>()
+        .expect("mismatched meta.schema_version must surface SchemaRebuildRequired");
+    assert_eq!(rebuild.found_meta_version, Some(999));
 }
 
 // =============================================================================
@@ -468,8 +494,12 @@ fn fresh_db_creates_all_tables() {
         "conversation_tags table exists"
     );
     assert!(
-        !tables.contains(&"fts_messages".to_string()),
-        "fresh schema should not materialize derived fts_messages"
+        tables.contains(&"fts_messages".to_string()),
+        "fresh schema v1 should initialize contentless fts_messages"
+    );
+    assert!(
+        !tables.contains(&"_schema_migrations".to_string()),
+        "fresh schema v1 should not create _schema_migrations"
     );
     // Sources table (v4)
     assert!(
@@ -519,24 +549,10 @@ fn migration_v16_drops_redundant_message_conv_idx() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = tmp.path().join("v16_drop_redundant_idx.db");
     {
-        let storage = SqliteStorage::open(&db_path).expect("open");
-        storage
-            .raw()
-            .execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_conv_idx ON messages(conversation_id, idx)",
-            )
-            .unwrap();
-        storage
-            .raw()
-            .execute("DELETE FROM _schema_migrations WHERE version = 16")
-            .unwrap();
-        storage
-            .raw()
-            .execute("UPDATE meta SET value = '15' WHERE key = 'schema_version'")
-            .unwrap();
+        let _storage = SqliteStorage::open(&db_path).expect("open");
     }
 
-    let storage = SqliteStorage::open(&db_path).expect("reopen migrated db");
+    let storage = SqliteStorage::open(&db_path).expect("reopen schema v1 db");
     let message_indexes: Vec<String> = storage
         .raw()
         .query_map_collect("PRAGMA index_list(messages)", &[], |r| r.get_typed(1))
@@ -558,29 +574,17 @@ fn migration_v17_drops_message_created_idx() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = tmp.path().join("v17_drop_message_created_idx.db");
     {
-        let storage = SqliteStorage::open(&db_path).expect("open");
-        storage
-            .raw()
-            .execute("CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)")
-            .unwrap();
-        storage
-            .raw()
-            .execute("DELETE FROM _schema_migrations WHERE version = 17")
-            .unwrap();
-        storage
-            .raw()
-            .execute("UPDATE meta SET value = '16' WHERE key = 'schema_version'")
-            .unwrap();
+        let _storage = SqliteStorage::open(&db_path).expect("open");
     }
 
-    let storage = SqliteStorage::open(&db_path).expect("reopen migrated db");
+    let storage = SqliteStorage::open(&db_path).expect("reopen schema v1 db");
     let message_indexes: Vec<String> = storage
         .raw()
         .query_map_collect("PRAGMA index_list(messages)", &[], |r| r.get_typed(1))
         .unwrap();
     assert!(
         !message_indexes.contains(&"idx_messages_created".to_string()),
-        "v17 should drop the write-heavy created_at index, found: {message_indexes:?}"
+        "schema v1 should not have the write-heavy created_at index, found: {message_indexes:?}"
     );
 }
 
@@ -706,14 +710,21 @@ fn fts_messages_is_fts5_virtual_table() {
     );
     assert!(sql.contains("content"), "fts_messages should have content");
     assert!(sql.contains("title"), "fts_messages should have title");
-    assert!(sql.contains("agent"), "fts_messages should have agent");
     assert!(
-        sql.contains("workspace"),
-        "fts_messages should have workspace"
+        !sql.contains("agent"),
+        "schema v1 fts_messages should not carry legacy agent column"
+    );
+    assert!(
+        !sql.contains("workspace"),
+        "schema v1 fts_messages should not carry legacy workspace column"
     );
     assert!(
         sql.contains("content=''") || sql.contains("content = ''"),
         "fts_messages should use contentless storage"
+    );
+    assert!(
+        sql.contains("contentless_delete=1"),
+        "fts_messages should use contentless_delete=1"
     );
     assert!(
         !sql.contains("message_id UNINDEXED"),
@@ -726,45 +737,30 @@ fn fts_messages_is_fts5_virtual_table() {
 }
 
 #[test]
-fn fresh_database_fts_messages_is_queryable_via_frankensqlite() {
+fn fresh_database_fts_messages_is_queryable_via_sqlite() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = tmp.path().join("fresh-fts.db");
     let storage = SqliteStorage::open(&db_path).expect("open");
-    storage
-        .rebuild_fts()
-        .expect("materialize derived FTS table");
 
     let count: i64 = storage
         .raw()
         .query_row_map("SELECT COUNT(*) FROM fts_messages", &[], |row| {
             row.get_typed(0)
         })
-        .expect("fresh FTS table should be queryable via frankensqlite");
+        .expect("fresh FTS table should be queryable via SQLite");
     assert_eq!(count, 0, "fresh FTS table should start empty");
 }
 
 #[test]
-fn open_disables_frankensqlite_autocommit_retain() {
+fn open_leaves_connection_in_autocommit() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let db_path = tmp.path().join("autocommit-retain.db");
+    let db_path = tmp.path().join("autocommit.db");
     let storage = SqliteStorage::open(&db_path).expect("open");
 
-    let namespaced: i64 = storage
-        .raw()
-        .query_row_map("PRAGMA fsqlite.autocommit_retain;", &[], |row| {
-            row.get_typed(0)
-        })
-        .expect("fsqlite.autocommit_retain pragma should be queryable");
-    assert_eq!(
-        namespaced, 0,
-        "storage open should disable retained autocommit"
+    assert!(
+        storage.raw().is_autocommit(),
+        "storage open should leave connection in autocommit mode"
     );
-
-    let alias: i64 = storage
-        .raw()
-        .query_row_map("PRAGMA autocommit_retain;", &[], |row| row.get_typed(0))
-        .expect("autocommit_retain pragma alias should be queryable");
-    assert_eq!(alias, 0, "autocommit_retain alias should also be disabled");
 }
 
 #[test]
@@ -852,22 +848,19 @@ fn migration_from_v1_requires_rebuild() {
 
     let result = SqliteStorage::open_or_rebuild(&db_path);
     match result {
-        Err(MigrationError::RebuildRequired {
-            reason,
-            backup_path,
-        }) => {
+        Err(MigrationError::Other(reason)) => {
             assert!(
-                reason.contains("too old for in-place migration"),
-                "unexpected rebuild reason: {reason}"
+                reason.contains("rebuild required")
+                    && reason.contains("lacks the schema-v1 identity stamp"),
+                "unexpected schema-v1 refusal reason for unstamped v1 schema: {reason}"
             );
-            assert!(backup_path.is_some(), "legacy schema should be backed up");
         }
-        Ok(_) => panic!("expected rebuild requirement for v1 schema"),
-        Err(err) => panic!("expected rebuild requirement for v1 schema, got {err}"),
+        Ok(_) => panic!("expected schema-v1 stamp refusal for legacy v1 schema"),
+        Err(err) => panic!("expected MigrationError::Other(SchemaRebuildRequired), got {err}"),
     }
     assert!(
-        !db_path.exists(),
-        "legacy v1 database should be removed after rebuild requirement"
+        db_path.exists(),
+        "refused unstamped legacy v1 database should remain untouched on disk"
     );
 }
 
@@ -973,7 +966,7 @@ fn migration_from_v2_requires_rebuild() {
             backup_path,
         }) => {
             assert!(
-                reason.contains("too old for in-place migration"),
+                reason.contains("newer than supported version 1"),
                 "unexpected rebuild reason: {reason}"
             );
             assert!(backup_path.is_some(), "legacy schema should be backed up");
@@ -1362,7 +1355,7 @@ fn migration_from_v3_requires_rebuild() {
             backup_path,
         }) => {
             assert!(
-                reason.contains("too old for in-place migration"),
+                reason.contains("newer than supported version 1"),
                 "unexpected rebuild reason: {reason}"
             );
             assert!(backup_path.is_some(), "legacy schema should be backed up");
@@ -1599,7 +1592,7 @@ fn open_or_rebuild_requires_rebuild_for_legacy_v4_schema() {
         .expect("create v4 schema");
     }
 
-    // Open with open_or_rebuild - should migrate successfully
+    // Open with open_or_rebuild - should require rebuild
     let result = SqliteStorage::open_or_rebuild(&db_path);
     match result {
         Err(MigrationError::RebuildRequired {
@@ -1607,7 +1600,7 @@ fn open_or_rebuild_requires_rebuild_for_legacy_v4_schema() {
             backup_path,
         }) => {
             assert!(
-                reason.contains("too old for in-place migration"),
+                reason.contains("newer than supported version 1"),
                 "unexpected rebuild reason: {reason}"
             );
             assert!(backup_path.is_some(), "legacy schema should be backed up");
