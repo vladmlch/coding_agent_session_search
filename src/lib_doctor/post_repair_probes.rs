@@ -190,7 +190,7 @@ pub(crate) fn run_doctor_archive_db_post_repair_probe(
                     "fail",
                     doctor_post_repair_probe_duration_ms(start),
                     Some(format!(
-                        "failed to open archive DB through production frankensqlite manager: {err}"
+                        "failed to open archive DB through production SQLite connection manager: {err}"
                     )),
                     true,
                     true,
@@ -222,7 +222,7 @@ pub(crate) fn run_doctor_archive_db_post_repair_probe(
         }
     };
     let conn = writer.storage().raw();
-    if let Err(err) = conn.execute("BEGIN;") {
+    if let Err(err) = conn.execute("BEGIN IMMEDIATE;") {
         return doctor_post_repair_probe_report(
             target,
             doctor_post_repair_probe_outcome(
