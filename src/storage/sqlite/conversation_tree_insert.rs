@@ -40,8 +40,9 @@ use super::tx_message_insert::{
 use super::tx_message_insert::{
     franken_append_insert_new_messages_with_profile, franken_batch_insert_new_messages_with_profile,
 };
-use crate::franken_sync::compat::{
-    Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt,
+use crate::franken_sync::{
+    TransactionBehavior,
+    compat::{Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt},
 };
 use crate::model::types::Conversation;
 #[cfg(test)]
@@ -94,7 +95,9 @@ impl FrankenStorage {
         self.ensure_source_for_conversation(conv)?;
         let defer_lexical_updates = defer_storage_lexical_updates_enabled();
         let conversation_key = conversation_merge_key(agent_id, conv);
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let reconciled_conv = franken_reconcile_native_message_indices(&tx, agent_id, conv)?;
         let conv = reconciled_conv.as_ref();
         let existing = franken_find_existing_conversation_with_tail_by_key(
@@ -374,7 +377,9 @@ impl FrankenStorage {
         let conversation_key = conversation_merge_key(agent_id, conv);
 
         let tx_open_start = Instant::now();
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         profile.tx_open_duration += tx_open_start.elapsed();
 
         let reconciled_conv = franken_reconcile_native_message_indices(&tx, agent_id, conv)?;
@@ -560,7 +565,9 @@ impl FrankenStorage {
         let conversation_key = conversation_merge_key(agent_id, conv);
 
         let tx_open_start = Instant::now();
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         profile.tx_open_duration += tx_open_start.elapsed();
 
         let reconciled_conv = franken_reconcile_native_message_indices(&tx, agent_id, conv)?;
