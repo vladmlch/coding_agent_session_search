@@ -1,9 +1,9 @@
 use super::analytics_rebuild::is_out_of_memory_error;
 use crate::franken_sync::{
-    Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
+    Connection as FrankenConnection, Row as FrankenRow, SqliteValue, TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-        Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt,
+        Transaction as FrankenTransaction,
     },
 };
 use anyhow::{Context, Result, anyhow};
@@ -136,7 +136,7 @@ fn delete_orphan_message_id_chunk(conn: &FrankenConnection, ids: &[i64]) -> Resu
 }
 
 fn delete_orphan_message_id_chunk_once(conn: &FrankenConnection, ids: &[i64]) -> Result<usize> {
-    let mut tx = conn.transaction()?;
+    let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut deleted = 0usize;
     for entry in ORPHAN_MESSAGE_DEPENDENT_TABLES {
         match delete_rows_by_i64_chunks(&tx, entry.delete_many_sql_prefix, ids) {
@@ -227,7 +227,7 @@ fn delete_direct_orphan_id_chunk_once(
     entry: &'static OrphanFkTable,
     ids: &[i64],
 ) -> Result<usize> {
-    let mut tx = conn.transaction()?;
+    let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let deleted = delete_rows_by_i64_chunks(&tx, entry.delete_many_sql_prefix, ids)?;
     tx.commit()?;
     Ok(deleted)

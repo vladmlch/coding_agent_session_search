@@ -17,10 +17,8 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::info;
 
-pub(super) type FrankenAsyncConnection = FrankenOwnerConnection;
-
 // -------------------------------------------------------------------------
-// Lazy FrankenSQLite Connection (bd-1ueu)
+// Lazy SQLite Connection (bd-1ueu)
 // -------------------------------------------------------------------------
 // Defers opening the database until first use, cutting startup cost for
 // commands that may not need the DB at all.  Thread-safe via parking_lot
@@ -31,7 +29,7 @@ pub(super) type FrankenAsyncConnection = FrankenOwnerConnection;
 pub enum LazyDbError {
     #[error("Database not found at {0}")]
     NotFound(PathBuf),
-    #[error("Failed to open FrankenSQLite database at {path}: {source}")]
+    #[error("Failed to open SQLite database at {path}: {source}")]
     FrankenOpenFailed {
         path: PathBuf,
         source: crate::franken_sync::FrankenError,
@@ -44,9 +42,9 @@ fn apply_owner_readonly_pragmas(
     conn: &crate::franken_sync::Connection,
 ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
     conn.execute("PRAGMA query_only = 1;")?;
-    conn.execute("PRAGMA foreign_keys = ON;")?;
-    conn.execute("PRAGMA temp_store = MEMORY;")?;
     conn.execute("PRAGMA busy_timeout = 5000;")?;
+    conn.execute("PRAGMA foreign_keys = ON;")?;
+    let _ = conn.execute("PRAGMA temp_store = MEMORY;");
     conn.execute("PRAGMA cache_size = -16384;")?;
     Ok(())
 }
@@ -76,13 +74,12 @@ impl FrankenOwnerConnection {
             }
         }
         let path_str = path.to_string_lossy().into_owned();
-        let conn = crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
-            path_str,
-        )
-        .map_err(|source| LazyDbError::FrankenOpenFailed {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let conn =
+            crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(path_str)
+                .map_err(|source| LazyDbError::FrankenOpenFailed {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
         apply_owner_readonly_pragmas(&conn).map_err(|source| LazyDbError::FrankenOpenFailed {
             path: path.to_path_buf(),
             source,
@@ -90,7 +87,6 @@ impl FrankenOwnerConnection {
         Ok(Self(parking_lot::Mutex::new(conn)))
     }
 
-    #[allow(dead_code)]
     pub(super) fn open(
         path: impl Into<String>,
     ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
@@ -107,9 +103,8 @@ impl FrankenOwnerConnection {
                 return Err(crate::franken_sync::FrankenError::Internal(err.to_string()));
             }
         }
-        let conn = crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
-            path_string,
-        )?;
+        let conn =
+            crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(path_string)?;
         apply_owner_readonly_pragmas(&conn)?;
         Ok(Self(parking_lot::Mutex::new(conn)))
     }
@@ -280,7 +275,7 @@ impl FrankenOwnerConnection {
     pub(crate) fn close_without_checkpoint_sync(
         &mut self,
     ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
-        self.0.get_mut().close_without_checkpoint_in_place()
+        super::storage_core::close_franken_in_place_with_busy_retry(self.0.get_mut(), false)
     }
 
     pub(super) fn close_best_effort_in_place(&mut self) {
@@ -293,7 +288,7 @@ impl FrankenOwnerConnection {
     }
 }
 
-/// Lazy-opening wrapper for a dedicated-owner FrankenSQLite connection.
+/// Lazy-opening wrapper for a thread-safe SQLite read connection.
 ///
 /// Constructing a `LazyFrankenDb` is cheap (no I/O).  The underlying
 /// raw connection is opened on its owner worker on the first call to [`get`].
@@ -366,7 +361,7 @@ impl LazyFrankenDb {
                 path = %self.path.display(),
                 elapsed_ms = elapsed_ms,
                 reason = reason,
-                "lazily opened FrankenSQLite database"
+                "lazily opened SQLite database"
             );
             *guard = Some(conn);
         }
@@ -402,12 +397,12 @@ impl LazyFrankenDb {
                             return;
                         }
                     };
-                if let Err(std::sync::mpsc::SendError(Ok(mut conn))) = tx.send(
-                    FrankenOwnerConnection::open_readonly_with_doctor_guard(
+                if let Err(std::sync::mpsc::SendError(Ok(mut conn))) =
+                    tx.send(FrankenOwnerConnection::open_readonly_with_doctor_guard(
                         &path_for_guard,
                         &_doctor_guard,
-                    ),
-                ) {
+                    ))
+                {
                     conn.close_best_effort_in_place();
                 }
             });
@@ -425,7 +420,7 @@ impl LazyFrankenDb {
                 path = %self.path.display(),
                 elapsed_ms = elapsed_ms,
                 reason = reason,
-                "lazily opened FrankenSQLite database (with timeout)"
+                "lazily opened SQLite database (with timeout)"
             );
             *guard = Some(conn);
         }
@@ -453,9 +448,9 @@ impl Drop for LazyFrankenDb {
 }
 
 // -------------------------------------------------------------------------
-// FrankenSQLite Connection Manager (bead 3rlf8)
+// SQLite Connection Manager (bead 3rlf8)
 // -------------------------------------------------------------------------
-// Multi-connection management: reader pool + concurrent writer connections.
+// Multi-connection management: reader pool + pooled writer connections.
 // Replaces the LazyFrankenDb single-connection bottleneck for high-throughput
 // scenarios (indexer parallel writes, concurrent TUI reads + indexer writes).
 
@@ -480,15 +475,15 @@ impl Default for ConnectionManagerConfig {
     }
 }
 
-/// Multi-connection manager for frankensqlite.
+/// Multi-connection manager for SQLite.
 ///
 /// Provides:
 /// - A pool of pre-opened reader connections (round-robin, Mutex-protected)
 /// - Controlled creation of writer connections with token-based limits
 /// - RAII guards that auto-rollback uncommitted transactions on drop
 ///
-/// Thread-safe: reader handles dispatch to dedicated owner threads. Writer
-/// connections remain thread-affine and are created and consumed per request.
+/// Thread-safe: reader handles serialize access via `Mutex` over `Send`
+/// connections. Writer connections are created and consumed per request.
 pub struct FrankenConnectionManager {
     db_path: PathBuf,
     readers: Vec<parking_lot::Mutex<FrankenOwnerConnection>>,
@@ -511,10 +506,8 @@ impl FrankenConnectionManager {
     /// Writer connections are created on demand (up to `config.max_writers`).
     pub fn new(db_path: impl Into<PathBuf>, config: ConnectionManagerConfig) -> Result<Self> {
         let db_path = db_path.into();
-        let _doctor_guard = acquire_doctor_mutation_db_open_guard(
-            &db_path,
-            DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT,
-        )?;
+        let _doctor_guard =
+            acquire_doctor_mutation_db_open_guard(&db_path, DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT)?;
 
         let reader_count = config.reader_count.max(1);
         let mut readers: Vec<parking_lot::Mutex<FrankenOwnerConnection>> =
@@ -530,9 +523,7 @@ impl FrankenConnectionManager {
                         reader.get_mut().close_best_effort_in_place();
                     }
                     return Err(match source {
-                        LazyDbError::SchemaRebuildRequired(rebuild) => {
-                            anyhow::Error::new(rebuild)
-                        }
+                        LazyDbError::SchemaRebuildRequired(rebuild) => anyhow::Error::new(rebuild),
                         other => anyhow::Error::from(other).context(format!(
                             "opening reader connection at {}",
                             db_path.display()
@@ -597,7 +588,7 @@ impl FrankenConnectionManager {
 
     /// Acquire a writer connection.
     ///
-    /// Opens a new frankensqlite connection with full config (no migration).
+    /// Opens a new SQLite connection with full config (no migration).
     /// Blocks if `max_writers` connections are already in use.
     /// The returned [`WriterGuard`] auto-rolls back on drop.
     pub fn writer(&self) -> Result<WriterGuard<'_>> {
@@ -625,8 +616,9 @@ impl FrankenConnectionManager {
                 )));
             }
         };
-        let storage = FrankenStorage::new(conn, self.db_path.clone());
+        let mut storage = FrankenStorage::new(conn, self.db_path.clone());
         if let Err(e) = storage.apply_config() {
+            storage.close_best_effort_in_place();
             let _ = self.writer_tokens.0.send(());
             return Err(e);
         }
@@ -637,10 +629,10 @@ impl FrankenConnectionManager {
         })
     }
 
-    /// Acquire a concurrent writer connection (BEGIN CONCURRENT via MVCC).
+    /// Acquire a pooled writer connection tuned for parallel indexer batches.
     ///
-    /// Similar to [`writer`] but tuned for the parallel indexer write pool.
-    /// Uses reduced cache size and is designed for short-lived batch inserts.
+    /// Similar to [`writer`] but uses reduced cache size for short-lived
+    /// batch inserts.
     pub fn concurrent_writer(&self) -> Result<WriterGuard<'_>> {
         self.writer_tokens
             .1
@@ -666,12 +658,13 @@ impl FrankenConnectionManager {
                 )));
             }
         };
-        let storage = FrankenStorage::new(conn, self.db_path.clone());
+        let mut storage = FrankenStorage::new(conn, self.db_path.clone());
         if let Err(e) = storage.apply_config() {
+            storage.close_best_effort_in_place();
             let _ = self.writer_tokens.0.send(());
             return Err(e);
         }
-        // Reduced cache for concurrent writers (they're short-lived)
+        // Reduced cache for short-lived pooled writers
         let _ = storage.raw().execute("PRAGMA cache_size = -4096;");
         Ok(WriterGuard {
             storage: Some(storage),
