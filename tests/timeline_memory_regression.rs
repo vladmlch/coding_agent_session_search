@@ -28,8 +28,10 @@ fn fixture(root: &Path) {
     // A legacy archive deliberately has no analytics rollups or count cache.
     // Timeline must remain a read-only metadata query against canonical rows.
     conn.execute_batch(
-        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-         INSERT INTO meta VALUES('schema_version', '20');
+        "PRAGMA application_id = 0x43415353;
+         PRAGMA user_version = 1;
+         CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+         INSERT INTO meta VALUES('schema_version', '1');
          CREATE TABLE agents(id INTEGER PRIMARY KEY, slug TEXT);
          INSERT INTO agents VALUES(1, 'claude_code'), (2, 'codex');
          CREATE TABLE sources(id TEXT PRIMARY KEY, kind TEXT);

@@ -64,9 +64,9 @@ fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>>
     let dst_root = test_home.join("search_demo_data");
     for entry in WalkDir::new(&src) {
         let entry = entry?;
-        // Machine-local frankensqlite namespace lock sidecars (created by
-        // any local run that opens the fixture DB) must not reach the
-        // clone: their foreign lock state fails the copied DB's open.
+        // Legacy machine-local namespace lock sidecars (if present in a fixture
+        // checkout from an older run) must not reach the clone: their foreign
+        // lock state fails the copied DB's open.
         if entry
             .path()
             .file_name()

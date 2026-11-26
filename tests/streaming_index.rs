@@ -95,21 +95,29 @@ fn make_test_corpus(codex_home: &Path, count: usize) {
 }
 
 fn count_messages(db_path: &Path) -> i64 {
-    let storage = SqliteStorage::open(db_path).expect("open sqlite");
-    storage
+    let storage = SqliteStorage::open_readonly(db_path).expect("open sqlite readonly");
+    let count = storage
         .raw()
         .query_row_map("SELECT COUNT(*) FROM messages", &[], |r| r.get_typed(0))
-        .expect("count messages")
+        .expect("count messages");
+    storage
+        .close_without_checkpoint()
+        .expect("close sqlite readonly");
+    count
 }
 
 fn count_conversations(db_path: &Path) -> i64 {
-    let storage = SqliteStorage::open(db_path).expect("open sqlite");
-    storage
+    let storage = SqliteStorage::open_readonly(db_path).expect("open sqlite readonly");
+    let count = storage
         .raw()
         .query_row_map("SELECT COUNT(*) FROM conversations", &[], |r| {
             r.get_typed(0)
         })
-        .expect("count conversations")
+        .expect("count conversations");
+    storage
+        .close_without_checkpoint()
+        .expect("close sqlite readonly");
+    count
 }
 
 // =============================================================================
