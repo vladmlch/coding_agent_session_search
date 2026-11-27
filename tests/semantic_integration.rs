@@ -11,7 +11,6 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
 
 mod util;
 mod ws_paths_1c;

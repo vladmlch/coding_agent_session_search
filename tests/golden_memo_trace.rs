@@ -10,7 +10,6 @@
 use anyhow::{Context as _, Result, anyhow, bail};
 use coding_agent_search::indexer::semantic::{EmbeddingInput, SemanticIndexer};
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tracing::field::{Field, Visit};

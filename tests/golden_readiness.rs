@@ -16,7 +16,7 @@ use coding_agent_search::search::semantic_manifest::{
 use coding_agent_search::search::tantivy::index_dir;
 use coding_agent_search::storage::sqlite::FrankenStorage;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod ws_paths_1c;
 

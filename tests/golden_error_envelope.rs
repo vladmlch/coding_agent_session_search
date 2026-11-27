@@ -68,6 +68,10 @@ fn lib_split_production_files() -> Vec<PathBuf> {
         let dir = ws_paths_1c::resolve_workspace_source(subdir);
         collect_non_test_rs_files(&workspace_root, &dir, &mut files);
     }
+    let model_cli_error = ws_paths_1c::resolve_workspace_source("src/model/cli_error.rs");
+    if model_cli_error.is_file() {
+        files.push(model_cli_error);
+    }
     files
 }
 

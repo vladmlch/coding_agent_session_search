@@ -14,7 +14,7 @@
 //! ```
 
 use assert_cmd::Command;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod ws_paths_1c;
 

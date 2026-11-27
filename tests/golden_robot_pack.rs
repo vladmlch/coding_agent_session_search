@@ -18,7 +18,7 @@
 //!     cargo test --test golden_robot_pack
 //!   git diff tests/golden/   # review, then commit
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use assert_cmd::Command;
 
