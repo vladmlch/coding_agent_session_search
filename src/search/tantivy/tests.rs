@@ -5,6 +5,7 @@ use super::ingest::{
 };
 use super::*;
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
+use crate::model::conversation_packet::ConversationPacket;
 use frankensearch::quill::cass::{
     CassDocument as FsCassDocument, CassDocumentRef as FsCassDocumentRef,
 };
