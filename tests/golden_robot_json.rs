@@ -2613,7 +2613,8 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
     {
         let storage = FrankenStorage::open(&staging_db).expect("initialize schema-v1 staging db");
         let conn = storage.raw();
-        conn.execute_batch("BEGIN IMMEDIATE;").expect("begin immediate");
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .expect("begin immediate");
 
         conn.execute_compat(
             "INSERT OR REPLACE INTO sources (id, kind, host_label, machine_id, platform, config_json, created_at, updated_at) \
@@ -2625,13 +2626,23 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
         conn.execute_compat(
             "INSERT INTO agents (id, slug, name, version, kind, created_at, updated_at) \
              VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)",
-            params![1_i64, "aider", "aider", "cli", 1_773_603_242_063_i64, 1_773_603_242_063_i64],
+            params![
+                1_i64,
+                "aider",
+                "aider",
+                "cli",
+                1_773_603_242_063_i64,
+                1_773_603_242_063_i64
+            ],
         )
         .expect("insert agent");
 
         for (id, path) in [
             (1_i64, "/data/projects/coding_agent_session_search"),
-            (2_i64, "/data/projects/coding_agent_session_search/tests/fixtures/aider"),
+            (
+                2_i64,
+                "/data/projects/coding_agent_session_search/tests/fixtures/aider",
+            ),
         ] {
             conn.execute_compat(
                 "INSERT INTO workspaces (id, path, display_name) VALUES (?1, ?2, NULL)",
@@ -2640,7 +2651,8 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
             .expect("insert workspace");
         }
 
-        let metadata_json = r#"{"cass":{"origin":{"source_id":"local","kind":"local","host":null}}}"#;
+        let metadata_json =
+            r#"{"cass":{"origin":{"source_id":"local","kind":"local","host":null}}}"#;
         let metadata_bin: &[u8] = &[
             0x81, 0xa4, b'c', b'a', b's', b's', 0x81, 0xa6, b'o', b'r', b'i', b'g', b'i', b'n',
             0x83, 0xa9, b's', b'o', b'u', b'r', b'c', b'e', b'_', b'i', b'd', 0xa5, b'l', b'o',
@@ -2963,8 +2975,12 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
             input_tokens,
             output_tokens,
         ) in [
-            (1_i64, 2_i64, 1_i64, 0_i64, 100_i64, 90_i64, 0_i64, 90_i64, 10_i64),
-            (2_i64, 4_i64, 2_i64, 2_i64, 26_i64, 8_i64, 18_i64, 8_i64, 18_i64),
+            (
+                1_i64, 2_i64, 1_i64, 0_i64, 100_i64, 90_i64, 0_i64, 90_i64, 10_i64,
+            ),
+            (
+                2_i64, 4_i64, 2_i64, 2_i64, 26_i64, 8_i64, 18_i64, 8_i64, 18_i64,
+            ),
         ] {
             conn.execute_compat(
                 "INSERT INTO usage_daily (\
@@ -3056,7 +3072,9 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
 
         conn.execute_batch("COMMIT;").expect("commit fixture data");
         storage.rebuild_fts().expect("rebuild fts_messages");
-        storage.close().expect("close storage before single-file finalize");
+        storage
+            .close()
+            .expect("close storage before single-file finalize");
     }
 
     {
@@ -3095,7 +3113,8 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
         "finalized fixture must carry legacy DELETE header format bytes [1, 1]"
     );
 
-    fs::rename(&staging_db, &target_db).expect("atomically replace search_demo_data/agent_search.db");
+    fs::rename(&staging_db, &target_db)
+        .expect("atomically replace search_demo_data/agent_search.db");
 
     for stale in [
         "agent_search.db-wal",

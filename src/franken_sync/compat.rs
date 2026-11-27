@@ -966,4 +966,3 @@ pub(super) fn read_backup_report(path: &Path) -> Result<BackupReport, FrankenErr
 pub(crate) fn shutdown_driver() -> bool {
     true
 }
-

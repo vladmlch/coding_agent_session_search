@@ -449,10 +449,7 @@ fn gh536_a_new_device_number_after_a_remount_does_not_reparse_unchanged_sources(
                     .raw()
                     .execute_with_params(
                         "UPDATE meta SET value = ?1 WHERE key = ?2",
-                        &[
-                            SqliteValue::Text(saved.to_string()),
-                            SqliteValue::Text(key),
-                        ],
+                        &[SqliteValue::Text(saved.to_string()), SqliteValue::Text(key)],
                     )
                     .unwrap();
             }

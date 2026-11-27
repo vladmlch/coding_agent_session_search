@@ -842,10 +842,11 @@ mod deferred_watch_sources {
 
         let storage = SqliteStorage::open_readonly(&data.join("agent_search.db"))
             .expect("inspect canonical archive after watcher exit");
-        let region_docs = coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
-            storage.raw(),
-        )
-        .expect("read live region doc bound") as u64;
+        let region_docs =
+            coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+                storage.raw(),
+            )
+            .expect("read live region doc bound") as u64;
         // REGION_VERSION=7 emits 3 region/session-scope docs per conversation
         // plus 1 noise_chat doc for each of the 5 Codex conversations whose
         // assistant "acknowledged" message was excluded from canonical search.

@@ -1,8 +1,6 @@
 use super::*;
 use crate::franken_sync::SqliteValue;
-use crate::franken_sync::compat::{
-    ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-};
+use crate::franken_sync::compat::{ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt};
 use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use serial_test::serial;
 use std::path::{Path, PathBuf};

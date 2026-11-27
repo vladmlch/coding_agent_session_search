@@ -76,8 +76,8 @@ impl FrankenOwnerConnection {
     /// Bypasses on-disk `archive_disposition` checks and `PRAGMA query_only = 1`
     /// so in-memory fixtures remain writable.
     #[cfg(test)]
-    pub(crate) fn open_in_memory_sync() -> std::result::Result<Self, crate::franken_sync::FrankenError>
-    {
+    pub(crate) fn open_in_memory_sync()
+    -> std::result::Result<Self, crate::franken_sync::FrankenError> {
         let conn = crate::franken_sync::Connection::open(":memory:")?;
         conn.execute("PRAGMA busy_timeout = 5000;")?;
         Ok(Self(parking_lot::Mutex::new(conn)))

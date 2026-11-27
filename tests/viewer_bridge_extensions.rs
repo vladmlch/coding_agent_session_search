@@ -8462,7 +8462,10 @@ fn meta_token_probe_earns_and_denies_the_fast_path() -> Result<()> {
             .query_row("SELECT title FROM conversations WHERE id = 1")?
             .get_typed::<String>(0)?)
     })?;
-    ensure!(title == "bbbb", "expected updated title after observe, got {title}");
+    ensure!(
+        title == "bbbb",
+        "expected updated title after observe, got {title}"
+    );
 
     // Fallback: a path that cannot exist fails the probe → distrust.
     let missing = temp.path().join("no-such-dir").join("archive.db");

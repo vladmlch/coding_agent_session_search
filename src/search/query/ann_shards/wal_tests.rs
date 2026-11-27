@@ -198,7 +198,11 @@ fn latest_wal_replacement_supersedes_a_better_old_graph_vector() {
         SearchClient::search_exact_semantic_indexes(&ctx, &[1.0, 0.0], 2, None).unwrap();
     assert_eq!(exact_hits[0].message_id, 2);
     assert_eq!(
-        exact_hits.iter().find(|hit| hit.message_id == 1).unwrap().score,
+        exact_hits
+            .iter()
+            .find(|hit| hit.message_id == 1)
+            .unwrap()
+            .score,
         0.0
     );
     assert_eq!(files(temp.path()), before);

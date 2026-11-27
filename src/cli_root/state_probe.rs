@@ -525,9 +525,8 @@ mod health_watermark_probe_tests {
     fn dirty_wal_db(dir: &Path) -> (PathBuf, u64) {
         let db_path = dir.join("watermarks.db");
         {
-            let mut conn =
-                crate::franken_sync::Connection::open(db_path.to_string_lossy())
-                    .expect("open fixture db");
+            let mut conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())
+                .expect("open fixture db");
             conn.execute("PRAGMA application_id = 0x43415353;")
                 .expect("stamp application_id");
             conn.execute("PRAGMA user_version = 1;")

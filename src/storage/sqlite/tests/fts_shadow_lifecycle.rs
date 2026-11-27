@@ -290,7 +290,9 @@ fn fts_indexable_count_and_intersection_plans_are_bounded_and_exact() {
         .expect("explain query plan indexable-message parent-run count");
     assert!(
         count_eqp.iter().any(|detail| detail.contains("SEARCH"))
-            && !count_eqp.iter().any(|detail| detail.contains("TEMP B-TREE")),
+            && !count_eqp
+                .iter()
+                .any(|detail| detail.contains("TEMP B-TREE")),
         "parity cardinality must use SEARCH without TEMP B-TREE: {count_eqp:?}"
     );
     let open_read_rootpages: Vec<i64> = count_opcodes

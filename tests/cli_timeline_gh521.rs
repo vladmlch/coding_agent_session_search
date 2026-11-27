@@ -434,12 +434,7 @@ fn gh521_narrow_window_does_not_materialize_unrelated_message_payloads() {
 
     // Now select the huge conversation too. Counting its turns must remain
     // bounded even when the time/agent/source predicates all match it.
-    let conn = Connection::open(
-        tmp.path()
-            .join("agent_search.db")
-            .to_string_lossy(),
-    )
-    .unwrap();
+    let conn = Connection::open(tmp.path().join("agent_search.db").to_string_lossy()).unwrap();
     conn.execute_compat(
         "UPDATE conversations SET started_at = ?1, ended_at = ?2 WHERE id = 1",
         params![START + 1, START + 20_001],

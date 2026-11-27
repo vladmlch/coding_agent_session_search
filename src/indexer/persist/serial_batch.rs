@@ -153,15 +153,16 @@ pub(super) fn persist_conversations_batched_whole(
                 // by conversation key, so re-running the whole chunk is
                 // idempotent; bound it instead of surfacing one transient
                 // conflict as a fatal exit 7 that discards the run.
-                let chunk_result = with_writer_retry(SERIAL_CHUNK_CONTENTION_RETRIES, || {
-                    match source_completion.filter(|_| end == prepared.len()) {
+                let chunk_result =
+                    with_writer_retry(SERIAL_CHUNK_CONTENTION_RETRIES, || match source_completion
+                        .filter(|_| end == prepared.len())
+                    {
                         Some(completion) => writer
                             .insert_conversations_batched_with_source_completion(
                                 chunk_refs, completion,
                             ),
                         None => writer.insert_conversations_batched(chunk_refs),
-                    }
-                });
+                    });
                 match chunk_result {
                     Ok(chunk_outcomes) => {
                         outcomes.extend(chunk_outcomes);
@@ -406,10 +407,7 @@ fn env_usize_bounded_opt(var: &str, max: usize) -> Option<usize> {
 pub(in crate::indexer) fn writer_retry_limit() -> usize {
     env_usize_bounded_opt("CASS_INDEXER_WRITER_RETRIES", WRITER_RETRY_MAX)
         .or_else(|| {
-            env_usize_bounded_opt(
-                "CASS_INDEXER_BEGIN_CONCURRENT_RETRIES",
-                WRITER_RETRY_MAX,
-            )
+            env_usize_bounded_opt("CASS_INDEXER_BEGIN_CONCURRENT_RETRIES", WRITER_RETRY_MAX)
         })
         .unwrap_or(6)
 }

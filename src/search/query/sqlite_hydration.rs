@@ -255,14 +255,12 @@ pub(in crate::search::query) fn hydrate_message_content_by_conversation(
             .insert(line_idx);
     }
 
-    let has_conv_idx = franken_query_map_collect_retry(
-        conn,
-        "PRAGMA index_list(messages)",
-        &[],
-        |row| row.get_typed::<String>(1),
-    )
-    .map(|names| names.iter().any(|name| name == "idx_messages_conv_idx"))
-    .unwrap_or(false);
+    let has_conv_idx =
+        franken_query_map_collect_retry(conn, "PRAGMA index_list(messages)", &[], |row| {
+            row.get_typed::<String>(1)
+        })
+        .map(|names| names.iter().any(|name| name == "idx_messages_conv_idx"))
+        .unwrap_or(false);
     let index_hint = if has_conv_idx {
         " INDEXED BY idx_messages_conv_idx"
     } else {

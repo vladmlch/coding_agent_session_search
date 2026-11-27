@@ -706,8 +706,7 @@ fn rebuild_canonical_fts_repairs_structurally_corrupt_shadow_that_blocks_open() 
     // Corrupt the %_data structure record (rowid 10) through a fresh
     // connection (the FTS is still valid here, so the open succeeds).
     {
-        let conn = FrankenConnection::open(db_path.to_string_lossy())
-            .expect("open raw connection");
+        let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open raw connection");
         let garbage = [0xFFu8; 12];
         conn.execute_compat(
             "UPDATE fts_messages_data SET block = ?1 WHERE id = ?2",
@@ -1291,7 +1290,9 @@ fn leaked_pages_classifier_accepts_only_a_lone_engine_leak_row() {
     assert_eq!(
         classify_leaked_pages(
             &rows(&["*** in database main ***\nPage 3: never used"]),
-            &rows(&["*** in database main ***\nPage 3: never used\nPage 4: never used\nPage 5: never used"]),
+            &rows(&[
+                "*** in database main ***\nPage 3: never used\nPage 4: never used\nPage 5: never used"
+            ]),
         ),
         LeakedPagesVerdict::LeakedPagesOnly {
             first_leaked_page: 3
@@ -1300,7 +1301,10 @@ fn leaked_pages_classifier_accepts_only_a_lone_engine_leak_row() {
     // `integrity_is_leaked_pages_only` receives quick_check output with an
     // empty integrity_check list when doctor_taxonomy skips integrity_check.
     assert_eq!(
-        classify_leaked_pages(&rows(&["*** in database main ***\nPage 7: never used"]), &[]),
+        classify_leaked_pages(
+            &rows(&["*** in database main ***\nPage 7: never used"]),
+            &[]
+        ),
         LeakedPagesVerdict::LeakedPagesOnly {
             first_leaked_page: 7
         }
@@ -1486,7 +1490,8 @@ fn repair_leaked_pages_reclaims_detached_freelist_via_vacuum() {
             .open(&db_path)
             .expect("open db bytes");
         let mut header = [0u8; 8];
-        file.seek(SeekFrom::Start(32)).expect("seek freelist header");
+        file.seek(SeekFrom::Start(32))
+            .expect("seek freelist header");
         file.read_exact(&mut header).expect("read freelist header");
         let trunk = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
         let count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
@@ -1494,7 +1499,8 @@ fn repair_leaked_pages_reclaims_detached_freelist_via_vacuum() {
             trunk > 1 && count >= 8,
             "fixture needs durable freelist pages: trunk={trunk} count={count}"
         );
-        file.seek(SeekFrom::Start(32)).expect("seek freelist header");
+        file.seek(SeekFrom::Start(32))
+            .expect("seek freelist header");
         file.write_all(&[0u8; 8]).expect("detach freelist");
         file.sync_all().expect("sync header");
     }
@@ -1554,9 +1560,11 @@ fn repair_leaked_pages_reclaims_detached_freelist_via_vacuum() {
         .expect("conversations count");
     let msgs: i64 = readonly
         .raw()
-        .query_row_map("SELECT COUNT(*) FROM messages;", &[] as &[ParamValue], |row| {
-            row.get_typed(0)
-        })
+        .query_row_map(
+            "SELECT COUNT(*) FROM messages;",
+            &[] as &[ParamValue],
+            |row| row.get_typed(0),
+        )
         .expect("messages count");
     assert_eq!(convs, 1);
     assert_eq!(msgs, 2);

@@ -143,8 +143,7 @@ mod response_schema_tests {
             state.get("rebuild").is_some(),
             "health.state schema missing rebuild block"
         );
-        let memory = &schemas["health"]["properties"]["responsiveness"]["properties"]["memory"]
-            ["properties"];
+        let memory = &schemas["health"]["properties"]["responsiveness"]["properties"]["memory"]["properties"];
         for field in [
             "capacity_pct",
             "inflight_byte_limit",

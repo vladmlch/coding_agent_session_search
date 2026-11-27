@@ -774,8 +774,8 @@ mod legacy_source_filter_tests {
 
         let tmp = tempfile::tempdir().expect("temporary archive");
         let path = tmp.path().join("stats.db");
-        let writer = crate::franken_sync::Connection::open(path.to_string_lossy())
-            .expect("create archive");
+        let writer =
+            crate::franken_sync::Connection::open(path.to_string_lossy()).expect("create archive");
         writer
             .execute("PRAGMA application_id = 0x43415353;")
             .expect("application_id");

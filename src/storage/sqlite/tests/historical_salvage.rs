@@ -471,10 +471,7 @@ fn rebuild_fts_via_rusqlite_repopulates_empty_fts_shadow() {
 
     let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     let schema_rows = franken_fts_schema_rows(&conn).unwrap();
-    assert_eq!(
-        schema_rows, 1,
-        "rebuild should leave one clean FTS schema"
-    );
+    assert_eq!(schema_rows, 1, "rebuild should leave one clean FTS schema");
     let match_count: i64 = conn
         .query_row_map(
             "SELECT COUNT(*) FROM fts_messages WHERE fts_messages MATCH 'retro'",

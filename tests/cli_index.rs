@@ -195,8 +195,8 @@ fn index_creates_db_and_index() {
 #[test]
 fn cdzcl_index_idempotency_rejects_invalid_cached_payloads() {
     use coding_agent_search::franken_sync::compat::ConnectionExt;
-    use coding_agent_search::storage::sqlite::FrankenStorage;
     use coding_agent_search::franken_sync::compat::RowExt;
+    use coding_agent_search::storage::sqlite::FrankenStorage;
     use serde_json::{Value, json};
     use std::io::Write;
 
@@ -372,9 +372,9 @@ fn cdzcl_index_idempotency_rejects_invalid_cached_payloads() {
 /// acceptance check; an unpublished dependency overlay is not release proof.
 #[test]
 fn gh459_full_scan_repairs_cursor_workspace_without_reinserting_messages() {
+    use coding_agent_search::franken_sync::compat::RowExt;
     use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
     use coding_agent_search::search::model_manager::load_hash_semantic_context_strict;
-    use coding_agent_search::franken_sync::compat::RowExt;
     use serde_json::{Value, json};
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -1502,10 +1502,8 @@ fn index_handles_existing_schema_13_db() {
 
     // Setting meta.schema_version = '13' (> CURRENT_SCHEMA_VERSION=1) must fail
     // closed without replacing the archive.
-    let conn = coding_agent_search::franken_sync::Connection::open(
-        db_path.to_string_lossy(),
-    )
-    .expect("open db to set schema_version=13");
+    let conn = coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
+        .expect("open db to set schema_version=13");
     conn.execute("UPDATE meta SET value = '13' WHERE key = 'schema_version'")
         .expect("set schema_version to 13");
     conn.close().expect("close db");
@@ -1674,8 +1672,8 @@ fn watch_once_indexes_real_codex_session_with_deferred_tantivy_open() {
 #[cfg(unix)]
 #[test]
 fn gh478_watch_once_retains_codex_hint_when_symlink_target_has_no_provider_marker() {
-    use coding_agent_search::storage::sqlite::FrankenStorage;
     use coding_agent_search::franken_sync::compat::RowExt;
+    use coding_agent_search::storage::sqlite::FrankenStorage;
 
     let tmp = TempDir::new().unwrap();
     let home = tmp.path();
@@ -5760,8 +5758,8 @@ fn rvt_qwen_session(home: &std::path::Path, needle: &str) -> std::path::PathBuf 
 
 /// Read `(conversation_id, source_path)` rows from the archive.
 fn rvt_conversations(db_path: &std::path::Path) -> Vec<(i64, String)> {
-    use coding_agent_search::storage::sqlite::FrankenStorage;
     use coding_agent_search::franken_sync::compat::RowExt;
+    use coding_agent_search::storage::sqlite::FrankenStorage;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let rows = storage
         .raw()
@@ -5784,8 +5782,8 @@ fn rvt_conversations(db_path: &std::path::Path) -> Vec<(i64, String)> {
 /// Read the region-marks rows as `(conversation_id -> (region_version,
 /// docs_state))`.
 fn rvt_region_marks(db_path: &std::path::Path) -> std::collections::HashMap<i64, (i64, String)> {
-    use coding_agent_search::storage::sqlite::FrankenStorage;
     use coding_agent_search::franken_sync::compat::RowExt;
+    use coding_agent_search::storage::sqlite::FrankenStorage;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let rows = storage
         .raw()
@@ -5874,8 +5872,8 @@ fn rvt_connector_conversations(payload: &serde_json::Value, name: &str) -> i64 {
 /// that was lost).
 fn rvt_repair_global_scan_watermark(db_path: &std::path::Path) {
     use coding_agent_search::franken_sync::compat::ConnectionExt;
-    use coding_agent_search::storage::sqlite::FrankenStorage;
     use coding_agent_search::franken_sync::compat::RowExt;
+    use coding_agent_search::storage::sqlite::FrankenStorage;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let rows = storage
         .raw()
@@ -5907,8 +5905,7 @@ fn rvt_repair_global_scan_watermark(db_path: &std::path::Path) {
         .cloned()
         .unwrap_or_else(|| now_ms.to_string());
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
-            .unwrap();
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
     conn.execute_compat(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('last_scan_ts', ?1)",
         coding_agent_search::franken_sync::params![seed],
@@ -6226,9 +6223,9 @@ fn rvt_extension_rows(db_path: &std::path::Path, conversation_ids: &[i64]) -> se
 /// `(facts.extractor_version, projection.projection_version,
 /// projection.extractor_version)` for one conversation.
 fn rvt_extension_versions(db_path: &std::path::Path, conversation_id: i64) -> (i64, i64, i64) {
+    use coding_agent_search::franken_sync::compat::RowExt;
     use coding_agent_search::storage::sqlite::FrankenStorage;
     use coding_agent_search::viewer_extensions::facts::FactsDb;
-    use coding_agent_search::franken_sync::compat::RowExt;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let facts_version = storage
         .raw()

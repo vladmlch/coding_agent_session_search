@@ -1,12 +1,12 @@
 use super::super::*;
 use super::helpers::*;
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
+use crate::franken_sync::SqliteValue;
 use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 use crate::indexer::LexicalPopulationStrategy;
 use crate::model::types::{Agent, AgentKind, Conversation, MessageRole};
 use crate::search::tantivy::TantivyIndex;
 use crate::sources::provenance::{Source, SourceKind};
-use crate::franken_sync::SqliteValue;
 use serial_test::serial;
 use std::collections::HashSet;
 
@@ -65,8 +65,7 @@ fn gh423_codebuff_indexer_revisions_replace_search_preserving_canonical_identity
                 term,
                 &frankensearch::quill::query::CassQueryFilters::default(),
             );
-            let canonical_query =
-                crate::search::quill_bridge::canonical_message_query(query.query);
+            let canonical_query = crate::search::quill_bridge::canonical_message_query(query.query);
             let page = crate::search::quill_bridge::search_paginated(
                 &reader,
                 &canonical_query,

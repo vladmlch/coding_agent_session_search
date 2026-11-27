@@ -326,7 +326,8 @@ fn stress_read_write_mix() {
 
                 while start.elapsed() < duration {
                     let result = with_retry(30, || {
-                        let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                        let mut tx =
+                            conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
                         tx.execute_compat(
                             "INSERT INTO items (thread_id, seq, val) VALUES (?1, ?2, 'rw-mix')",
                             fparams![thread_id, seq],
@@ -732,16 +733,17 @@ fn stress_retry_convergence_conflicting_writes() {
                         // executing a transaction can hit a transient busy
                         // error; route those through the same retry path as
                         // commit conflicts.
-                        let mut tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
-                            Ok(tx) => tx,
-                            Err(e) => {
-                                attempt += 1;
-                                retries.fetch_add(1, Ordering::Relaxed);
-                                assert!(attempt <= 50, "too many retries on begin: {e}");
-                                std::thread::sleep(Duration::from_millis(1 << attempt.min(6)));
-                                continue;
-                            }
-                        };
+                        let mut tx =
+                            match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
+                                Ok(tx) => tx,
+                                Err(e) => {
+                                    attempt += 1;
+                                    retries.fetch_add(1, Ordering::Relaxed);
+                                    assert!(attempt <= 50, "too many retries on begin: {e}");
+                                    std::thread::sleep(Duration::from_millis(1 << attempt.min(6)));
+                                    continue;
+                                }
+                            };
                         let rows = match tx.query("SELECT val FROM counter WHERE id = 1") {
                             Ok(rows) => rows,
                             Err(e) => {

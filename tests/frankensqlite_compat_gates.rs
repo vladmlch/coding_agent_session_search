@@ -63,9 +63,8 @@ fn sqlite_dependency_source_identity_is_exact_and_coherent() {
     let legacy_facade = concat!("franken", "sqlite");
     let legacy_engine = concat!("fsql", "ite");
     let legacy_engine_prefix = concat!("fsql", "ite-");
-    let expected_quill_lock_source = format!(
-        "git+{EXPECTED_QUILL_GIT}?rev={EXPECTED_QUILL_REV}#{EXPECTED_QUILL_REV}"
-    );
+    let expected_quill_lock_source =
+        format!("git+{EXPECTED_QUILL_GIT}?rev={EXPECTED_QUILL_REV}#{EXPECTED_QUILL_REV}");
 
     let manifest: toml::Table =
         toml::from_str(include_str!("../Cargo.toml")).expect("parse Cargo.toml");
@@ -397,9 +396,10 @@ fn sqlite_existing_schema_only_reopens_large_archive_without_truncation() {
                 )
                 .expect("query reopened large archive sentinel");
             assert_eq!(rows.len(), 1, "missing sentinel row {id}");
-            let expected = SqliteValue::Text(
-                format!("{id:08}:{}", "x".repeat(PAYLOAD_BYTES.saturating_sub(9))),
-            );
+            let expected = SqliteValue::Text(format!(
+                "{id:08}:{}",
+                "x".repeat(PAYLOAD_BYTES.saturating_sub(9))
+            ));
             assert_eq!(
                 rows.first().and_then(|row| row.get(0)),
                 Some(&expected),
@@ -1325,7 +1325,11 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
                 .query_with_params(sql, &bound)
                 .expect("execute shape on the copy")
                 .len();
-            let tag = if is_production { "shape" } else { "unindexed-shape" };
+            let tag = if is_production {
+                "shape"
+            } else {
+                "unindexed-shape"
+            };
             println!(
                 "[probe-{tag}] {label}: rows={rows} {:?} plan: {details}",
                 start.elapsed()
@@ -1663,9 +1667,9 @@ fn gate1_fts5_bulk_insert_performance() {
     for i in 0..1000 {
         conn.execute_with_params(
             "INSERT INTO perf_fts(content) VALUES (?1)",
-            &[SqliteValue::Text(
-                format!("document number {i} with searchable content about rust programming"),
-            )],
+            &[SqliteValue::Text(format!(
+                "document number {i} with searchable content about rust programming"
+            ))],
         )
         .unwrap();
     }
@@ -2311,8 +2315,7 @@ fn gate3_schema_parity_reopened_db_matches_fresh_db() {
         );
     }
     {
-        let storage =
-            FrankenStorage::open(&db_a_path).expect("reopen db-a with FrankenStorage");
+        let storage = FrankenStorage::open(&db_a_path).expect("reopen db-a with FrankenStorage");
         assert_eq!(
             storage
                 .schema_version()

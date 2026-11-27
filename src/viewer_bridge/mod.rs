@@ -431,9 +431,12 @@ impl Session {
         if self.archive.is_none() {
             self.archive = Some(StrictArchive::open(&self.db)?);
         }
-        let interrupt = self
-            .active_deadline
-            .map(|at| (at, deadline::arm_snapshot_interrupt as reader::ArmInterruptFn));
+        let interrupt = self.active_deadline.map(|at| {
+            (
+                at,
+                deadline::arm_snapshot_interrupt as reader::ArmInterruptFn,
+            )
+        });
         let archive = self
             .archive
             .as_mut()
@@ -983,8 +986,7 @@ impl Session {
             Ok(value) => Ok(value),
             Err(error) => {
                 if error.downcast_ref::<protocol::Refusal>().is_none()
-                    && (is_sql_interrupted(&error)
-                        || (deadline.exceeded() && is_sql_error(&error)))
+                    && (is_sql_interrupted(&error) || (deadline.exceeded() && is_sql_error(&error)))
                 {
                     return Err(deadline::Deadline::refusal(
                         "sqlite_query",

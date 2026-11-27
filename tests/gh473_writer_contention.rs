@@ -190,10 +190,7 @@ fn gh473_real_cli_write_and_noop_replays_preserve_pinned_reader_and_lexical_stat
             checkpoint["committed_meta_fingerprint"].as_str(),
             Some(fingerprint.as_str())
         );
-        let summary_docs = searchable_index_summary(&index_path)
-            .unwrap()
-            .unwrap()
-            .docs as u64;
+        let summary_docs = searchable_index_summary(&index_path).unwrap().unwrap().docs as u64;
         assert_eq!(summary_docs - region_docs, 2);
         assert_eq!(summary_docs, 2 + expected_region_docs);
         current.close_without_checkpoint().unwrap();

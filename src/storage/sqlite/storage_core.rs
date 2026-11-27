@@ -870,19 +870,17 @@ impl FrankenStorage {
                 return Err(anyhow!("Database not found at {}", path.display()));
             }
         }
-        let conn = retry_transient_storage_op(
-            "open_readonly_recovering_wal_index_in_place",
-            || {
+        let conn =
+            retry_transient_storage_op("open_readonly_recovering_wal_index_in_place", || {
                 FrankenConnection::open_readonly_recovering_wal_index_in_place(&path_str)
                     .map_err(anyhow::Error::new)
-            },
-        )
-        .with_context(|| {
-            format!(
-                "opening sqlite db readonly with in-place wal-index recovery at {}",
-                path.display()
-            )
-        })?;
+            })
+            .with_context(|| {
+                format!(
+                    "opening sqlite db readonly with in-place wal-index recovery at {}",
+                    path.display()
+                )
+            })?;
         let storage = Self::new(conn, path.to_path_buf());
         storage.apply_readonly_config()?;
         Ok(storage)

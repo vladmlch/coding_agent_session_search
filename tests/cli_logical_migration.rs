@@ -248,13 +248,15 @@ fn pre_v1_and_legacy_migrations_backups_are_refused_without_mutating_destination
         export_source(home.path(), &source, &backup, &archive_id);
 
         for allow_compatible in [false, true] {
-            let fresh_destination = home.path().join(format!(
-                "refused-{case_name}-compat-{allow_compatible}.db"
-            ));
+            let fresh_destination = home
+                .path()
+                .join(format!("refused-{case_name}-compat-{allow_compatible}.db"));
             let mut cmd = command(home.path());
-            cmd.args(["archive", "import"])
-                .arg(&backup)
-                .args(["--archive-id", &archive_id, "--include-private"]);
+            cmd.args(["archive", "import"]).arg(&backup).args([
+                "--archive-id",
+                &archive_id,
+                "--include-private",
+            ]);
             if allow_compatible {
                 cmd.arg("--allow-compatible-schema");
             }

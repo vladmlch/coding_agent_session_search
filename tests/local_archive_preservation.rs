@@ -56,8 +56,8 @@ const REMOTE_CLAUDE_PATH: &str = "~/.claude/projects";
 type ConversationRow = (i64, String, Option<String>, i64);
 
 fn snapshot_conversations(db_path: &Path) -> Vec<ConversationRow> {
-    let conn = FrankenConnection::open(db_path.to_string_lossy())
-        .expect("open archive for snapshot");
+    let conn =
+        FrankenConnection::open(db_path.to_string_lossy()).expect("open archive for snapshot");
     let rows = conn
         .query_map_collect(
             "SELECT c.id, c.source_id, c.origin_host, \

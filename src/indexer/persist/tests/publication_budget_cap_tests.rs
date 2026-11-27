@@ -1,13 +1,13 @@
 use super::super::*;
 use super::helpers::*;
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
+use crate::franken_sync::SqliteValue;
 use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 use crate::indexer::LexicalPopulationStrategy;
 use crate::model::types::{Agent, AgentKind, Conversation};
 use crate::search::tantivy::TantivyIndex;
 use crate::sources::provenance::Source;
 use crate::storage::sqlite::FrankenStorage;
-use crate::franken_sync::SqliteValue;
 use serial_test::serial;
 use std::path::Path;
 

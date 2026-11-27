@@ -40,10 +40,7 @@ use super::tx_message_insert::{
 use super::tx_message_insert::{
     franken_append_insert_new_messages_with_profile, franken_batch_insert_new_messages_with_profile,
 };
-use crate::franken_sync::{
-    TransactionBehavior,
-    compat::Transaction as FrankenTransaction,
-};
+use crate::franken_sync::{TransactionBehavior, compat::Transaction as FrankenTransaction};
 use crate::model::types::Conversation;
 #[cfg(test)]
 use anyhow::anyhow;

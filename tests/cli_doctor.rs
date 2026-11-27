@@ -251,8 +251,7 @@ fn seed_healthy_empty_index(test_home: &Path, data_dir: &Path) {
 
 fn write_test_sqlite_db(path: &Path, marker: &str) {
     fs::create_dir_all(path.parent().expect("sqlite db parent")).expect("create sqlite db parent");
-    let conn = FrankenConnection::open(path.to_string_lossy())
-        .expect("open sqlite fixture db");
+    let conn = FrankenConnection::open(path.to_string_lossy()).expect("open sqlite fixture db");
     conn.execute_compat(
         "CREATE TABLE restore_probe(marker TEXT NOT NULL)",
         coding_agent_search::franken_sync::params![],
@@ -524,8 +523,8 @@ fn ensure_codex_agent(conn: &FrankenConnection) -> i64 {
 }
 
 fn corrupt_unused_secondary_index_entry(db_path: &Path) {
-    let conn = FrankenConnection::open(db_path.to_string_lossy())
-        .expect("open db for corruption fixture");
+    let conn =
+        FrankenConnection::open(db_path.to_string_lossy()).expect("open db for corruption fixture");
     conn.execute_compat(
         "CREATE TABLE doctor_integrity_probe(id INTEGER PRIMARY KEY, payload TEXT)",
         coding_agent_search::franken_sync::params![],
@@ -598,8 +597,8 @@ fn corrupt_unused_secondary_index_entry(db_path: &Path) {
     file.flush().expect("flush corrupt index fixture");
     drop(file);
 
-    let verify_conn = FrankenConnection::open(db_path.to_string_lossy())
-        .expect("reopen corrupted fixture");
+    let verify_conn =
+        FrankenConnection::open(db_path.to_string_lossy()).expect("reopen corrupted fixture");
     let quick_after: String = verify_conn
         .query_row_map(
             "PRAGMA quick_check(1);",
@@ -719,8 +718,8 @@ fn engine_integrity_check(db_path: &Path) -> String {
 /// fold the WAL into the main file, and return (page_size, root page of the
 /// canonical `conversations` table, freelist trunk, freelist count).
 fn seed_durable_freelist(db_path: &Path) -> (u64, u32, u32, u32) {
-    let conn = FrankenConnection::open(db_path.to_string_lossy())
-        .expect("open db for freelist fixture");
+    let conn =
+        FrankenConnection::open(db_path.to_string_lossy()).expect("open db for freelist fixture");
     conn.execute_compat(
         "CREATE TABLE leak_probe(id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
         coding_agent_search::franken_sync::params![],
@@ -1083,7 +1082,9 @@ fn doctor_repair_leaked_pages_frees_only_leaked_pages_behind_a_restorable_backup
         String::from_utf8_lossy(&restored.stderr)
     );
     assert_eq!(test_file_blake3(&db_path), leaked_db_blake3);
-    assert!(is_leaked_pages_only_integrity(&engine_integrity_check(&db_path)));
+    assert!(is_leaked_pages_only_integrity(&engine_integrity_check(
+        &db_path
+    )));
     tracker.end(
         "backup_rollback",
         Some("verify the backup, rehearse and apply the restore"),
@@ -1187,15 +1188,19 @@ fn doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place()
     let legacy_home = temp.path().join("legacy");
     let legacy_data_dir = legacy_home.join("cass-data");
     let legacy_db_path = legacy_data_dir.join("agent_search.db");
-    tracker.phase("fixture", "copy the pre-v1 legacy shadow-catalog archive", || {
-        fs::create_dir_all(&legacy_data_dir).expect("data dir");
-        fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/gh503/legacy_fts_config_shadow.db"),
-            &legacy_db_path,
-        )
-        .expect("copy fixture");
-    });
+    tracker.phase(
+        "fixture",
+        "copy the pre-v1 legacy shadow-catalog archive",
+        || {
+            fs::create_dir_all(&legacy_data_dir).expect("data dir");
+            fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/gh503/legacy_fts_config_shadow.db"),
+                &legacy_db_path,
+            )
+            .expect("copy fixture");
+        },
+    );
     let legacy_blake3 = test_file_blake3(&legacy_db_path);
 
     let phase = tracker.start(
@@ -1284,7 +1289,10 @@ fn doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place()
                 coding_agent_search::franken_sync::params![garbage.as_slice()],
             )
             .expect("corrupt fts_messages_data structure record");
-        assert_eq!(changed, 1, "expected structure row id=10 in fts_messages_data");
+        assert_eq!(
+            changed, 1,
+            "expected structure row id=10 in fts_messages_data"
+        );
         let _ = raw.query("PRAGMA wal_checkpoint(TRUNCATE);");
         raw.close().expect("close corrupted db");
     }
@@ -8581,8 +8589,8 @@ fn doctor_fix_wal_checkpoint_fails_truthfully_when_it_exceeds_its_deadline() {
     // retry below must recover and checkpoint this exact database. Rewriting
     // one small scratch row grows the WAL without populating the canonical
     // corpus or making the main database large.
-    let fixture = FrankenConnection::open(db_path.to_string_lossy())
-        .expect("open checkpoint fixture");
+    let fixture =
+        FrankenConnection::open(db_path.to_string_lossy()).expect("open checkpoint fixture");
     fixture
         .execute("PRAGMA wal_autocheckpoint = 0")
         .expect("retain every committed fixture frame");

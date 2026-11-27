@@ -139,12 +139,14 @@ fn rebuild_from_corrupt_shadow(
     storage: &FrankenStorage,
     structured_format: Option<RobotFormat>,
 ) -> CliResult<()> {
-    let inserted = storage.rebuild_fts_shadow_via_drop_recreate().map_err(|e| {
-        storage_error(
-            format!("rebuilding corrupt canonical FTS5 shadow via drop+recreate: {e:#}"),
-            Some("Preserve the archive bundle and run 'cass doctor check --json'."),
-        )
-    })?;
+    let inserted = storage
+        .rebuild_fts_shadow_via_drop_recreate()
+        .map_err(|e| {
+            storage_error(
+                format!("rebuilding corrupt canonical FTS5 shadow via drop+recreate: {e:#}"),
+                Some("Preserve the archive bundle and run 'cass doctor check --json'."),
+            )
+        })?;
     let envelope = serde_json::json!({
         "surface": "doctor_rebuild_canonical_fts",
         "status": "rebuilt_from_corrupt_shadow",

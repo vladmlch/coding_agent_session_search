@@ -1,7 +1,6 @@
 use super::*;
 use crate::franken_sync::{
-    Connection as FrankenConnection, SqliteValue,
-    compat::RowExt as FrankenRowExt,
+    Connection as FrankenConnection, SqliteValue, compat::RowExt as FrankenRowExt,
 };
 use std::path::PathBuf;
 use std::time::Duration;

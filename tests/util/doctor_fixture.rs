@@ -297,10 +297,7 @@ impl DoctorFixtureFactory {
         fs::create_dir_all(&self.data_dir).expect("create fixture data dir");
         let db_path = self.data_dir.join("agent_search.db");
         SqliteStorage::open(&db_path).expect("create fixture archive db");
-        self.log(
-            "seed_empty_archive_db",
-            "created SQLite archive schema",
-        );
+        self.log("seed_empty_archive_db", "created SQLite archive schema");
         self
     }
 

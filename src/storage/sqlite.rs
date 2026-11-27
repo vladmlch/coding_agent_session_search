@@ -54,6 +54,8 @@ pub use connection_pool::{
     LazyFrankenDb, LazyFrankenDbGuard, WriterGuard,
 };
 
+#[cfg(test)]
+pub(crate) use open_and_locks::retry_transient_storage_op;
 pub(crate) use open_and_locks::{
     DeferAnalyticsUpdatesGuard, DoctorMutationDbOpenBypassGuard, MessageLookupTraceCounters,
     defer_analytics_updates_guard, enter_doctor_mutation_db_open_bypass,
@@ -67,8 +69,6 @@ pub(crate) use open_and_locks::{
     retryable_franken_anyhow, retryable_franken_error, retryable_storage_error_message,
     set_message_lookup_trace_enabled, sleep_with_franken_retry_backoff,
 };
-#[cfg(test)]
-pub(crate) use open_and_locks::retry_transient_storage_op;
 
 pub use backup_and_integrity::{
     ConnectorScanState, DatabaseBundleMoveResult, FTS_MESSAGES_CORRUPTION_RECOVERY_HINT,
@@ -85,14 +85,13 @@ pub(crate) use backup_and_integrity::{
 };
 #[cfg(test)]
 pub(crate) use backup_and_integrity::{
-    ensure_fts_consistency_via_rusqlite,
-    rebuild_fts_via_rusqlite, recovery_conversation_row_from_lenient_columns,
-    remove_database_files,
+    ensure_fts_consistency_via_rusqlite, rebuild_fts_via_rusqlite,
+    recovery_conversation_row_from_lenient_columns, remove_database_files,
 };
 
-pub use source_and_historical_import::HistoricalSalvageOutcome;
 #[cfg(test)]
 pub(crate) use backup_and_integrity::discover_historical_database_bundles;
+pub use source_and_historical_import::HistoricalSalvageOutcome;
 pub(crate) use source_and_historical_import::{
     message_extra_to_source_jsonl_line, seed_canonical_from_best_historical_bundle,
 };
@@ -100,11 +99,11 @@ pub(crate) use source_and_historical_import::{
 #[cfg(test)]
 pub(crate) use omp_and_semantic_meta::legacy_omp_analytics_pending;
 pub use omp_and_semantic_meta::{CURRENT_SCHEMA_VERSION, LegacyOmpReclassificationResult};
-pub use open_and_locks::SchemaCheck;
 pub(crate) use omp_and_semantic_meta::{
     MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION, SemanticIdentityTier,
     legacy_omp_analytics_pending_with_query,
 };
+pub use open_and_locks::SchemaCheck;
 
 pub(crate) use lexical_rebuild::LEXICAL_REBUILD_PLANNER_ESTIMATED_BYTES_PER_MESSAGE;
 pub use lexical_rebuild::{

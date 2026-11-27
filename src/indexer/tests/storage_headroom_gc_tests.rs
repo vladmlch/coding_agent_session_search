@@ -1082,9 +1082,7 @@ fn full_rebuild_integrity_preflight_accepts_only_empty_bootstrap_states() {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("interrupted-bootstrap.db");
         {
-            let conn =
-                crate::franken_sync::Connection::open(db_path.to_string_lossy())
-                    .unwrap();
+            let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
             // Persist a valid schema-v1 SQLite header even in the zero-object case.
             conn.execute("PRAGMA application_id = 0x43415353").unwrap();
             conn.execute("PRAGMA user_version = 1").unwrap();
@@ -1143,9 +1141,7 @@ fn full_rebuild_integrity_preflight_refuses_nonempty_bootstrap_catalogs() {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("incomplete-archive.db");
         {
-            let conn =
-                crate::franken_sync::Connection::open(db_path.to_string_lossy())
-                    .unwrap();
+            let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
             conn.execute("PRAGMA application_id = 0x43415353").unwrap();
             conn.execute("PRAGMA user_version = 1").unwrap();
             conn.execute_batch(sql).unwrap();
@@ -1212,8 +1208,7 @@ fn full_rebuild_integrity_preflight_rejects_corrupt_fts_structure_record() {
     }
 
     {
-        let conn =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
+        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
         // bet45: target the newest structure record instead of the old
         // magic id=10 — the contentless shadow's row layout changed and
         // the fixture's single segment no longer lands on that id.

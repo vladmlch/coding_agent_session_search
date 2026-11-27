@@ -946,7 +946,8 @@ fn sources_doctor_recovery_surface_is_in_parity() -> Result<(), String> {
     let local_toml = format!(
         "[[sources]]\nname = \"local-broken\"\ntype = \"local\"\npaths = [\"{missing_path_str}\"]\n"
     );
-    std::fs::write(&sources_toml, local_toml).map_err(|e| format!("write local sources.toml: {e}"))?;
+    std::fs::write(&sources_toml, local_toml)
+        .map_err(|e| format!("write local sources.toml: {e}"))?;
     let local_before =
         std::fs::read(&sources_toml).map_err(|e| format!("read local sources.toml: {e}"))?;
 
@@ -980,7 +981,12 @@ fn sources_doctor_recovery_surface_is_in_parity() -> Result<(), String> {
         .ok_or_else(|| {
             format!("[drift={robot_drift}] local robot output omitted 'local-broken'")
         })?;
-    if local_diag.get("failed").and_then(Value::as_u64).unwrap_or(0) == 0 {
+    if local_diag
+        .get("failed")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0
+    {
         return Err(format!(
             "[drift={robot_drift}] broken local source must report failed >= 1: {local_diag}"
         ));

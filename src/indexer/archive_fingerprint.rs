@@ -984,11 +984,11 @@ pub(in crate::indexer) fn rebuild_daily_stats_from_conversation_packets(
         .raw()
         .transaction_with_behavior(FrankenTransactionBehavior::Immediate)
         .with_context(|| {
-        format!(
-            "opening packet daily_stats rebuild transaction for {}",
-            db_path.display()
-        )
-    })?;
+            format!(
+                "opening packet daily_stats rebuild transaction for {}",
+                db_path.display()
+            )
+        })?;
     tx.execute("DELETE FROM daily_stats").with_context(|| {
         format!(
             "clearing daily_stats before packet rebuild for {}",

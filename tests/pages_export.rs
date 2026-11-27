@@ -350,10 +350,7 @@ mod tests {
             &[],
             |row: &FrankenRow| row.get_typed(0),
         )?;
-        assert_eq!(
-            assistant_content,
-            "sqlite export payload is queryable"
-        );
+        assert_eq!(assistant_content, "sqlite export payload is queryable");
 
         let fts_hits: i64 = output_conn.query_row_map(
             "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'sqlite'",

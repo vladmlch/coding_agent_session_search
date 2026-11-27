@@ -275,8 +275,7 @@ use coding_agent_search::pages::config_input::PagesConfig;
 use coding_agent_search::pages::export::{ExportEngine, ExportFilter, PathMode};
 
 fn open_franken_connection(path: &Path) -> FrankenConnection {
-    FrankenConnection::open(path.to_string_lossy())
-        .expect("should open database with SQLite")
+    FrankenConnection::open(path.to_string_lossy()).expect("should open database with SQLite")
 }
 
 fn query_i64(conn: &FrankenConnection, sql: &str) -> i64 {

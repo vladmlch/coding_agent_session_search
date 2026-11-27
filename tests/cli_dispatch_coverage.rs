@@ -1037,8 +1037,7 @@ fn timeline_json_normalizes_remote_provenance_without_source_row() {
         ))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
-            .unwrap();
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
     conn.execute("UPDATE sources SET kind = '' WHERE id = 'work-laptop'")
         .unwrap();
 
@@ -1120,8 +1119,7 @@ fn timeline_json_derives_remote_source_id_from_origin_host_when_source_id_blank(
         .ensure_workspace(&workspace, Some("workspace"))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
-            .unwrap();
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
     conn.execute(
         "INSERT INTO sources(id, kind, host_label, created_at, updated_at) VALUES ('   ', 'remote', 'user@work-laptop', 0, 0)",
     )
@@ -2798,8 +2796,7 @@ fn sessions_json_derives_remote_source_id_from_origin_host_when_source_id_blank(
         .ensure_workspace(&workspace, Some("workspace"))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
-            .unwrap();
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
     conn.execute(
         "INSERT INTO sources(id, kind, host_label, created_at, updated_at) VALUES ('   ', 'remote', 'user@work-laptop', 0, 0)",
     )
@@ -2869,8 +2866,7 @@ fn sessions_json_keeps_local_file_metadata_for_blank_source_id() {
         .ensure_workspace(&workspace, Some("workspace"))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
-            .unwrap();
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
     conn.execute(
         "INSERT INTO sources(id, kind, host_label, created_at, updated_at) VALUES ('   ', 'local', NULL, 0, 0)",
     )

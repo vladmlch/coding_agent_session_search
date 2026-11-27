@@ -176,7 +176,10 @@ impl IntoIterator for Row {
     }
 }
 
-pub(super) fn materialize_row(row: &rusqlite::Row<'_>, column_count: usize) -> Result<Row, FrankenError> {
+pub(super) fn materialize_row(
+    row: &rusqlite::Row<'_>,
+    column_count: usize,
+) -> Result<Row, FrankenError> {
     let mut values = Vec::with_capacity(column_count);
     for index in 0..column_count {
         let value = row
@@ -728,4 +731,3 @@ impl FileIdentity {
         }
     }
 }
-

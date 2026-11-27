@@ -842,7 +842,8 @@ fn inspect_native_writer_lock(db_path: &std::path::Path) -> LockAdmissionProbe {
         let path_str = db_path.to_string_lossy();
         let mut conn = match open_with_flags(
             path_str.as_ref(),
-            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY | FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
+            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY
+                | FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
         ) {
             Ok(conn) => conn,
             Err(err) => return lock_admission_outcome_from_franken_error(&err),

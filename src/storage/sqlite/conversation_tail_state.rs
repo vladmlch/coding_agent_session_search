@@ -1,5 +1,4 @@
 use super::fts_rebuild::path_to_string;
-use super::source_and_historical_import::SOURCE_PATH_MERGE_START_TOLERANCE_MS;
 use super::open_and_locks::MESSAGE_LOOKUP_TRACE_ENABLED;
 use super::reconcile_and_codebuff::{
     ConversationMergeEvidence, ExistingConversationNewMessages, ExistingConversationTailMetadata,
@@ -8,6 +7,7 @@ use super::reconcile_and_codebuff::{
     conversation_effective_started_at, conversation_external_lookup_key, message_replay_parts,
     reconciled_native_messages,
 };
+use super::source_and_historical_import::SOURCE_PATH_MERGE_START_TOLERANCE_MS;
 use super::tx_conversation_insert::{
     franken_find_existing_conversation_by_key, franken_find_external_conversation_tail_lookup,
     franken_promote_pi_family_external_identity_by_source_path,

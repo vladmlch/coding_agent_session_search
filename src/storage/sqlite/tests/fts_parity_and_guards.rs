@@ -245,9 +245,7 @@ fn fts_exact_rowid_probe_crosses_insert_chunks_and_seeks_the_shadow() {
         .query_map_collect(&eqp_sql, fparams![], |row| row.get_typed(3))
         .expect("explain query plan full-chunk bounded IN-list exact-rowid probe");
     assert!(
-        eqp_details
-            .iter()
-            .any(|detail| detail.contains("SEARCH")),
+        eqp_details.iter().any(|detail| detail.contains("SEARCH")),
         "bounded exact-rowid probe must use a SEARCH plan: {eqp_details:?}"
     );
 }

@@ -596,32 +596,34 @@ fn snapshot_meta_stamp(db: &Path) -> SnapshotMetaStamp {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let read_one = |path: &Path, required: bool| -> Option<(u64, u64, u64, i64, i64, i64, i64)> {
-            match std::fs::symlink_metadata(path) {
-                Ok(meta) => Some((
-                    meta.len(),
-                    meta.dev(),
-                    meta.ino(),
-                    meta.mtime(),
-                    meta.mtime_nsec(),
-                    meta.ctime(),
-                    meta.ctime_nsec(),
-                )),
-                Err(_) if !required => Some((0, 0, 0, 0, 0, 0, 0)),
-                Err(_) => None,
-            }
-        };
+        let read_one =
+            |path: &Path, required: bool| -> Option<(u64, u64, u64, i64, i64, i64, i64)> {
+                match std::fs::symlink_metadata(path) {
+                    Ok(meta) => Some((
+                        meta.len(),
+                        meta.dev(),
+                        meta.ino(),
+                        meta.mtime(),
+                        meta.mtime_nsec(),
+                        meta.ctime(),
+                        meta.ctime_nsec(),
+                    )),
+                    Err(_) if !required => Some((0, 0, 0, 0, 0, 0, 0)),
+                    Err(_) => None,
+                }
+            };
         Some([read_one(db, true)?, read_one(&wal, false)?])
     }
     #[cfg(not(unix))]
     {
-        let read_one = |path: &Path, required: bool| -> Option<(u64, Option<std::time::SystemTime>)> {
-            match std::fs::symlink_metadata(path) {
-                Ok(meta) => Some((meta.len(), meta.modified().ok())),
-                Err(_) if !required => Some((0, None)),
-                Err(_) => None,
-            }
-        };
+        let read_one =
+            |path: &Path, required: bool| -> Option<(u64, Option<std::time::SystemTime>)> {
+                match std::fs::symlink_metadata(path) {
+                    Ok(meta) => Some((meta.len(), meta.modified().ok())),
+                    Err(_) if !required => Some((0, None)),
+                    Err(_) => None,
+                }
+            };
         Some([read_one(db, true)?, read_one(&wal, false)?])
     }
 }

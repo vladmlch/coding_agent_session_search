@@ -547,10 +547,7 @@ pub(super) fn decode_item(row: &HydratedRow) -> Result<Value> {
         .source_id
         .as_deref()
         .ok_or(FrankenError::DatatypeMismatch)?;
-    let origin_host = row
-        .origin_host
-        .as_deref()
-        .or(row.source_label.as_deref());
+    let origin_host = row.origin_host.as_deref().or(row.source_label.as_deref());
     let project = row
         .workspace_path
         .as_deref()
@@ -597,7 +594,10 @@ pub(super) fn decode_item(row: &HydratedRow) -> Result<Value> {
         ("total_input_tokens", row.total_input_tokens),
         ("total_output_tokens", row.total_output_tokens),
         ("total_cache_read_tokens", row.total_cache_read_tokens),
-        ("total_cache_creation_tokens", row.total_cache_creation_tokens),
+        (
+            "total_cache_creation_tokens",
+            row.total_cache_creation_tokens,
+        ),
     ] {
         item.insert(key.into(), nonnegative_val(value)?);
     }

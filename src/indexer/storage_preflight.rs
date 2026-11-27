@@ -353,11 +353,11 @@ fn canonical_fts_segment_integrity_problem_for_kind(
 }
 
 fn run_single_quick_check(storage: &FrankenStorage, pragma_sql: &str) -> Result<Option<String>> {
-    let rows = match storage.raw().query_map_collect(
-        pragma_sql,
-        &[] as &[ParamValue],
-        |row| row.get_typed::<String>(0),
-    ) {
+    let rows = match storage
+        .raw()
+        .query_map_collect(pragma_sql, &[] as &[ParamValue], |row| {
+            row.get_typed::<String>(0)
+        }) {
         Ok(rows) => rows,
         Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => {
             return Err(anyhow::anyhow!(

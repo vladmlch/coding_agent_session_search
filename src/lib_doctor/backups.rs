@@ -667,8 +667,7 @@ pub(crate) fn verify_doctor_backup_record(
                 Ok(uri) => {
                     match open_franken_with_flags(
                         &uri,
-                        FrankenOpenFlags::SQLITE_OPEN_READ_ONLY
-                            | FrankenOpenFlags::SQLITE_OPEN_URI,
+                        FrankenOpenFlags::SQLITE_OPEN_READ_ONLY | FrankenOpenFlags::SQLITE_OPEN_URI,
                     ) {
                         Ok(mut connection) => {
                             let probe_res = connection.query_row("PRAGMA schema_version;");
@@ -1732,7 +1731,10 @@ mod doc1_tests {
                 .expect("load record");
             let verification = verify_doctor_backup_record(&data_dir, record);
 
-            assert_eq!(verification.status, "verified", "{wal_bytes_kind}: {verification:#?}");
+            assert_eq!(
+                verification.status, "verified",
+                "{wal_bytes_kind}: {verification:#?}"
+            );
             assert_eq!(verification.storage_probe_status, "passed");
             assert!(verification.restore_rehearsal_allowed);
             assert_eq!(
@@ -1762,7 +1764,10 @@ mod doc1_tests {
                 &verification,
                 &plan,
             );
-            assert_eq!(rehearsal["status"], "passed", "{wal_bytes_kind}: {rehearsal:#}");
+            assert_eq!(
+                rehearsal["status"], "passed",
+                "{wal_bytes_kind}: {rehearsal:#}"
+            );
             assert_eq!(rehearsal["storage_probe_status"], "passed");
             assert_eq!(collect_dir_blake3(&backup_dir), before_hashes);
         }
@@ -1774,8 +1779,7 @@ mod doc1_tests {
         let data_dir = temp.path().join("cass-data");
         let staging_db = temp.path().join("staging.db");
 
-        let conn =
-            FrankenConnection::open(staging_db.to_string_lossy()).expect("open");
+        let conn = FrankenConnection::open(staging_db.to_string_lossy()).expect("open");
         conn.query("PRAGMA journal_mode = WAL;").expect("wal");
         conn.execute("PRAGMA wal_autocheckpoint = 0;")
             .expect("no autockpt");
@@ -1850,8 +1854,8 @@ mod doc1_tests {
 
         let writer_db_path = live_db.clone();
         let writer_thread = std::thread::spawn(move || {
-            let writer = FrankenConnection::open(writer_db_path.to_string_lossy())
-                .expect("writer open");
+            let writer =
+                FrankenConnection::open(writer_db_path.to_string_lossy()).expect("writer open");
             writer
                 .execute("PRAGMA wal_autocheckpoint = 0;")
                 .expect("disable autocheckpoint");
@@ -1882,10 +1886,9 @@ mod doc1_tests {
         // Live database with concurrent writer: must NOT use `?immutable=1`;
         // `open_schema_only_with_wal_index_recovery` reads WAL snapshot consistently
         // and closes via `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` without truncating `-wal`.
-        let mut reader1 = FrankenConnection::open_schema_only_with_wal_index_recovery(
-            live_db.to_string_lossy(),
-        )
-        .expect("live WAL read-only open");
+        let mut reader1 =
+            FrankenConnection::open_schema_only_with_wal_index_recovery(live_db.to_string_lossy())
+                .expect("live WAL read-only open");
         reader1.execute("BEGIN DEFERRED;").expect("begin snapshot");
         let rows_before: Vec<(i64, String)> = reader1
             .query("SELECT id, body FROM items ORDER BY id;")
@@ -1919,10 +1922,9 @@ mod doc1_tests {
             .expect("close reader1 without checkpoint");
 
         // A new WAL-aware read-only connection sees commit 2 immediately.
-        let mut reader2 = FrankenConnection::open_schema_only_with_wal_index_recovery(
-            live_db.to_string_lossy(),
-        )
-        .expect("live WAL read-only open 2");
+        let mut reader2 =
+            FrankenConnection::open_schema_only_with_wal_index_recovery(live_db.to_string_lossy())
+                .expect("live WAL read-only open 2");
         let rows_after: Vec<(i64, String)> = reader2
             .query("SELECT id, body FROM items ORDER BY id;")
             .expect("query after commit 2")

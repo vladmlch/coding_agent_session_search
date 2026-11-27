@@ -16,8 +16,8 @@ use super::parsing::{dominant_match_type, transpile_to_fts5};
 use super::sqlite_hydration::{
     SQLITE_FTS5_HYDRATE_PARAM_CHUNK, SQLITE_FTS5_POST_FILTER_SCAN_CHUNK,
     SQLITE_FTS5_POST_FILTER_SCAN_LIMIT, SQLITE_MAX_VARIABLE_NUMBER,
-    SQLITE_MESSAGE_SCAN_FALLBACK_PAGE_ROWS, SqliteFtsHydratedRow,
-    SqliteFtsMessageRow, franken_query_map_collect_retry, sql_placeholders, sql_rowid_literal_list,
+    SQLITE_MESSAGE_SCAN_FALLBACK_PAGE_ROWS, SqliteFtsHydratedRow, SqliteFtsMessageRow,
+    franken_query_map_collect_retry, sql_placeholders, sql_rowid_literal_list,
 };
 use super::sqlite_scan::SqliteMessageScanRequest;
 use super::types::{FieldMask, MatchType, SearchFilters, SearchHit, default_source_id};
@@ -332,10 +332,8 @@ impl SearchClient {
             input.raw_origin_kind.as_deref().unwrap_or_default(),
             input.origin_host.as_deref(),
         );
-        let origin_kind = normalized_search_hit_origin_kind(
-            source_id.as_str(),
-            input.raw_origin_kind.as_deref(),
-        );
+        let origin_kind =
+            normalized_search_hit_origin_kind(source_id.as_str(), input.raw_origin_kind.as_deref());
         let line_number = input
             .idx
             .and_then(|i| usize::try_from(i).ok())
@@ -587,11 +585,8 @@ impl SearchClient {
                 ctx.field_mask,
                 ctx.match_mode,
             );
-            let rows: Vec<SqliteFtsDirectJoinRow> = match franken_query_map_collect_retry(
-                ctx.conn,
-                &sql,
-                &params,
-                |row| {
+            let rows: Vec<SqliteFtsDirectJoinRow> =
+                match franken_query_map_collect_retry(ctx.conn, &sql, &params, |row| {
                     Ok((
                         row.get_typed(0)?,
                         row.get_typed(1)?,
@@ -607,17 +602,16 @@ impl SearchClient {
                         row.get_typed(11)?,
                         row.get_typed(12)?,
                     ))
-                },
-            ) {
-                Ok(rows) => rows,
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "sqlite FTS direct-join query failed; falling back to source-table scan"
-                    );
-                    return None;
-                }
-            };
+                }) {
+                    Ok(rows) => rows,
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "sqlite FTS direct-join query failed; falling back to source-table scan"
+                        );
+                        return None;
+                    }
+                };
             if rows.is_empty() {
                 break;
             }
@@ -1362,7 +1356,11 @@ mod tests {
             let conn = FrankenConnection::open(db_path.to_string_lossy())?;
             conn.execute_compat(
                 "INSERT INTO fts_messages(rowid, content, title) VALUES(?1, ?2, ?3)",
-                params![999_999_i64, "auth auth auth auth auth orphan", "orphan entry"],
+                params![
+                    999_999_i64,
+                    "auth auth auth auth auth orphan",
+                    "orphan entry"
+                ],
             )?;
         }
 

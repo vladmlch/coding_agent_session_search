@@ -1117,9 +1117,7 @@ fn buffered_snapshot_preserves_records_larger_than_its_io_buffer() -> Result<()>
     let connection = Connection::open(path_text(&database)?)?;
     connection.execute_with_params(
         "UPDATE messages SET body = ?1 WHERE id = 7",
-        &[SqliteValue::Text(
-            "x".repeat(EXPORT_IO_BUFFER_BYTES * 2),
-        )],
+        &[SqliteValue::Text("x".repeat(EXPORT_IO_BUFFER_BYTES * 2))],
     )?;
     connection.close()?;
     let connection = open_source(&database)?;

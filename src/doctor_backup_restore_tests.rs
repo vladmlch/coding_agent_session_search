@@ -209,8 +209,7 @@ fn probe_markers(path: &Path) -> Vec<(i64, String)> {
     // This helper reads only the private control, rehearsed candidate, or
     // already-promoted live target. It never opens the stored backup source.
     let connection =
-        Connection::open_schema_only_with_wal_index_recovery(path.to_string_lossy())
-            .unwrap();
+        Connection::open_schema_only_with_wal_index_recovery(path.to_string_lossy()).unwrap();
     let rows = connection
         .query("SELECT id, marker FROM restore_probe ORDER BY id;")
         .unwrap()

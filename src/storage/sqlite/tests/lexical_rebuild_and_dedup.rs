@@ -1424,12 +1424,13 @@ fn list_conversation_footprints_for_lexical_rebuild_tolerates_legacy_search_demo
         .err()
         .expect("unstamped legacy fixture must be refused by schema-v1 open_readonly");
     assert!(
-        rebuild_err.downcast_ref::<SchemaRebuildRequired>().is_some(),
+        rebuild_err
+            .downcast_ref::<SchemaRebuildRequired>()
+            .is_some(),
         "expected SchemaRebuildRequired, got {rebuild_err:#}"
     );
 
-    let stamp_conn =
-        crate::franken_sync::Connection::open(staged_db.to_string_lossy()).unwrap();
+    let stamp_conn = crate::franken_sync::Connection::open(staged_db.to_string_lossy()).unwrap();
     stamp_conn
         .execute_batch(
             "PRAGMA application_id = 1128354643;

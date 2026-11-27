@@ -207,15 +207,17 @@ impl Connection {
                 .map(|mode| mode.eq_ignore_ascii_case("wal"))
         });
         let open_identity = pre_reg.id().or_else(|| {
-            path.as_deref()
-                .and_then(|p| compute_open_identity(&p.to_string_lossy(), None, None).ok().flatten())
+            path.as_deref().and_then(|p| {
+                compute_open_identity(&p.to_string_lossy(), None, None)
+                    .ok()
+                    .flatten()
+            })
         });
         let live_registration = if let Some(handle) = pre_reg.commit(detected_wal) {
             Some(handle)
         } else {
-            open_identity.map(|id| {
-                register_live_connection(id, detected_wal, !is_readonly, false, None)
-            })
+            open_identity
+                .map(|id| register_live_connection(id, detected_wal, !is_readonly, false, None))
         };
         Self {
             inner: Some(inner),
@@ -332,10 +334,12 @@ impl Connection {
         let pre_reg = LivePreRegistration::acquire_for_path(
             path,
             None,
-            Some(compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_NO_MUTEX),
+            Some(
+                compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ),
         )?;
-        let rw_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let rw_flags =
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let inner = rusqlite::Connection::open_with_flags(path, rw_flags)
             .map_err(|error| FrankenError::from_rusqlite(error, Some(Path::new(path))))?;
         let _ = inner.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true);
@@ -990,7 +994,8 @@ impl Connection {
     /// close-time checkpointing (`NO_CKPT_ON_CLOSE = true`).
     pub fn close_best_effort_in_place(&mut self) {
         if let Some(conn) = self.inner.take() {
-            let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, self.is_readonly);
+            let _ =
+                conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, self.is_readonly);
             match conn.close() {
                 Ok(()) => {}
                 Err((conn, _)) => drop(conn),

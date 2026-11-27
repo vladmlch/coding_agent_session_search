@@ -204,8 +204,7 @@ pub(crate) fn doctor_franken_deep_integrity_skip_reason(db_path: &Path) -> Optio
         }
         Ok(_) => {
             return Some(
-                "full_page_integrity_probe_deferred: WAL sidecar is not a regular file"
-                    .to_string(),
+                "full_page_integrity_probe_deferred: WAL sidecar is not a regular file".to_string(),
             );
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}

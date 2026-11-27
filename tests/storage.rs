@@ -439,7 +439,9 @@ fn open_ignores_stale_meta_schema_version_once_schema_migrations_exist() {
     drop(storage); // Close connection before reopening
 
     let reopen = SqliteStorage::open(&db_path);
-    let err = reopen.err().expect("open() must refuse mismatched meta.schema_version");
+    let err = reopen
+        .err()
+        .expect("open() must refuse mismatched meta.schema_version");
     let rebuild = err
         .downcast_ref::<SchemaRebuildRequired>()
         .expect("mismatched meta.schema_version must surface SchemaRebuildRequired");

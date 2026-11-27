@@ -113,11 +113,7 @@ pub(super) fn update_live_wal_state(id: FileIdentity, is_wal: bool) {
     }
 }
 
-pub(crate) fn record_live_archive_stamp(
-    id: FileIdentity,
-    application_id: i64,
-    user_version: i64,
-) {
+pub(crate) fn record_live_archive_stamp(id: FileIdentity, application_id: i64, user_version: i64) {
     let mut map = match live_db_map().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -262,9 +258,7 @@ fn read_stamp_via_connection(
     }
 }
 
-pub(crate) fn probe_sqlite_header_stamp_safely(
-    path: &Path,
-) -> std::io::Result<SqliteHeaderStamp> {
+pub(crate) fn probe_sqlite_header_stamp_safely(path: &Path) -> std::io::Result<SqliteHeaderStamp> {
     let db_id = FileIdentity::from_path(path)?;
     let (has_rw, has_strict_wal_ro, known_wal) = {
         let map = match live_db_map().lock() {
@@ -303,8 +297,7 @@ pub(crate) fn probe_sqlite_header_stamp_safely(
     let wal_exists = sidecar_exists(&sidecar_path(&canonical_db, "-wal"));
     let shm_exists = sidecar_exists(&sidecar_path(&canonical_db, "-shm"));
     if !has_strict_wal_ro
-        && ((wal_exists && shm_exists)
-            || (!wal_exists && !shm_exists && known_wal == Some(false)))
+        && ((wal_exists && shm_exists) || (!wal_exists && !shm_exists && known_wal == Some(false)))
     {
         match Connection::open_in_place_readonly_for_pool(path_str.as_ref()) {
             Ok(conn) => return read_stamp_via_connection(&conn, db_id),
@@ -379,9 +372,8 @@ impl LivePreRegistration {
                 is_strict_wal_ro: false,
             });
         };
-        let header_path = fs_path.or_else(|| {
-            (!path_str.starts_with("file:")).then(|| Path::new(path_str))
-        });
+        let header_path =
+            fs_path.or_else(|| (!path_str.starts_with("file:")).then(|| Path::new(path_str)));
         let mut map = match live_db_map().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -612,7 +604,9 @@ impl Connection {
                         Ok(StrictPlan::CleanWalSnapshot)
                     } else {
                         #[cfg(unix)]
-                        if wal_exists && shm_exists && wal_and_shm_are_coherent(&wal_path, &shm_path)?
+                        if wal_exists
+                            && shm_exists
+                            && wal_and_shm_are_coherent(&wal_path, &shm_path)?
                         {
                             Ok(StrictPlan::Mode2Wal(acquire_pre_reg_in_map(
                                 &mut map,
@@ -724,7 +718,9 @@ impl Connection {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            if let Some(entry) = db_id.and_then(|id| map.get(&id).filter(|e| e.count > 0)).copied()
+            if let Some(entry) = db_id
+                .and_then(|id| map.get(&id).filter(|e| e.count > 0))
+                .copied()
             {
                 RecoveryPlan::Live {
                     known_wal: entry.known_wal,
@@ -789,8 +785,8 @@ impl Connection {
             }
         };
 
-        let plain_ro_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let plain_ro_flags =
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
         match plan {
             RecoveryPlan::Mode1Rollback(pre_reg) => {
                 let inner = rusqlite::Connection::open_with_flags(path, plain_ro_flags)
@@ -893,9 +889,9 @@ impl Connection {
                                 FrankenError::from_rusqlite(error, Some(db_path))
                             }
                         })?;
-                    match inner.query_row("PRAGMA schema_version;", [], |row| {
-                        row.get::<usize, i64>(0)
-                    }) {
+                    match inner
+                        .query_row("PRAGMA schema_version;", [], |row| row.get::<usize, i64>(0))
+                    {
                         Ok(_) => {
                             return Ok(Self::from_parts(
                                 inner,
@@ -944,8 +940,7 @@ impl Connection {
         if !wal_exists && !shm_exists {
             return match known_wal {
                 Some(false) => {
-                    let pre_reg =
-                        LivePreRegistration::acquire_id_with_mode(db_id, false, false);
+                    let pre_reg = LivePreRegistration::acquire_id_with_mode(db_id, false, false);
                     let inner = rusqlite::Connection::open_with_flags(path, open_flags)
                         .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
                     Ok(Self::from_parts(
@@ -1012,25 +1007,26 @@ impl Connection {
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
             | rusqlite::OpenFlags::SQLITE_OPEN_URI
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let maybe_clean_snapshot = |pre_reg: LivePreRegistration| -> Option<Result<Self, FrankenError>> {
-            if !allow_clean_snapshot_fallback {
-                return None;
-            }
-            drop(pre_reg);
-            let wal_exists = sidecar_exists(&sidecar_path(canonical_db, "-wal"));
-            let shm_exists = sidecar_exists(&sidecar_path(canonical_db, "-shm"));
-            if wal_exists || shm_exists {
-                return None;
-            }
-            let is_live = db_id.is_some_and(|id| {
-                live_db_map()
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .get(&id)
-                    .is_some_and(|entry| entry.count > 0)
-            });
-            (!is_live).then(|| Self::open_snapshot_copy(db_path))
-        };
+        let maybe_clean_snapshot =
+            |pre_reg: LivePreRegistration| -> Option<Result<Self, FrankenError>> {
+                if !allow_clean_snapshot_fallback {
+                    return None;
+                }
+                drop(pre_reg);
+                let wal_exists = sidecar_exists(&sidecar_path(canonical_db, "-wal"));
+                let shm_exists = sidecar_exists(&sidecar_path(canonical_db, "-shm"));
+                if wal_exists || shm_exists {
+                    return None;
+                }
+                let is_live = db_id.is_some_and(|id| {
+                    live_db_map()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(&id)
+                        .is_some_and(|entry| entry.count > 0)
+                });
+                (!is_live).then(|| Self::open_snapshot_copy(db_path))
+            };
         let is_cannot_open = |error: &rusqlite::Error| {
             matches!(
                 error,
@@ -1497,8 +1493,7 @@ mod stamp_probe_tests {
     #[test]
     fn header_stamp_probe_preserves_writer_posix_lock() {
         const CHILD_ENV: &str = "CASS_TEST_HEADER_STAMP_LOCK_PROBE_DB";
-        const TEST_NAME: &str =
-            "franken_sync::sidecar_probes::stamp_probe_tests::header_stamp_probe_preserves_writer_posix_lock";
+        const TEST_NAME: &str = "franken_sync::sidecar_probes::stamp_probe_tests::header_stamp_probe_preserves_writer_posix_lock";
 
         if let Some(probe_db) = std::env::var_os(CHILD_ENV) {
             let probe_str = probe_db.to_string_lossy().into_owned();
@@ -1577,4 +1572,3 @@ mod stamp_probe_tests {
         writer.close().expect("close");
     }
 }
-

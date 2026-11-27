@@ -1,7 +1,7 @@
-use super::source_and_historical_import::historical_table_exists;
 use super::reconcile_and_codebuff::{
     clear_semantic_embed_watermark_after_deletion, delete_duplicate_conversation_rows,
 };
+use super::source_and_historical_import::historical_table_exists;
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
     SqliteValue,
@@ -687,16 +687,16 @@ impl FrankenStorage {
         // one of its sessions.
         let previously_shared: HashSet<String> =
             if historical_table_exists(&self.conn, "forgotten_conversations")? {
-            tx.query_map_collect(
-                "SELECT source_path FROM forgotten_conversations",
-                fparams![],
-                |row| row.get_typed(0),
-            )?
-            .into_iter()
-            .collect()
-        } else {
-            HashSet::new()
-        };
+                tx.query_map_collect(
+                    "SELECT source_path FROM forgotten_conversations",
+                    fparams![],
+                    |row| row.get_typed(0),
+                )?
+                .into_iter()
+                .collect()
+            } else {
+                HashSet::new()
+            };
         let mut session_tombstones = Vec::new();
         let mut file_tombstones = BTreeSet::new();
         let mut session_only_paths = BTreeSet::new();

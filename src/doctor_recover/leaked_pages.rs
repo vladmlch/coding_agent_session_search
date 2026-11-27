@@ -87,10 +87,7 @@ fn diagnostic_lines(rows: &[String]) -> Vec<String> {
         let mut details_in_row = Vec::new();
         for raw_line in row.lines() {
             let line = raw_line.trim();
-            if line.is_empty()
-                || line.eq_ignore_ascii_case("ok")
-                || line.starts_with("note:")
-            {
+            if line.is_empty() || line.eq_ignore_ascii_case("ok") || line.starts_with("note:") {
                 continue;
             }
             if is_sqlite_database_header(line) {

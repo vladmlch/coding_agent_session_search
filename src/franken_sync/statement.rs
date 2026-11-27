@@ -163,4 +163,3 @@ impl<'conn> PreparedStatement<'conn> {
         Ok(first)
     }
 }
-

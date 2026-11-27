@@ -628,7 +628,10 @@ mod tests {
         let after = conn
             .query("SELECT rowid FROM fts_messages WHERE fts_messages MATCH 'needle';")
             .expect("fts query after delete");
-        assert!(after.is_empty(), "deleted message rowid must leave fts_messages");
+        assert!(
+            after.is_empty(),
+            "deleted message rowid must leave fts_messages"
+        );
 
         // P1-2: `idx_messages_conv_idx` is the sole unique index on `messages(conversation_id, idx)`;
         // no table-level autoindex is created.

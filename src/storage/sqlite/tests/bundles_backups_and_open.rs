@@ -775,10 +775,7 @@ fn lexical_rebuild_tail_sql_uses_live_message_index() {
         footprint_tail_sql::TAIL_MAX_IDX_SQL,
         footprint_tail_sql::MISSING_TAIL_SQL,
     ] {
-        assert!(
-            sql.contains("INDEXED BY idx_messages_conv_idx"),
-            "{sql}"
-        );
+        assert!(sql.contains("INDEXED BY idx_messages_conv_idx"), "{sql}");
     }
 }
 
@@ -994,8 +991,7 @@ fn dedicated_owner_readonly_open_reads_nonempty_wal_without_mutating_it() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("dedicated-owner-dirty.db");
     {
-        let mut conn =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
+        let mut conn = crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
         conn.execute_batch(
             "PRAGMA application_id = 1128354643;
              PRAGMA user_version = 1;
@@ -1054,8 +1050,7 @@ fn gh422_strict_read_openers_do_not_create_lock_state_or_change_database_bundle(
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("agent_search.db");
     {
-        let conn =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
+        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
         conn.execute_batch(
             "PRAGMA application_id = 1128354643;
              PRAGMA user_version = 1;",
@@ -1303,7 +1298,10 @@ fn legacy_fts_config_shadow_fixture_open_insert_and_read_without_missing_index()
     assert_eq!(fetched.len(), 2);
     assert_eq!(fetched[0].content, "first message");
     assert_eq!(fetched[1].content, "second message");
-    assert_eq!(storage.conversation_message_count(conversation_id).unwrap(), 2);
+    assert_eq!(
+        storage.conversation_message_count(conversation_id).unwrap(),
+        2
+    );
 
     let mut streamed = Vec::new();
     storage

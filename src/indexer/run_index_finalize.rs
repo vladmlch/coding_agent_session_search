@@ -1370,10 +1370,7 @@ fn run_index_watch_or_close(
                         opts_clone.watch,
                         opts_clone.progress.as_ref(),
                     )?;
-                    tracing::debug!(
-                        cycle = count,
-                        "recycled long-lived storage handle"
-                    );
+                    tracing::debug!(cycle = count, "recycled long-lived storage handle");
                 }
 
                 let mut deferred = active_source_filter.take_deferred_sources();

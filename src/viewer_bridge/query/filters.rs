@@ -453,10 +453,7 @@ fn probe<T>(
     // Probes run against the persisted sort row: a surviving candidate is
     // the same row the order query would emit, on the same columns.
     let sql = format!("SELECT {select} FROM viewer_session_sort vs WHERE {where_sql} LIMIT 1");
-    Ok(connection
-        .query_map(&sql, &params, map)?
-        .into_iter()
-        .next())
+    Ok(connection.query_map(&sql, &params, map)?.into_iter().next())
 }
 
 // ---------------------------------------------------------------------------

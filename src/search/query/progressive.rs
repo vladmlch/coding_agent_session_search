@@ -28,8 +28,8 @@ use super::fusion::{
 use super::parsing::QuerySuggestion;
 use super::semantic::{ProgressiveTwoTierContext, SharedCassSyncEmbedder};
 use super::sqlite_hydration::{
-    SearchReadTransaction, semantic_doc_component_id_from_db,
-    semantic_message_id_from_db, sql_rowid_literal_list,
+    SearchReadTransaction, semantic_doc_component_id_from_db, semantic_message_id_from_db,
+    sql_rowid_literal_list,
 };
 use super::types::{
     FieldMask, MatchType, ProgressivePhaseKind, ProgressiveSearchEvent, ProgressiveSearchRequest,

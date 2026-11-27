@@ -77,12 +77,8 @@ fn stats_source_filter_preserves_date_range() {
 
 fn stats_test_archive(omit: Option<&str>) -> TempDir {
     let tmp = TempDir::new().expect("stats archive");
-    let conn = FrankenConnection::open(
-        tmp.path()
-            .join("agent_search.db")
-            .to_string_lossy(),
-    )
-    .expect("create archive");
+    let conn = FrankenConnection::open(tmp.path().join("agent_search.db").to_string_lossy())
+        .expect("create archive");
     conn.execute_batch("PRAGMA application_id = 0x43415353; PRAGMA user_version = 1;")
         .expect("stamp schema v1");
     conn.execute("CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL)")
@@ -163,12 +159,8 @@ fn stats_empty_archive_and_unmatched_source_are_real_zeros() {
 #[test]
 fn stats_refuses_invalid_fts_schema_even_when_canonical_counts_are_empty() {
     let tmp = stats_test_archive(None);
-    let conn = FrankenConnection::open(
-        tmp.path()
-            .join("agent_search.db")
-            .to_string_lossy(),
-    )
-    .expect("open archive");
+    let conn = FrankenConnection::open(tmp.path().join("agent_search.db").to_string_lossy())
+        .expect("open archive");
     // A malformed ordinary table occupying the derived FTS name must not
     // bypass the existing required-shadow checks merely because LIMIT 0 works.
     conn.execute("CREATE TABLE fts_messages (content TEXT)")
@@ -195,12 +187,8 @@ fn stats_refuses_invalid_fts_schema_even_when_canonical_counts_are_empty() {
 #[test]
 fn stats_workspace_ties_filter_orphans_before_top_ten() {
     let tmp = stats_test_archive(None);
-    let conn = FrankenConnection::open(
-        tmp.path()
-            .join("agent_search.db")
-            .to_string_lossy(),
-    )
-    .expect("open archive");
+    let conn = FrankenConnection::open(tmp.path().join("agent_search.db").to_string_lossy())
+        .expect("open archive");
     conn.execute("INSERT INTO agents VALUES (1, 'codex')")
         .expect("agent");
     // IDs determine ties, independently of insertion order or path spelling.

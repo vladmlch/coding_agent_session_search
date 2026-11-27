@@ -1414,10 +1414,9 @@ fn duplicate_fts_schema_rows_do_not_block_cli_reads_and_writes() {
         "initial full index should ingest both messages"
     );
 
-    let injection = coding_agent_search::franken_sync::Connection::open(
-        db_path.to_string_lossy().as_ref(),
-    )
-    .expect("open db for broken fallback FTS fixture");
+    let injection =
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())
+            .expect("open db for broken fallback FTS fixture");
     injection
         .execute_batch(
             "DROP TABLE IF EXISTS fts_messages;
@@ -1427,13 +1426,12 @@ fn duplicate_fts_schema_rows_do_not_block_cli_reads_and_writes() {
         .expect("inject non-canonical broken fallback FTS fixture");
     drop(injection);
 
-    let broken_read = coding_agent_search::franken_sync::Connection::open(
-        db_path.to_string_lossy().as_ref(),
-    )
-    .expect("reopen db for broken-read assertion")
-    .query_row_map("SELECT COUNT(*) FROM fts_messages", &[], |row| {
-        row.get_typed::<i64>(0)
-    });
+    let broken_read =
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())
+            .expect("reopen db for broken-read assertion")
+            .query_row_map("SELECT COUNT(*) FROM fts_messages", &[], |row| {
+                row.get_typed::<i64>(0)
+            });
     assert!(
         broken_read.is_err(),
         "the injected broken fallback FTS shadow should reproduce an unreadable FTS state"

@@ -9,7 +9,6 @@ use super::conversation_tail_state::{
     trace_existing_conversation_lookup_fallback,
 };
 use super::fts_rebuild::{FTS5_BATCH_SIZE, FtsEntry, path_to_string, role_as_str};
-use super::source_and_historical_import::historical_raw_json;
 use super::open_and_locks::{
     record_message_lookup_bounded_queries, record_message_lookup_full_scan_query,
 };
@@ -21,6 +20,7 @@ use super::reconcile_and_codebuff::{
     message_merge_fingerprint, message_native_id, native_id_from_extra, reconciled_native_messages,
     role_from_str,
 };
+use super::source_and_historical_import::historical_raw_json;
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
     Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
@@ -857,8 +857,7 @@ pub(super) fn franken_batch_insert_fts(
             .collect::<Vec<_>>()
             .join(",");
 
-        let sql =
-            format!("INSERT INTO fts_messages(rowid, content, title) VALUES {placeholders}");
+        let sql = format!("INSERT INTO fts_messages(rowid, content, title) VALUES {placeholders}");
 
         let mut param_values: Vec<SqliteValue> = Vec::with_capacity(chunk.len() * 3);
         for entry in chunk {
@@ -923,8 +922,7 @@ pub(super) fn franken_batch_insert_fts_on_connection(
             .collect::<Vec<_>>()
             .join(",");
 
-        let sql =
-            format!("INSERT INTO fts_messages(rowid, content, title) VALUES {placeholders}");
+        let sql = format!("INSERT INTO fts_messages(rowid, content, title) VALUES {placeholders}");
 
         let mut param_values: Vec<SqliteValue> = Vec::with_capacity(chunk.len() * 3);
         for entry in chunk {

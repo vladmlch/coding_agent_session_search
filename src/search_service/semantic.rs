@@ -172,9 +172,7 @@ fn read_edge_bytes(file: &mut File, bytes: u64) -> Result<(Vec<u8>, Vec<u8>)> {
     if bytes <= EDGE_SAMPLE_BYTES {
         return Ok((head, Vec::new()));
     }
-    let tail_start = bytes
-        .saturating_sub(EDGE_SAMPLE_BYTES)
-        .max(head_len as u64);
+    let tail_start = bytes.saturating_sub(EDGE_SAMPLE_BYTES).max(head_len as u64);
     let tail_len = usize::try_from(bytes - tail_start).unwrap_or(usize::MAX);
     file.seek(SeekFrom::Start(tail_start))?;
     let mut tail = vec![0_u8; tail_len];

@@ -35,8 +35,7 @@ mod doctor_fts_tests {
     }
 
     #[test]
-    fn doctor_fts_probe_accepts_sqlite_fts_table() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn doctor_fts_probe_accepts_sqlite_fts_table() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = tempfile::TempDir::new()?;
         let db_path = temp_dir.path().join("legacy-fts.db");
 
