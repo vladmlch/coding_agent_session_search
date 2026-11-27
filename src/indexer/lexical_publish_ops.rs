@@ -811,8 +811,21 @@ pub(in crate::indexer) fn recover_or_finalize_interrupted_lexical_publish_backup
 }
 
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)]
 pub(crate) use crate::resource_plan::fs_atomic::{
     atomic_exchange_paths, linux_atomic_exchange_is_unsupported,
+};
+
+#[cfg(target_os = "linux")]
+const _: fn() = || {
+    let _ = (
+        super::atomic_exchange_paths,
+        super::linux_atomic_exchange_is_unsupported,
+        super::linux_publish_swap::AT_FDCWD,
+        super::linux_publish_swap::RENAME_EXCHANGE,
+        super::linux_publish_swap::EINVAL,
+        super::linux_publish_swap::renameat2,
+    );
 };
 
 pub(in crate::indexer) struct LexicalRebuildFinalMergeArtifact {

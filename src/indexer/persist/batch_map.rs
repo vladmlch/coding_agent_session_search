@@ -30,6 +30,7 @@ pub(super) use crate::source_onboarding::conv_map::{
 };
 pub use crate::source_onboarding::conv_map::map_to_internal;
 pub(super) use crate::source_onboarding::conv_map::extract_provenance;
+#[allow(unused_imports)]
 pub(crate) use crate::source_onboarding::conv_map::map_to_internal_with_redactor;
 
 /// Work-liveness heartbeat threaded through batched persistence
@@ -93,6 +94,7 @@ pub fn bench_map_batch_to_internal(convs: &[NormalizedConversation]) -> Vec<Conv
     map_batch_to_internal(convs, PersistHeartbeat::NONE)
 }
 
+#[allow(dead_code)]
 pub(crate) fn map_to_internal_with_redactor_and_heartbeat(
     conv: &NormalizedConversation,
     redactor: Option<&mut MemoizingRedactor>,

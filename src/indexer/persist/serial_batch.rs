@@ -11,7 +11,7 @@ use crate::franken_sync::compat::RowExt;
 use crate::indexer::{
     LexicalPopulationStrategy, lexical_population_strategy_requires_inline_tantivy,
 };
-use crate::model::types::{Agent, AgentKind, Conversation, MessageRole};
+use crate::model::types::{Agent, AgentKind, Conversation};
 use crate::search::tantivy::TantivyIndex;
 use crate::storage::sqlite::{FrankenStorage, IndexingCache};
 

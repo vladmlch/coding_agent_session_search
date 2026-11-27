@@ -133,6 +133,7 @@ impl AnnotationPatch {
     }
 }
 
+#[allow(unused_imports)]
 pub use coding_agent_search::viewer_extensions::identity::{
     RETRYABLE_REFUSAL_KINDS, Refusal, refuse, refuse_retryable,
 };
