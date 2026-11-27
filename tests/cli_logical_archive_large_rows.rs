@@ -169,8 +169,8 @@ fn oversized_source(path: &Path) -> (i64, i64, String, Vec<u8>) {
         .execute_with_params(
             "UPDATE messages SET content = ?1, extra_bin = ?2 WHERE id = ?3",
             &[
-                SqliteValue::Text(body.clone().into()),
-                SqliteValue::Blob(raw.clone().into()),
+                SqliteValue::Text(body.clone()),
+                SqliteValue::Blob(raw.clone()),
                 SqliteValue::Integer(ids[0]),
             ],
         )

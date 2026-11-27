@@ -16,7 +16,7 @@ use tempfile::TempDir;
 
 /// Create a test SQLite database with the cursorDiskKV and ItemTable tables.
 fn create_test_db(path: &Path) -> FrankenConnection {
-    let conn = FrankenConnection::open(path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(path.to_string_lossy()).unwrap();
     conn.execute("CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT PRIMARY KEY, value TEXT)")
         .unwrap();
     conn.execute("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT)")
