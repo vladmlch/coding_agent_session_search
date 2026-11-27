@@ -737,7 +737,7 @@ fn storage_source_forbids_manual_raw_connection_auto_trait_overrides() {
     let mut total_bytes_scanned = 0usize;
     for path in &rs_files {
         let rel_path = path
-            .strip_prefix(manifest_root)
+            .strip_prefix(&manifest_root)
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
