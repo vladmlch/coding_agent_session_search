@@ -119,8 +119,8 @@ pub struct RedactionEngine {
 pub const SWARM_REDACTION_POLICY: &str = "strict";
 pub const SWARM_MAIL_BODY_OMITTED: &str = "[MAIL_BODY_OMITTED]";
 pub const SWARM_ENV_VALUE_REDACTED: &str = "[ENV_VALUE_REDACTED]";
-pub const SWARM_SECRET_ENV_ASSIGNMENT_REDACTED: &str = "[SECRET_ENV_REDACTED]";
-pub const SWARM_SECRET_LITERAL_REDACTED: &str = "[SECRET_REDACTED]";
+pub const SWARM_SECRET_ENV_ASSIGNMENT_REDACTED: &str = "[SECRET_ENV_REDACTED]"; // ubs:ignore[rust.security.hardcoded-secrets] — redaction placeholder marker, not a secret
+pub const SWARM_SECRET_LITERAL_REDACTED: &str = "[SECRET_REDACTED]"; // ubs:ignore[rust.security.hardcoded-secrets] — redaction placeholder marker, not a secret
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwarmEvidenceField {
@@ -625,7 +625,7 @@ fn redact_rch_command(engine: &RedactionEngine, input: &str) -> Option<RedactedS
     let assignment_count = words
         .iter()
         .take_while(|word| {
-            word.as_str() == SWARM_SECRET_ENV_ASSIGNMENT_REDACTED
+            word.as_str() == SWARM_SECRET_ENV_ASSIGNMENT_REDACTED // ubs:ignore[rust.security.constant-time-compare] — redaction marker comparison, not a cryptographic secret
                 || word.split_once('=').is_some_and(|(name, _)| {
                     !name.is_empty()
                         && name.bytes().enumerate().all(|(idx, ch)| {

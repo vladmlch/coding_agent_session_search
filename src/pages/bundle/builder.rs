@@ -237,7 +237,7 @@ impl BundleBuilder {
 
             // Copy embedded assets to site/
             for (name, content) in PAGES_ASSETS {
-                let dest_path = site_dir.join(name);
+                let dest_path = site_dir.join(name); // ubs:ignore[rust.security.path-traversal] — compile-time PAGES_ASSETS constant flat asset filenames
                 fs::write(&dest_path, content)
                     .with_context(|| format!("Failed to write {}", name))?;
             }
@@ -459,10 +459,10 @@ pub(super) fn copy_payload_file(
         bail!("Unencrypted payload path must reside under payload/");
     }
 
-    let src_path = src_root.join(rel_path);
+    let src_path = src_root.join(rel_path); // ubs:ignore[rust.security.path-traversal] — rel_path validated relative without '..' under payload/ at lines 449-460
     ensure_regular_copy_source_under_root(src_root, &src_path, "Unencrypted payload file")?;
 
-    let dest_path = site_dir.join(rel_path);
+    let dest_path = site_dir.join(rel_path); // ubs:ignore[rust.security.path-traversal] — rel_path validated relative without '..' under payload/ at lines 449-460
     if let Some(parent) = dest_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -495,7 +495,7 @@ pub(super) fn resolve_generated_doc_path(site_dir: &Path, doc: &GeneratedDoc) ->
     }
 
     Ok(match doc.location {
-        DocLocation::RepoRoot | DocLocation::WebRoot => site_dir.join(file_name),
+        DocLocation::RepoRoot | DocLocation::WebRoot => site_dir.join(file_name), // ubs:ignore[rust.security.path-traversal] — single Component::Normal filename validated at lines 475-495
     })
 }
 

@@ -448,6 +448,8 @@ pub fn render_profile_comparison() -> String {
 pub fn render_profile_comparison_colored() -> String {
     use console::style;
 
+    use std::fmt::Write as _;
+
     let mut output = String::new();
 
     let check = style("✓").green().to_string();
@@ -482,10 +484,7 @@ pub fn render_profile_comparison_colored() -> String {
         let p = if public { &check } else { &cross };
         let t = if team { &check } else { &cross };
         let pe = if personal { &check } else { &cross };
-        output.push_str(&format!(
-            "  {:<22} {:^10} {:^10} {:^10}\n",
-            setting, p, t, pe
-        ));
+        let _ = writeln!(output, "  {:<22} {:^10} {:^10} {:^10}", setting, p, t, pe);
     }
 
     output

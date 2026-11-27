@@ -16,13 +16,13 @@
 /// use coding_agent_search::pages::fts::escape_fts5_query;
 ///
 /// // Simple query
-/// assert_eq!(escape_fts5_query("hello world"), r#""hello" "world""#);
+/// assert_eq!(escape_fts5_query("hello world"), r#""hello" "world""#); // ubs:ignore[rust.panic.assert-macros] — doctest example
 ///
 /// // Query with special characters
-/// assert_eq!(escape_fts5_query("foo\"bar"), r#""foo""bar""#);
+/// assert_eq!(escape_fts5_query("foo\"bar"), r#""foo""bar""#); // ubs:ignore[rust.panic.assert-macros] — doctest example
 ///
 /// // Code-like query
-/// assert_eq!(escape_fts5_query("my_function"), r#""my_function""#);
+/// assert_eq!(escape_fts5_query("my_function"), r#""my_function""#); // ubs:ignore[rust.panic.assert-macros] — doctest example
 /// ```
 pub fn escape_fts5_query(query: &str) -> String {
     query
@@ -73,13 +73,13 @@ pub enum Fts5SearchMode {
 /// ```
 /// use coding_agent_search::pages::fts::{detect_search_mode, Fts5SearchMode};
 ///
-/// assert_eq!(detect_search_mode("hello world"), Fts5SearchMode::NaturalLanguage);
-/// assert_eq!(detect_search_mode("my_function"), Fts5SearchMode::Code);
-/// assert_eq!(detect_search_mode("AuthController.ts"), Fts5SearchMode::Code);
-/// assert_eq!(detect_search_mode("getUserById"), Fts5SearchMode::Code);
-/// assert_eq!(detect_search_mode("std::io::Result"), Fts5SearchMode::Code);
-/// assert_eq!(detect_search_mode("my-component"), Fts5SearchMode::Code);
-/// assert_eq!(detect_search_mode("how does auth work"), Fts5SearchMode::NaturalLanguage);
+/// assert_eq!(detect_search_mode("hello world"), Fts5SearchMode::NaturalLanguage); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(detect_search_mode("my_function"), Fts5SearchMode::Code); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(detect_search_mode("AuthController.ts"), Fts5SearchMode::Code); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(detect_search_mode("getUserById"), Fts5SearchMode::Code); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(detect_search_mode("std::io::Result"), Fts5SearchMode::Code); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(detect_search_mode("my-component"), Fts5SearchMode::Code); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(detect_search_mode("how does auth work"), Fts5SearchMode::NaturalLanguage); // ubs:ignore[rust.panic.assert-macros] — doctest example
 /// ```
 pub fn detect_search_mode(query: &str) -> Fts5SearchMode {
     // Check for code-like patterns
@@ -159,10 +159,10 @@ fn has_camel_case(s: &str) -> bool {
 /// use coding_agent_search::pages::fts::{format_fts5_query, Fts5SearchMode};
 ///
 /// let (table, query) = format_fts5_query("error handling", Fts5SearchMode::NaturalLanguage);
-/// assert_eq!(table, "messages_fts");
+/// assert_eq!(table, "messages_fts"); // ubs:ignore[rust.panic.assert-macros] — doctest example
 ///
 /// let (table, query) = format_fts5_query("my_function", Fts5SearchMode::Code);
-/// assert_eq!(table, "messages_code_fts");
+/// assert_eq!(table, "messages_code_fts"); // ubs:ignore[rust.panic.assert-macros] — doctest example
 /// ```
 pub fn format_fts5_query(query: &str, mode: Fts5SearchMode) -> (&'static str, String) {
     let actual_mode = match mode {
@@ -250,9 +250,9 @@ WHERE {fts_table} MATCH ?"#
 /// ```
 /// use coding_agent_search::pages::fts::validate_fts5_query;
 ///
-/// assert_eq!(validate_fts5_query("  hello  "), Some("hello".to_string()));
-/// assert_eq!(validate_fts5_query("   "), None);
-/// assert_eq!(validate_fts5_query(""), None);
+/// assert_eq!(validate_fts5_query("  hello  "), Some("hello".to_string())); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(validate_fts5_query("   "), None); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(validate_fts5_query(""), None); // ubs:ignore[rust.panic.assert-macros] — doctest example
 /// ```
 pub fn validate_fts5_query(query: &str) -> Option<String> {
     let trimmed = query.trim();

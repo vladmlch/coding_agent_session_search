@@ -349,15 +349,15 @@ pub(super) fn franken_update_token_daily_stats_batched_in_tx(
 }
 
 /// Live Track B rollup table.
-pub(super) const TOKEN_DAILY_STATS_TABLE: &str = "token_daily_stats";
+pub(super) const TOKEN_DAILY_STATS_TABLE: &str = "token_daily_stats"; // ubs:ignore[rust.security.hardcoded-secrets] — SQLite table name constant, not a secret
 /// Persistent staging table for a resumable Track B rebuild (GH #386). Same
 /// shape as [`TOKEN_DAILY_STATS_TABLE`]; the live table is only touched by the
 /// final atomic swap.
-pub(super) const TOKEN_DAILY_STATS_REBUILD_STAGE_TABLE: &str = "token_daily_stats_rebuild_stage";
+pub(super) const TOKEN_DAILY_STATS_REBUILD_STAGE_TABLE: &str = "token_daily_stats_rebuild_stage"; // ubs:ignore[rust.security.hardcoded-secrets] — SQLite staging table name constant, not a secret
 /// `meta` key holding the persisted rebuild cursor (GH #386).
-pub(super) const TOKEN_DAILY_STATS_REBUILD_CURSOR_KEY: &str = "token_daily_stats_rebuild_cursor";
+pub(super) const TOKEN_DAILY_STATS_REBUILD_CURSOR_KEY: &str = "token_daily_stats_rebuild_cursor"; // ubs:ignore[rust.security.hardcoded-secrets] — SQLite meta key constant, not a secret
 /// Same-row ledger revisions must invalidate both resumed and active rebuilds.
-pub(super) const TOKEN_USAGE_REVISION_GENERATION_META_KEY: &str = "token_usage_revision_generation";
+pub(super) const TOKEN_USAGE_REVISION_GENERATION_META_KEY: &str = "token_usage_revision_generation"; // ubs:ignore[rust.security.hardcoded-secrets] — SQLite meta key constant, not a secret
 
 /// Same upsert as the live-table writer, addressed to `table` — which must be
 /// one of the two compile-time table-name constants above (never caller

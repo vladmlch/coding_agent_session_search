@@ -130,9 +130,16 @@ pub(super) fn write_private_artifact_file(
     if filename.contains(['/', '\\']) {
         bail!("private artifact filename must not contain path separators: {filename}");
     }
+    let mut components = Path::new(filename).components();
+    let Some(std::path::Component::Normal(validated_name)) = components.next() else {
+        bail!("private artifact filename must be a plain relative file name: {filename}");
+    };
+    if components.next().is_some() {
+        bail!("private artifact filename must be a single path segment: {filename}");
+    }
 
     ensure_private_artifact_dir(private_dir)?;
-    let final_path = private_dir.join(filename);
+    let final_path = private_dir.join(validated_name); // ubs:ignore[rust.security.path-traversal] — single Component::Normal filename validated above
     reject_symlinked_private_artifact(&final_path)?;
     let temp_path = unique_bundle_sidecar_path(&final_path, "tmp", "private_artifact")?;
 

@@ -900,7 +900,7 @@ pub mod migrate {
                     "INSERT INTO _schema_migrations (version, name) VALUES (?1, ?2)",
                     &[
                         SqliteValue::Integer(step.version),
-                        SqliteValue::Text(step.name.clone()),
+                        SqliteValue::Text(step.name),
                     ],
                 )?;
                 tx.commit()?;

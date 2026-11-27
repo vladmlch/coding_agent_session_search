@@ -179,6 +179,7 @@ const PEM_PRIVATE_KEY_PATTERN: &str = concat!(
     r")",
 );
 
+// ubs:ignore[rust.security.hardcoded-secrets] — regex pattern definition for secret scanner, not an actual secret
 const PGP_PRIVATE_KEY_PATTERN: &str =
     r"(?s)-----BEGIN PGP PRIVATE KEY BLOCK-----.*?(?:-----END PGP PRIVATE KEY BLOCK-----|\z)";
 
