@@ -176,7 +176,7 @@ pub fn workspace_matches(query_workspace: &str, result_workspace: &str) -> bool 
 }
 
 /// Join a result's text fields into a single bounded scan string for
-/// [`correlate`], capped at [`MAX_SCAN_CHARS`] characters (char-safe, one
+/// [`correlate`], capped at `MAX_SCAN_CHARS` characters (char-safe, one
 /// allocation). Refs appear early in practice, so a bounded prefix suffices.
 pub fn scan_text(parts: &[&str]) -> String {
     let mut out = String::new();

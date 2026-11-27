@@ -943,7 +943,7 @@ fn gh473_short_writer_wait_preserves_live_reader_ingest() {
         .execute("CREATE TABLE gh473_retry(n INTEGER)")
         .unwrap();
     let writer = crate::franken_sync::Connection::open_existing_schema_only(
-        db_path.to_string_lossy().into_owned(),
+        db_path.to_string_lossy(),
     )
     .unwrap();
     writer.execute("PRAGMA busy_timeout = 10").unwrap();

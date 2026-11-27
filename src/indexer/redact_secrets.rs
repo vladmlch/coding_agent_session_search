@@ -399,7 +399,7 @@ fn redaction_enabled_from_values(modern: Option<&str>, legacy: Option<&str>) -> 
 
 /// Stable identifier for the compiled SECRET_PATTERNS list.
 ///
-/// Memoization keys for [`MemoizingRedactor`] combine input content
+/// Memoization keys for `MemoizingRedactor` combine input content
 /// with this fingerprint so a pattern bump (new regex added, existing
 /// regex tightened) automatically invalidates every prior cache entry
 /// — silent stale cross-version reuse is impossible by construction.

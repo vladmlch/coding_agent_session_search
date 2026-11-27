@@ -251,7 +251,7 @@ fn seed_healthy_empty_index(test_home: &Path, data_dir: &Path) {
 
 fn write_test_sqlite_db(path: &Path, marker: &str) {
     fs::create_dir_all(path.parent().expect("sqlite db parent")).expect("create sqlite db parent");
-    let conn = FrankenConnection::open(path.to_string_lossy().into_owned())
+    let conn = FrankenConnection::open(path.to_string_lossy())
         .expect("open sqlite fixture db");
     conn.execute_compat(
         "CREATE TABLE restore_probe(marker TEXT NOT NULL)",
@@ -524,7 +524,7 @@ fn ensure_codex_agent(conn: &FrankenConnection) -> i64 {
 }
 
 fn corrupt_unused_secondary_index_entry(db_path: &Path) {
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let conn = FrankenConnection::open(db_path.to_string_lossy())
         .expect("open db for corruption fixture");
     conn.execute_compat(
         "CREATE TABLE doctor_integrity_probe(id INTEGER PRIMARY KEY, payload TEXT)",
@@ -598,7 +598,7 @@ fn corrupt_unused_secondary_index_entry(db_path: &Path) {
     file.flush().expect("flush corrupt index fixture");
     drop(file);
 
-    let verify_conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let verify_conn = FrankenConnection::open(db_path.to_string_lossy())
         .expect("reopen corrupted fixture");
     let quick_after: String = verify_conn
         .query_row_map(
@@ -702,7 +702,7 @@ fn write_be_u32_at(path: &Path, offset: u64, value: u32) {
 /// The engine's own integrity verdict, or the error that kept the engine
 /// from opening the file at all (damage can fail the open itself).
 fn engine_integrity_check(db_path: &Path) -> String {
-    match FrankenConnection::open(db_path.to_string_lossy().into_owned()) {
+    match FrankenConnection::open(db_path.to_string_lossy()) {
         Ok(conn) => match conn.query("PRAGMA integrity_check;") {
             Ok(rows) => rows
                 .into_iter()
@@ -719,7 +719,7 @@ fn engine_integrity_check(db_path: &Path) -> String {
 /// fold the WAL into the main file, and return (page_size, root page of the
 /// canonical `conversations` table, freelist trunk, freelist count).
 fn seed_durable_freelist(db_path: &Path) -> (u64, u32, u32, u32) {
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let conn = FrankenConnection::open(db_path.to_string_lossy())
         .expect("open db for freelist fixture");
     conn.execute_compat(
         "CREATE TABLE leak_probe(id INTEGER PRIMARY KEY, payload TEXT NOT NULL)",
@@ -981,7 +981,7 @@ fn doctor_repair_leaked_pages_frees_only_leaked_pages_behind_a_restorable_backup
         Some("engine integrity_check, freelist_count and doctor check after repair"),
     );
     assert_eq!(engine_integrity_check(&db_path), "ok");
-    let freelist_after: i64 = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let freelist_after: i64 = FrankenConnection::open(db_path.to_string_lossy())
         .expect("open repaired db")
         .query_row_map(
             "PRAGMA freelist_count;",
@@ -1275,7 +1275,7 @@ fn doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place()
         storage.rebuild_fts().expect("build valid fts shadow");
         storage.close().expect("close seeded schema-v1 db");
 
-        let raw = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+        let raw = FrankenConnection::open(db_path.to_string_lossy())
             .expect("reopen to corrupt fts shadow");
         let garbage = [0xFFu8; 12];
         let changed = raw
@@ -1339,7 +1339,7 @@ fn doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place()
     assert_eq!(status["database"]["conversations"], 1, "{status}");
     assert_eq!(status["database"]["messages"], 2, "{status}");
     // The canonical rows are the fixture's, byte for byte.
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open");
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open");
     let messages: Vec<(i64, String)> = conn
         .query("SELECT idx, content FROM messages ORDER BY conversation_id, idx")
         .expect("messages")
@@ -1723,7 +1723,7 @@ fn doctor_fix_auto_runs_derived_lexical_rebuild_from_readable_archive() {
     )
     .expect("write source fixture");
     let db_path = data_dir.join("agent_search.db");
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open db");
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open db");
     let agent_id = ensure_codex_agent(&conn);
     let source_path_text = source_path.to_string_lossy().into_owned();
     conn.execute_compat(
@@ -5404,7 +5404,7 @@ fn doctor_json_reports_missing_upstream_source_as_coverage_risk_not_data_loss() 
 
     let missing_source = test_home.join(".codex/sessions/pruned-session.jsonl");
     let db_path = data_dir.join("agent_search.db");
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open db");
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open db");
     let agent_id: i64 = match conn.query_row_map(
         "SELECT id FROM agents WHERE slug = 'codex' LIMIT 1",
         &[],
@@ -5760,7 +5760,7 @@ fn doctor_fix_backfills_legacy_raw_mirror_metadata_without_touching_provider_fil
     );
 
     let db_path = data_dir.join("agent_search.db");
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open db");
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open db");
     let agent_id = ensure_codex_agent(&conn);
     let live_source_str = live_source.to_string_lossy().into_owned();
     let changed_source_str = changed_source.to_string_lossy().into_owned();
@@ -6089,7 +6089,7 @@ fn doctor_fix_refuses_lower_coverage_candidate_with_gate_details() {
     fs::write(&live_source, live_bytes).expect("write live source");
 
     let db_path = data_dir.join("agent_search.db");
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open db");
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open db");
     let agent_id = ensure_codex_agent(&conn);
     let live_source_str = live_source.to_string_lossy().into_owned();
     conn.execute_compat(
@@ -6190,7 +6190,7 @@ fn doctor_json_verifies_raw_mirror_after_upstream_source_is_pruned() {
     );
 
     let db_path = data_dir.join("agent_search.db");
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open db");
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open db");
     let agent_id: i64 = conn
         .query_row_map(
             "SELECT id FROM agents WHERE slug = 'codex' LIMIT 1",
@@ -8581,7 +8581,7 @@ fn doctor_fix_wal_checkpoint_fails_truthfully_when_it_exceeds_its_deadline() {
     // retry below must recover and checkpoint this exact database. Rewriting
     // one small scratch row grows the WAL without populating the canonical
     // corpus or making the main database large.
-    let fixture = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let fixture = FrankenConnection::open(db_path.to_string_lossy())
         .expect("open checkpoint fixture");
     fixture
         .execute("PRAGMA wal_autocheckpoint = 0")
@@ -8704,7 +8704,7 @@ fn doctor_fix_wal_checkpoint_fails_truthfully_when_it_exceeds_its_deadline() {
         "the admitted retry must checkpoint the preserved WAL"
     );
     use coding_agent_search::franken_sync::compat::{OpenFlags, open_with_flags};
-    let connection = open_with_flags(&db_path.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let connection = open_with_flags(db_path.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("read the recovered canonical archive strictly read-only");
     for row in connection.query("PRAGMA integrity_check").unwrap() {
         assert_eq!(row.get_typed::<String>(0).unwrap(), "ok");

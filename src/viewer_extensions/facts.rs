@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt, Transaction, TransactionExt};
+use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt, Transaction};
 use crate::franken_sync::{Connection, FrankenError, Row, TransactionBehavior};
 use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};
 use crate::model::types::Conversation;
@@ -61,7 +61,7 @@ pub use providers::classification::SessionQualityMetrics;
 /// 4) — plus the pi_agent extractor (raw tree entries: toolCall blocks
 /// paired with toolResult records by toolCallId, thinking blocks,
 /// compaction/branch boundaries) and the opencode extractor (v2 row
-/// extras: "[Reasoning]"/"[Tool Output]" markers count delivered
+/// extras: `"[Reasoning]"`/`"[Tool Output]"` markers count delivered
 /// reasoning parts and prove tool parts whose identity/state the
 /// connector drops; authors carry the model alias), and the copilot
 /// extractor (connector-built extras: seam-archived invocations as the
@@ -1020,10 +1020,10 @@ struct FixupCandidate {
 /// conversation. Every condition the old query filtered in SQL is then
 /// re-applied per fetched row: the unresolved/no-self/empty-evidence
 /// checks in Rust, the live provider + `source_id` scope in
-/// [`parent_scope_matches`] (a join inside the probe would break the
+/// `parent_scope_matches` (a join inside the probe would break the
 /// index seek, and scope is mutable on canonical rows, so it is verified
 /// per candidate instead of denormalized), and the match predicate in
-/// [`parent_evidence_matches`] — the engine's own `=`/`LIKE` arms, so
+/// `parent_evidence_matches` — the engine's own `=`/`LIKE` arms, so
 /// case sensitivity and wildcard semantics cannot drift from the old
 /// query. The match rule stays `resolve_parent_conversation` inverted:
 /// same provider + same `source_id` scope, and the child's evidence equal

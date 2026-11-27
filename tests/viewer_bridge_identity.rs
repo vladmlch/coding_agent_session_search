@@ -127,7 +127,7 @@ impl IdentityFixture {
     }
 
     fn connect(&self) -> Result<Connection> {
-        Ok(Connection::open(self.db.to_string_lossy().into_owned())?)
+        Ok(Connection::open(self.db.to_string_lossy())?)
     }
 }
 

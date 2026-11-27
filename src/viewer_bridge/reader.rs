@@ -664,7 +664,7 @@ impl StrictArchive {
         self.snapshot_stamped(|connection, _revision| read(connection))
     }
 
-    /// Same strict read discipline as [`snapshot`], additionally handing
+    /// Same strict read discipline as [`Self::snapshot`], additionally handing
     /// the read closure the pre-read `observe` token so callers can key
     /// revision-scoped memos to exactly the snapshot state the closure
     /// sees. The token is this archive's `nonce:data_version:disk_revision`

@@ -56,7 +56,7 @@ const REMOTE_CLAUDE_PATH: &str = "~/.claude/projects";
 type ConversationRow = (i64, String, Option<String>, i64);
 
 fn snapshot_conversations(db_path: &Path) -> Vec<ConversationRow> {
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let conn = FrankenConnection::open(db_path.to_string_lossy())
         .expect("open archive for snapshot");
     let rows = conn
         .query_map_collect(
@@ -79,7 +79,7 @@ fn snapshot_conversations(db_path: &Path) -> Vec<ConversationRow> {
 }
 
 fn source_rows(db_path: &Path) -> Vec<(String, String, Option<String>)> {
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let conn = FrankenConnection::open(db_path.to_string_lossy())
         .expect("open archive for sources snapshot");
     let rows = conn
         .query_map_collect(
@@ -280,7 +280,7 @@ fn build_fixture() -> (Fixture, i64) {
     // enforced) keeps the true `''` value with nothing describing it. Patch
     // the row back through a raw connection with FK enforcement off.
     {
-        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+        let conn = FrankenConnection::open(db_path.to_string_lossy())
             .expect("open fixture archive for legacy patch");
         conn.execute("PRAGMA foreign_keys = OFF")
             .expect("disable foreign key enforcement for legacy patch");
@@ -639,7 +639,7 @@ fn force_rebuild_preserves_remote_rows_without_sources_table_entry() {
     // Remove the auto-registered `work-laptop` row from `sources` so its
     // conversation is a remote record nothing describes.
     {
-        let conn = FrankenConnection::open(fixture.db_path.to_string_lossy().into_owned())
+        let conn = FrankenConnection::open(fixture.db_path.to_string_lossy())
             .expect("open archive for sources patch");
         conn.execute("PRAGMA foreign_keys = OFF")
             .expect("disable foreign key enforcement for sources patch");

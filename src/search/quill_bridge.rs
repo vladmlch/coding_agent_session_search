@@ -149,11 +149,11 @@ pub fn is_glob_expansion_limited(error: &anyhow::Error) -> bool {
 ///   bound: eight "large" segments are each wider than the medium boundary
 ///   (524,288 docids), so their fold spans more than 4,194,304 documents —
 ///   the per-term posting limit every Quill reader and concat merge enforces
-///   ([`merge_plan::MAX_FOLD_OUTPUT_DOCS`]). On a multi-million-message archive a common
+///   (`merge_plan::MAX_FOLD_OUTPUT_DOCS`). On a multi-million-message archive a common
 ///   token is in more documents than that, so the rebuild's final commit
 ///   failed with "posting validation limit 4194304 exceeded" (GH #498). The
 ///   same unbounded fold also bypassed the #456 merge-memory cap. CASS's own
-///   planners ([`plan_capped_merge_runs`], [`plan_capped_balanced_merge_runs`])
+///   planners (`plan_capped_merge_runs`, `plan_capped_balanced_merge_runs`)
 ///   already own merging after incremental runs and at the end of a rebuild,
 ///   under both the byte cap and the document bound.
 /// * `query_fuel_budget` honours [`CASS_QUILL_QUERY_FUEL_BUDGET_ENV`].
@@ -407,7 +407,7 @@ impl QuillCassIndex {
     }
 
     /// GH #446: install (or, with `None`, remove) the liveness callback the
-    /// sink invokes from real engine work — see [`EngineLivenessProbe`].
+    /// sink invokes from real engine work — see `EngineLivenessProbe`.
     /// The indexer passes `IndexingProgress::tick_activity`.
     pub fn set_heartbeat(&mut self, heartbeat: Option<EngineHeartbeat>) {
         self.liveness = heartbeat
@@ -714,7 +714,7 @@ impl QuillCassIndex {
 
     /// Compact when the segment count and cooldown say it is worth doing.
     ///
-    /// Runs the bounded policy in [`plan_capped_balanced_merge_runs`]: a
+    /// Runs the bounded policy in `plan_capped_balanced_merge_runs`: a
     /// balanced run of adjacent *small* segments is folded into one, so an
     /// append-only archive keeps large segments plus geometric tail tiers
     /// instead of accumulating a segment per session (#441) or rewriting the
@@ -796,7 +796,7 @@ impl QuillCassIndex {
     /// under [`lexical_merge_max_output_bytes`], which bounds the peak merge
     /// allocation by the cap and the generation by roughly
     /// `index_bytes / cap` segments — a handful, not the hundreds #441 was
-    /// about. Each run also holds at most [`merge_plan::MAX_FOLD_OUTPUT_DOCS`] documents,
+    /// about. Each run also holds at most `merge_plan::MAX_FOLD_OUTPUT_DOCS` documents,
     /// so a multi-million-message archive folds into several segments rather
     /// than one whose common-token posting lists no reader could open (#498).
     ///

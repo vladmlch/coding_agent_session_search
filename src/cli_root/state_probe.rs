@@ -526,7 +526,7 @@ mod health_watermark_probe_tests {
         let db_path = dir.join("watermarks.db");
         {
             let mut conn =
-                crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+                crate::franken_sync::Connection::open(db_path.to_string_lossy())
                     .expect("open fixture db");
             conn.execute("PRAGMA application_id = 0x43415353;")
                 .expect("stamp application_id");

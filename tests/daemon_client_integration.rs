@@ -1330,7 +1330,7 @@ mod indexer_process_coexistence {
             use coding_agent_search::franken_sync::compat::{OpenFlags, open_with_flags};
 
             let connection =
-                open_with_flags(&self.db.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                open_with_flags(self.db.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             let tables = connection.query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'idempotency_keys'",
             )?;

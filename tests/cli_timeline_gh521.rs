@@ -14,7 +14,7 @@ const END: i64 = START + 60_000;
 
 fn archive(root: &Path) -> Connection {
     let db = root.join("agent_search.db");
-    let conn = Connection::open(db.to_string_lossy().into_owned()).unwrap();
+    let conn = Connection::open(db.to_string_lossy()).unwrap();
     // Production streams the canonical idx_messages_conv_idx covering index.
     conn.execute_batch(
         "PRAGMA application_id = 0x43415353;
@@ -437,8 +437,7 @@ fn gh521_narrow_window_does_not_materialize_unrelated_message_payloads() {
     let conn = Connection::open(
         tmp.path()
             .join("agent_search.db")
-            .to_string_lossy()
-            .into_owned(),
+            .to_string_lossy(),
     )
     .unwrap();
     conn.execute_compat(

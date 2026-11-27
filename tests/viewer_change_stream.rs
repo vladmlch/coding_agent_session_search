@@ -120,7 +120,7 @@ fn insert_conversation(db: &Path, conv: &Conversation) -> Result<i64> {
 }
 
 fn open(db: &Path) -> Result<Connection> {
-    Ok(Connection::open(db.to_string_lossy().into_owned())?)
+    Ok(Connection::open(db.to_string_lossy())?)
 }
 
 fn kinds(events: &[journal::ChangeEvent]) -> Vec<&str> {
@@ -1984,7 +1984,7 @@ fn list_sessions_deep_pagination_survives_concurrent_inserts() -> Result<()> {
                 published.push((conv, outcome.conversation_id));
             }
             drop(storage);
-            let conn = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+            let conn = Connection::open(bridge.db.to_string_lossy())?;
             coding_agent_search::viewer_extensions::projection::publish_ingest_generations_batch_best_effort(
                 &conn,
                 published.iter().map(|(conv, id)| (conv, *id)),

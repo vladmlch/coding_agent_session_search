@@ -138,7 +138,7 @@ pub fn parse_lexical_query(text: &str, filters: &CassQueryFilters) -> Result<(Qu
 /// Two engine refusals mean "no complete ranking receipt" rather than a
 /// partial answer: query-fuel exhaustion, and the per-leaf glob-expansion
 /// cap (a prefix or wildcard literal matching more dictionary terms than
-/// [`crate::search::quill_bridge::cass_quill_config`] allows). The glob
+/// [`coding_agent_search::search::quill_bridge::cass_quill_config`] allows). The glob
 /// branch refuses typed — never a silently truncated match set — and its
 /// message names the pattern the engine exploded (the engine diagnostic is
 /// embedded verbatim, so the refusal carries the exact term) plus the

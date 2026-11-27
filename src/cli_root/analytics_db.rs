@@ -483,7 +483,7 @@ mod franken_query_retry_callback_tests {
 
     fn seeded_connection(dir: &std::path::Path) -> Connection {
         let path = dir.join("callback-once.db");
-        let conn = Connection::open(path.to_string_lossy().into_owned()).expect("open");
+        let conn = Connection::open(path.to_string_lossy()).expect("open");
         conn.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t (x) VALUES (1);")
             .expect("seed");
         conn

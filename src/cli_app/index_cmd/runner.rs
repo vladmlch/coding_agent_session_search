@@ -233,8 +233,6 @@ pub(crate) fn store_index_idempotency_result(
     payload: &serde_json::Value,
     now_ms: i64,
 ) -> Result<()> {
-    use crate::franken_sync::compat::TransactionExt;
-
     let result_json = serde_json::to_string(payload)?;
     let hash_str = params_hash.to_string();
     let expires_ms = now_ms + 24 * 60 * 60 * 1000;

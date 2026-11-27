@@ -259,8 +259,8 @@ fn gh426_bounded_stop_resumes_only_uncommitted_sources_in_both_modes() {
                 .execute_with_params(
                     "UPDATE meta SET value = ?1 WHERE key = ?2",
                     &[
-                        SqliteValue::Text(observation.to_string().into()),
-                        SqliteValue::Text(key.clone().into()),
+                        SqliteValue::Text(observation.to_string()),
+                        SqliteValue::Text(key.clone()),
                     ],
                 )
                 .unwrap();

@@ -15,7 +15,7 @@ use std::io;
 use std::path::Path;
 
 fn minimal_database(path: &Path, indexed: bool) -> Result<Connection> {
-    let connection = Connection::open(path.to_string_lossy().into_owned())?;
+    let connection = Connection::open(path.to_string_lossy())?;
     connection.execute("CREATE TABLE conversations (id INTEGER PRIMARY KEY)")?;
     // Deliberately omit content and tail columns: the summary needs neither.
     connection.execute(

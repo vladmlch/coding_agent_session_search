@@ -24,7 +24,7 @@ impl SemanticGenerationManifestV1 {
     ///
     /// Integrity never depends on serde's field ordering. [`Self::sha256`]
     /// hashes the domain-separated binary transcript from
-    /// [`Self::canonical_digest_bytes`] instead.
+    /// `Self::canonical_digest_bytes` instead.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, SemanticGenerationError> {
         let mut bytes =
             serde_json::to_vec(self).map_err(|error| SemanticGenerationError::Serialize {

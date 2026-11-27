@@ -244,7 +244,7 @@ fn matching_db_and_wal_allow_index_reuse_without_candidate_shm() {
 
 fn committed_marker(path: &Path) -> String {
     let connection = FrankenConnection::open_schema_only_with_wal_index_recovery(
-        path.to_string_lossy().into_owned(),
+        path.to_string_lossy(),
     )
     .expect("read committed fixture DB/WAL with only derived SHM recovery");
     let marker = connection
@@ -263,7 +263,7 @@ fn different_committed_wal_with_identical_base_db_requires_index_rebuild() {
     let fixture = CandidateFixture::new();
     let seed = fixture.data_dir.join("seed.db");
     let connection =
-        FrankenConnection::open(seed.to_string_lossy().into_owned()).expect("open seed database");
+        FrankenConnection::open(seed.to_string_lossy()).expect("open seed database");
     connection
         .execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -286,7 +286,7 @@ fn different_committed_wal_with_identical_base_db_requires_index_rebuild() {
         (fixture.candidate_path(""), "restored WAL row"),
     ] {
         let writer =
-            FrankenConnection::open(path.to_string_lossy().into_owned()).expect("open WAL writer");
+            FrankenConnection::open(path.to_string_lossy()).expect("open WAL writer");
         writer
             .execute("PRAGMA wal_autocheckpoint = 0")
             .expect("disable automatic checkpoints");

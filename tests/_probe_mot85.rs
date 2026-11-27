@@ -26,7 +26,7 @@ fn probe_mot85_sqlite_writable_schema_writes() {
     use coding_agent_search::franken_sync::Connection as FrankenConnection;
     let tmpdir = tempfile::tempdir().unwrap();
     let db_path = tmpdir.path().join("probe.db");
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     conn.execute("CREATE TABLE foo (id INTEGER)").unwrap();
     let pragma = conn.execute("PRAGMA writable_schema = ON");
     eprintln!("[mot85-probe] writable_schema=ON result: {pragma:?}");

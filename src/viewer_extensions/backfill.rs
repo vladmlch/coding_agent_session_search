@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use crate::franken_sync::compat::{ParamValue, RowExt, TransactionExt};
+use crate::franken_sync::compat::{ParamValue, RowExt};
 use crate::franken_sync::{Connection, Row, TransactionBehavior};
 use crate::model::types::{Conversation, Message, MessageRole, Snippet};
 

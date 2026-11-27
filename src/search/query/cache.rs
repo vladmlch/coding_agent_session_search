@@ -1443,8 +1443,8 @@ impl SearchClient {
     }
 
     /// Why the most recent lexical request degraded, if it did.
-    /// [`LEXICAL_DEGRADE_QUERY_FUEL_EXHAUSTED`] means a hybrid lexical leg was lost;
-    /// [`LEXICAL_RETRY_QUERY_FUEL_EXHAUSTED`] means a usable but incomplete native
+    /// [`LEXICAL_DEGRADE_QUERY_FUEL_EXHAUSTED`](super::LEXICAL_DEGRADE_QUERY_FUEL_EXHAUSTED) means a hybrid lexical leg was lost;
+    /// [`LEXICAL_RETRY_QUERY_FUEL_EXHAUSTED`](super::LEXICAL_RETRY_QUERY_FUEL_EXHAUSTED) means a usable but incomplete native
     /// page survived a larger-fetch refusal. Neither code denotes an exact total.
     #[must_use]
     pub fn lexical_degrade_reason(&self) -> Option<&'static str> {
@@ -1465,9 +1465,9 @@ impl SearchClient {
 
     /// Why the most recent `search_with_fallback` skipped the automatic
     /// wildcard retry a sparse result would otherwise get, if it did. See
-    /// [`WILDCARD_FALLBACK_SKIPPED_LARGE_INDEX`],
-    /// [`WILDCARD_FALLBACK_SKIPPED_DISABLED`] and
-    /// [`WILDCARD_FALLBACK_SKIPPED_LONG_TERM`] (2l1b0.68).
+    /// [`WILDCARD_FALLBACK_SKIPPED_LARGE_INDEX`](super::WILDCARD_FALLBACK_SKIPPED_LARGE_INDEX),
+    /// [`WILDCARD_FALLBACK_SKIPPED_DISABLED`](super::WILDCARD_FALLBACK_SKIPPED_DISABLED) and
+    /// [`WILDCARD_FALLBACK_SKIPPED_LONG_TERM`](super::WILDCARD_FALLBACK_SKIPPED_LONG_TERM) (2l1b0.68).
     #[must_use]
     pub fn wildcard_fallback_skipped_reason(&self) -> Option<&'static str> {
         self.last_wildcard_fallback_skip

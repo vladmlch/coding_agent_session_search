@@ -150,7 +150,7 @@ fn region_row_shifted(row: &Row) -> Result<RegionRow, crate::franken_sync::Frank
 ///
 /// Stage 1 lazy fragments (§6.3): the load is STRUCTURAL-ONLY —
 /// `indexed_text` never rides it. Position 16 carries the
-/// `indexed_text IS NOT NULL` bit instead ([`region_row_structural`]), so
+/// `indexed_text IS NOT NULL` bit instead (`region_row_structural`), so
 /// the universe load stops paying one fragment transfer per region
 /// (~6 s on a 762k-region archive); the query lane reads fragments on
 /// demand, only for the regions its witnesses and snippets actually need.
@@ -319,7 +319,7 @@ pub fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
 /// checkpoint refreshes and the early-exit equality.
 ///
 /// Session×scope share (Stage 1): every (conversation, scope) chunk the
-/// current rows pack into under [`super::docs::pack_region_boundaries`] — the same
+/// current rows pack into under `super::docs::pack_region_boundaries` — the same
 /// greedy packer the staging lane materializes documents with, fed the
 /// same per-region char contributions (`LENGTH(text) + 1`), so the bound
 /// is exact-or-OVER at convergence, never exact (review M-3): the fold

@@ -175,7 +175,7 @@ pub(super) fn plan_capped_balanced_merge_runs(
 }
 
 /// GH #456: default upper bound on the estimated output of one concat merge
-/// (1 GiB; see [`estimated_fold_output_bytes`]).
+/// (1 GiB; see `estimated_fold_output_bytes`).
 ///
 /// The engine builds a merge output as one in-memory buffer sized to the
 /// finished segment file, then re-verifies it in place before writing, so the

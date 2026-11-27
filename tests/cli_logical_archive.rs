@@ -224,8 +224,8 @@ fn collection_fixture(source: &Path) {
                             SqliteValue::Text("archive_fixture".into())
                         },
                         SqliteValue::Integer(1_733_000_000_000 + position),
-                        SqliteValue::Text(collection_body(position).into()),
-                        SqliteValue::Text(collection_extra(position).into()),
+                        SqliteValue::Text(collection_body(position)),
+                        SqliteValue::Text(collection_extra(position)),
                         SqliteValue::Blob(PRIVATE_COLLECTION_BLOB.into()),
                     ])
                     .unwrap();
@@ -716,8 +716,8 @@ fn real_binary_continued_rows_round_trip_with_bounded_frames_and_identical_bytes
                 .execute_with_params(
                     "UPDATE messages SET content = ?1, extra_bin = ?2 WHERE id = ?3",
                     &[
-                        SqliteValue::Text(content.into()),
-                        SqliteValue::Blob(blob.into()),
+                        SqliteValue::Text(content),
+                        SqliteValue::Blob(blob),
                         SqliteValue::Integer(10_000 + 3 * (COLLECTION_ROWS - 1)),
                     ],
                 )
@@ -873,7 +873,7 @@ fn real_binary_late_invalid_text_failure_is_private_and_never_published() {
             .execute_with_params(
                 "UPDATE messages SET content = CAST(?1 AS TEXT) WHERE id = ?2",
                 &[
-                    SqliteValue::Blob(private.into()),
+                    SqliteValue::Blob(private),
                     SqliteValue::Integer(10_000 + 3 * (COLLECTION_ROWS - 1)),
                 ],
             )

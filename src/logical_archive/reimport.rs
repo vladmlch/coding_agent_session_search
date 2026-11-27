@@ -18,6 +18,7 @@ fn identity(path: &Path) -> Result<FileIdentity> {
         .ok_or_else(|| anyhow!("cannot prove the existing destination's file identity"))
 }
 
+#[cfg(test)]
 fn require_same_file(connection: &Connection, path: &Path) -> Result<()> {
     let actual = identity(path)?;
     ensure!(

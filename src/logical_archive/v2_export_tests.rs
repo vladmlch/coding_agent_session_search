@@ -13,8 +13,8 @@ fn fixture(body: &str) -> Connection {
         .execute_with_params(
             "INSERT INTO messages VALUES (7, ?1, ?2)",
             &[
-                SqliteValue::Text(body.to_owned().into()),
-                SqliteValue::Blob(vec![0_u8, 255, 128].into()),
+                SqliteValue::Text(body.to_owned()),
+                SqliteValue::Blob(vec![0_u8, 255, 128]),
             ],
         )
         .unwrap();

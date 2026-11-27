@@ -726,7 +726,7 @@ fn context_help_shows_options() {
 // Deliberately keep message bodies in the fixture: GH#521 was caused by the
 // engine materializing those bodies for a join, even outside the time window.
 fn seed_timeline_count_fixture(db_path: &Path, archive_messages: i64, body_bytes: usize) {
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     conn.execute_batch(
         "PRAGMA application_id = 0x43415353;
          PRAGMA user_version = 1;
@@ -954,7 +954,7 @@ fn timeline_large_archive_peak_memory_is_bounded() {
     }
     // Move the payload-heavy conversation into the window to verify that even
     // a very large selected session is counted without collecting its bodies.
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     conn.execute("UPDATE conversations SET started_at = 1700000040000 WHERE id = 4")
         .unwrap();
     conn.close().unwrap();
@@ -1037,7 +1037,7 @@ fn timeline_json_normalizes_remote_provenance_without_source_row() {
         ))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
             .unwrap();
     conn.execute("UPDATE sources SET kind = '' WHERE id = 'work-laptop'")
         .unwrap();
@@ -1120,7 +1120,7 @@ fn timeline_json_derives_remote_source_id_from_origin_host_when_source_id_blank(
         .ensure_workspace(&workspace, Some("workspace"))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
             .unwrap();
     conn.execute(
         "INSERT INTO sources(id, kind, host_label, created_at, updated_at) VALUES ('   ', 'remote', 'user@work-laptop', 0, 0)",
@@ -2798,7 +2798,7 @@ fn sessions_json_derives_remote_source_id_from_origin_host_when_source_id_blank(
         .ensure_workspace(&workspace, Some("workspace"))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
             .unwrap();
     conn.execute(
         "INSERT INTO sources(id, kind, host_label, created_at, updated_at) VALUES ('   ', 'remote', 'user@work-laptop', 0, 0)",
@@ -2869,7 +2869,7 @@ fn sessions_json_keeps_local_file_metadata_for_blank_source_id() {
         .ensure_workspace(&workspace, Some("workspace"))
         .unwrap();
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
             .unwrap();
     conn.execute(
         "INSERT INTO sources(id, kind, host_label, created_at, updated_at) VALUES ('   ', 'local', NULL, 0, 0)",

@@ -262,7 +262,7 @@ fn replay_spans_bounded_batches_without_losing_rows() {
                 "INSERT INTO parents VALUES (?, ?)",
                 &[
                     SqliteValue::Integer(id as i64),
-                    SqliteValue::Text(format!("row-{id}").into()),
+                    SqliteValue::Text(format!("row-{id}")),
                 ],
             )
             .unwrap();
@@ -291,7 +291,7 @@ fn late_constraint_failure_keeps_safe_row_coordinates_and_engine_cause() -> Resu
         let value = if position == count { 1 } else { position };
         insert.execute_with_params(&[
             SqliteValue::Integer(1000 + i64::try_from(position)? * 7),
-            SqliteValue::Text(format!("PRIVATE-RESTORED-PARENT-{value}").into()),
+            SqliteValue::Text(format!("PRIVATE-RESTORED-PARENT-{value}")),
         ])?;
     }
     drop(insert);
@@ -692,8 +692,8 @@ fn rejected_multi_batch_restore_publishes_nothing_and_can_be_retried() {
             .execute_with_params(
                 "INSERT INTO meta (key, value) VALUES (?, ?)",
                 &[
-                    SqliteValue::Text(format!("restore_batch_{row:05}").into()),
-                    SqliteValue::Text(format!("canonical row {row}").into()),
+                    SqliteValue::Text(format!("restore_batch_{row:05}")),
+                    SqliteValue::Text(format!("canonical row {row}")),
                 ],
             )
             .unwrap();

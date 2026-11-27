@@ -16,7 +16,7 @@ use super::parsing::{dominant_match_type, transpile_to_fts5};
 use super::sqlite_hydration::{
     SQLITE_FTS5_HYDRATE_PARAM_CHUNK, SQLITE_FTS5_POST_FILTER_SCAN_CHUNK,
     SQLITE_FTS5_POST_FILTER_SCAN_LIMIT, SQLITE_MAX_VARIABLE_NUMBER,
-    SQLITE_MESSAGE_SCAN_FALLBACK_PAGE_ROWS, SearchSqliteConnectionExt, SqliteFtsHydratedRow,
+    SQLITE_MESSAGE_SCAN_FALLBACK_PAGE_ROWS, SqliteFtsHydratedRow,
     SqliteFtsMessageRow, franken_query_map_collect_retry, sql_placeholders, sql_rowid_literal_list,
 };
 use super::sqlite_scan::SqliteMessageScanRequest;
@@ -82,22 +82,6 @@ impl SearchClient {
             && lower.contains("workspace")
             && lower.contains("source_path")
             && lower.contains("created_at")
-    }
-
-    pub(in crate::search::query) fn sqlite_fts_uses_message_id_column(
-        conn: &SearchSqliteConnection,
-    ) -> Result<bool> {
-        Ok(Self::sqlite_fts_table_ddl(conn)?
-            .map(|sql| sql.to_ascii_lowercase().contains("message_id"))
-            .unwrap_or(false))
-    }
-
-    pub(in crate::search::query) fn sqlite_fts_has_metadata_columns(
-        conn: &SearchSqliteConnection,
-    ) -> Result<bool> {
-        Ok(Self::sqlite_fts_table_ddl(conn)?
-            .map(|sql| Self::ddl_has_fts_metadata_columns(&sql))
-            .unwrap_or(false))
     }
 
     pub(in crate::search::query) fn sqlite_fts_match_mode(
@@ -1375,7 +1359,7 @@ mod tests {
         }
         // Orphaned FTS row with highest term frequency must be dropped before LIMIT.
         {
-            let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())?;
+            let conn = FrankenConnection::open(db_path.to_string_lossy())?;
             conn.execute_compat(
                 "INSERT INTO fts_messages(rowid, content, title) VALUES(?1, ?2, ?3)",
                 params![999_999_i64, "auth auth auth auth auth orphan", "orphan entry"],

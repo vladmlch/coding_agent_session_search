@@ -3,7 +3,7 @@
 //!
 //! The report's local node showed 133 irreducible ingest-OOM quarantines plus a
 //! tail of legacy (`#258`, no `cass_version_at_quarantine`) and version-stale
-//! entries. `.3.1`'s [`quarantine_status`](crate::search::quarantine_status)
+//! entries. `.3.1`'s `crate::search::quarantine_status`
 //! surface lets an agent *see* which entries are retry-eligible; this module is
 //! the matching *action*: a bounded, resumable retry that re-attempts only the
 //! eligible (legacy / version-stale) entries, leaves irreducible same-version

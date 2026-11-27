@@ -1503,7 +1503,7 @@ fn index_handles_existing_schema_13_db() {
     // Setting meta.schema_version = '13' (> CURRENT_SCHEMA_VERSION=1) must fail
     // closed without replacing the archive.
     let conn = coding_agent_search::franken_sync::Connection::open(
-        db_path.to_string_lossy().into_owned(),
+        db_path.to_string_lossy(),
     )
     .expect("open db to set schema_version=13");
     conn.execute("UPDATE meta SET value = '13' WHERE key = 'schema_version'")
@@ -4354,7 +4354,7 @@ fn gh382_final_wal_checkpoint_is_bounded_and_leaves_the_wal_for_the_next_run() {
         };
 
         let connection =
-            open_with_flags(&db_path.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)
+            open_with_flags(db_path.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .expect("strictly read the durable archive after checkpoint process exit");
         let messages = connection
             .query_map_collect(
@@ -5907,7 +5907,7 @@ fn rvt_repair_global_scan_watermark(db_path: &std::path::Path) {
         .cloned()
         .unwrap_or_else(|| now_ms.to_string());
     let conn =
-        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy())
             .unwrap();
     conn.execute_compat(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('last_scan_ts', ?1)",
@@ -5933,7 +5933,7 @@ fn rvt_demote_marks_only(db_path: &std::path::Path, conversation_ids: &[i64]) {
     use coding_agent_search::franken_sync::Connection as FrankenConnection;
     use coding_agent_search::franken_sync::compat::ConnectionExt;
     use coding_agent_search::viewer_extensions::search_regions::REGION_VERSION;
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     for &id in conversation_ids {
         conn.execute_compat(
             "UPDATE viewer_search_region_marks SET region_version = ?1 \
@@ -5952,7 +5952,7 @@ fn rvt_demote_extractor_versions(db_path: &std::path::Path, conversation_ids: &[
     use coding_agent_search::franken_sync::compat::ConnectionExt;
     use coding_agent_search::viewer_extensions::facts::{self, FACTS_EXTRACTOR_VERSION};
     use coding_agent_search::viewer_extensions::projection::PROJECTION_VERSION;
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     for &id in conversation_ids {
         conn.execute_compat(
             "UPDATE viewer_session_facts SET extractor_version = ?1 \

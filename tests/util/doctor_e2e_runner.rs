@@ -3152,7 +3152,7 @@ fn write_doctor_e2e_sqlite_marker_db(path: &Path, marker: &str) -> Result<(), St
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| format!("create sqlite parent: {err}"))?;
     }
-    let conn = FrankenConnection::open(path.to_string_lossy().into_owned())
+    let conn = FrankenConnection::open(path.to_string_lossy())
         .map_err(|err| format!("create doctor backup fixture sqlite db: {err}"))?;
     conn.execute_compat(
         "CREATE TABLE IF NOT EXISTS restore_probe(marker TEXT NOT NULL)",

@@ -11,7 +11,7 @@ fn stats_source_filter_preserves_date_range() {
     let db_path = data_dir.join("agent_search.db");
 
     // Minimal schema required by `cass stats` queries.
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open db");
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open db");
     conn.execute_batch("PRAGMA application_id = 0x43415353; PRAGMA user_version = 1;")
         .expect("stamp schema v1");
     conn.execute("CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL)")
@@ -80,8 +80,7 @@ fn stats_test_archive(omit: Option<&str>) -> TempDir {
     let conn = FrankenConnection::open(
         tmp.path()
             .join("agent_search.db")
-            .to_string_lossy()
-            .into_owned(),
+            .to_string_lossy(),
     )
     .expect("create archive");
     conn.execute_batch("PRAGMA application_id = 0x43415353; PRAGMA user_version = 1;")
@@ -167,8 +166,7 @@ fn stats_refuses_invalid_fts_schema_even_when_canonical_counts_are_empty() {
     let conn = FrankenConnection::open(
         tmp.path()
             .join("agent_search.db")
-            .to_string_lossy()
-            .into_owned(),
+            .to_string_lossy(),
     )
     .expect("open archive");
     // A malformed ordinary table occupying the derived FTS name must not
@@ -200,8 +198,7 @@ fn stats_workspace_ties_filter_orphans_before_top_ten() {
     let conn = FrankenConnection::open(
         tmp.path()
             .join("agent_search.db")
-            .to_string_lossy()
-            .into_owned(),
+            .to_string_lossy(),
     )
     .expect("open archive");
     conn.execute("INSERT INTO agents VALUES (1, 'codex')")

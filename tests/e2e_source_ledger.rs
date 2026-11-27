@@ -232,8 +232,8 @@ fn gh512_persisted_legacy_reuse_and_primary_append_reach_search_in_both_modes() 
                     .execute_with_params(
                         "UPDATE meta SET value = ?1 WHERE key = ?2",
                         &[
-                            SqliteValue::Text(legacy.clone().into()),
-                            SqliteValue::Text(key.clone().into()),
+                            SqliteValue::Text(legacy.clone()),
+                            SqliteValue::Text(key.clone()),
                         ],
                     )
                     .unwrap();
@@ -450,8 +450,8 @@ fn gh536_a_new_device_number_after_a_remount_does_not_reparse_unchanged_sources(
                     .execute_with_params(
                         "UPDATE meta SET value = ?1 WHERE key = ?2",
                         &[
-                            SqliteValue::Text(saved.to_string().into()),
-                            SqliteValue::Text(key.into()),
+                            SqliteValue::Text(saved.to_string()),
+                            SqliteValue::Text(key),
                         ],
                     )
                     .unwrap();

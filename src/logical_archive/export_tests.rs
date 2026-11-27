@@ -486,7 +486,7 @@ fn exact_physical_limit_row_stays_an_ordinary_verified_record() -> Result<()> {
     // including all NULL cells; continuations begin only above this boundary.
     connection.execute_with_params(
         "INSERT INTO messages (id, body) VALUES (17, ?1)",
-        &[SqliteValue::Text("s".repeat(body_length).into())],
+        &[SqliteValue::Text("s".repeat(body_length))],
     )?;
     connection.execute("INSERT INTO messages (id, body) VALUES (19, 'after the large row')")?;
     connection.close()?;
@@ -533,7 +533,7 @@ fn invalid_utf8_text_is_refused_without_lossy_backup_or_private_diagnostic() -> 
     raw.extend_from_slice(&[0x80, 0xff]);
     connection.execute_with_params(
         "INSERT INTO messages VALUES (47, CAST(?1 AS TEXT), NULL, NULL)",
-        &[SqliteValue::Blob(raw.into())],
+        &[SqliteValue::Blob(raw)],
     )?;
     let has_invalid_utf8 =
         connection
@@ -612,7 +612,7 @@ fn cells_preserve_an_exact_v1_boundary_row_with_many_nulls() -> Result<()> {
     let length = codec::MAX_RECORD_BYTES - framing;
     let mut values = vec![
         SqliteValue::Integer(17),
-        SqliteValue::Text("s".repeat(length).into()),
+        SqliteValue::Text("s".repeat(length)),
     ];
     values.extend(std::iter::repeat_n(SqliteValue::Null, 62));
     let actual = cells(&values)?;
@@ -670,7 +670,7 @@ fn json_expansion_beyond_one_frame_is_published_and_verified() -> Result<()> {
     let connection = Connection::open(path_text(&database)?)?;
     connection.execute_with_params(
         "UPDATE messages SET body = ?1 WHERE id = 7",
-        &[SqliteValue::Text(body.clone().into())],
+        &[SqliteValue::Text(body.clone())],
     )?;
     connection.close()?;
     let before = contents(source.path());
@@ -1071,7 +1071,7 @@ fn buffered_snapshot_coalesces_rows_without_changing_the_verified_digest() -> Re
     let database = source.path().join("agent_search.db");
     fixture(&database);
     let connection = Connection::open(path_text(&database)?)?;
-    let body = SqliteValue::Text("buffered transcript ".repeat(80).into());
+    let body = SqliteValue::Text("buffered transcript ".repeat(80));
     connection.execute("BEGIN")?;
     for id in 100..612 {
         connection.execute_with_params(
@@ -1118,7 +1118,7 @@ fn buffered_snapshot_preserves_records_larger_than_its_io_buffer() -> Result<()>
     connection.execute_with_params(
         "UPDATE messages SET body = ?1 WHERE id = 7",
         &[SqliteValue::Text(
-            "x".repeat(EXPORT_IO_BUFFER_BYTES * 2).into(),
+            "x".repeat(EXPORT_IO_BUFFER_BYTES * 2),
         )],
     )?;
     connection.close()?;

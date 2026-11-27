@@ -706,7 +706,7 @@ fn rebuild_canonical_fts_repairs_structurally_corrupt_shadow_that_blocks_open() 
     // Corrupt the %_data structure record (rowid 10) through a fresh
     // connection (the FTS is still valid here, so the open succeeds).
     {
-        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+        let conn = FrankenConnection::open(db_path.to_string_lossy())
             .expect("open raw connection");
         let garbage = [0xFFu8; 12];
         conn.execute_compat(

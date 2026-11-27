@@ -187,7 +187,7 @@ impl ArtifactRecord {
     /// and DB fingerprint.  It does NOT detect embedder changes because the
     /// expected embedder ID requires the embedder registry to resolve.
     /// Callers needing embedder-change detection should call
-    /// [`SemanticAssetManifest::invalidation_action`] directly with the
+    /// [`SemanticAssetManifest::invalidation_action`](crate::search::policy::SemanticAssetManifest::invalidation_action) directly with the
     /// correct `expected_embedder_id` from the registry.
     pub fn readiness(
         &self,
@@ -841,7 +841,7 @@ impl SemanticManifest {
 
     /// Load the manifest, returning defaults if absent or corrupt.
     ///
-    /// Unlike [`load`], this method treats parse errors and version mismatches
+    /// Unlike [`Self::load`], this method treats parse errors and version mismatches
     /// as "manifest absent" — the caller gets a clean default rather than an
     /// error.  This is the right behaviour for runtime code that must always
     /// make progress.

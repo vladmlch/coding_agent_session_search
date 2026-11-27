@@ -58,7 +58,7 @@ mod protocol {
 }
 
 use anyhow::{Context, Result};
-use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt, TransactionExt};
+use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
 use coding_agent_search::franken_sync::{Connection, Row, TransactionBehavior, params};
 
 use super::facts::FactsDb;

@@ -1,7 +1,7 @@
 //! Pure-Rust ML embedder.
 //!
 //! Loads a local safetensors model + tokenizer bundle and produces semantic
-//! embeddings via frankensearch's [`NativeEmbedder`](frankensearch::NativeEmbedder)
+//! embeddings via frankensearch's [`NativeEmbedder`]
 //! — a pure-Rust (frankentorch) sentence embedder with **no ONNX Runtime / no
 //! `ort`**. The default is `all-MiniLM-L6-v2`; the distinct, opt-in
 //! `paraphrase-multilingual-MiniLM-L12-v2` space supports CJK and mixed-language
@@ -209,7 +209,7 @@ impl FastEmbedder {
     }
 
     /// Required non-model files for the native embedder. The safetensors weight
-    /// file is located separately via [`select_model_file`].
+    /// file is located separately via [`Self::select_model_file`].
     pub fn required_model_files() -> &'static [&'static str] {
         &[TOKENIZER_JSON]
     }

@@ -80,7 +80,7 @@ fn malformed_preferred_metadata_retains_json_fallback_but_never_claims_complete(
     let mut bridge = BridgeHarness::with_conversations(&[FixtureConversation::repeated(
         1, "local", "fixture", 1,
     )])?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE conversations SET metadata_bin=?1,metadata_json=?2 WHERE id=1",
         &param_slice_to_values(params![vec![0xc1_u8], "{\"recovered\":true}"]),
@@ -106,7 +106,7 @@ fn schema_mismatch_and_oversized_canonical_body_are_explicit_refusals() -> Resul
     let mut bridge = BridgeHarness::with_conversations(&[FixtureConversation::repeated(
         1, "local", "fixture", 1,
     )])?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE messages SET content=?1 WHERE conversation_id=1",
         &param_slice_to_values(params!["x".repeat(524_289)]),
@@ -127,7 +127,7 @@ fn schema_mismatch_and_oversized_canonical_body_are_explicit_refusals() -> Resul
             .as_array()
             .is_some_and(|issues| issues.contains(&json!("canonical_row_exceeds_wire_guard")))
     );
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     // One past the pinned profile: simulates an archive from a newer CASS.
     writer.execute("UPDATE meta SET value='2' WHERE key='schema_version'")?;
     drop(writer);
@@ -179,7 +179,7 @@ fn deep_metadata_is_rejected_before_exceeding_viewer_wire_frame_depth() -> Resul
     for _ in 0..60 {
         deep = format!("[{deep}]");
     }
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE conversations SET metadata_bin=NULL,metadata_json=?1 WHERE id=1",
         &param_slice_to_values(params![deep]),

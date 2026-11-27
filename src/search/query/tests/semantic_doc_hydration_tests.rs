@@ -46,7 +46,7 @@ fn hydrate_semantic_hits_with_ids_snippet_only_uses_full_content_for_snippets_an
         &[
             crate::franken_sync::SqliteValue::Integer(1),
             crate::franken_sync::SqliteValue::Integer(0),
-            crate::franken_sync::SqliteValue::Text(first.clone().into()),
+            crate::franken_sync::SqliteValue::Text(first.clone()),
             crate::franken_sync::SqliteValue::Integer(101),
         ],
     )?;
@@ -56,7 +56,7 @@ fn hydrate_semantic_hits_with_ids_snippet_only_uses_full_content_for_snippets_an
         &[
             crate::franken_sync::SqliteValue::Integer(2),
             crate::franken_sync::SqliteValue::Integer(1),
-            crate::franken_sync::SqliteValue::Text(second.clone().into()),
+            crate::franken_sync::SqliteValue::Text(second.clone()),
             crate::franken_sync::SqliteValue::Integer(102),
         ],
     )?;
@@ -658,7 +658,7 @@ fn resolve_semantic_doc_ids_for_hits_distinguishes_same_source_path_line_by_cont
         &[
             crate::franken_sync::SqliteValue::Integer(11),
             crate::franken_sync::SqliteValue::Integer(1),
-            crate::franken_sync::SqliteValue::Text(first.clone().into()),
+            crate::franken_sync::SqliteValue::Text(first.clone()),
         ],
     )?;
     conn.execute_with_params(
@@ -667,7 +667,7 @@ fn resolve_semantic_doc_ids_for_hits_distinguishes_same_source_path_line_by_cont
         &[
             crate::franken_sync::SqliteValue::Integer(22),
             crate::franken_sync::SqliteValue::Integer(2),
-            crate::franken_sync::SqliteValue::Text(second.clone().into()),
+            crate::franken_sync::SqliteValue::Text(second.clone()),
         ],
     )?;
 
@@ -855,7 +855,7 @@ fn resolve_semantic_doc_ids_for_hits_prefers_conversation_id_over_ambiguous_prov
         &[
             crate::franken_sync::SqliteValue::Integer(11),
             crate::franken_sync::SqliteValue::Integer(1),
-            crate::franken_sync::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Text(content.clone()),
         ],
     )?;
     conn.execute_with_params(
@@ -864,7 +864,7 @@ fn resolve_semantic_doc_ids_for_hits_prefers_conversation_id_over_ambiguous_prov
         &[
             crate::franken_sync::SqliteValue::Integer(22),
             crate::franken_sync::SqliteValue::Integer(2),
-            crate::franken_sync::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Text(content.clone()),
         ],
     )?;
 
@@ -959,7 +959,7 @@ fn resolve_semantic_doc_ids_for_hits_treats_null_source_as_local() -> Result<()>
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
             crate::franken_sync::SqliteValue::Integer(11),
-            crate::franken_sync::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Text(content.clone()),
         ],
     )?;
 
@@ -1044,7 +1044,7 @@ fn resolve_semantic_doc_ids_for_hits_matches_trimmed_local_source_id() -> Result
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
             crate::franken_sync::SqliteValue::Integer(11),
-            crate::franken_sync::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Text(content.clone()),
         ],
     )?;
 
@@ -1129,7 +1129,7 @@ fn resolve_semantic_doc_ids_for_hits_normalizes_blank_local_source_id() -> Resul
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
             crate::franken_sync::SqliteValue::Integer(11),
-            crate::franken_sync::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Text(content.clone()),
         ],
     )?;
 
@@ -1215,7 +1215,7 @@ fn resolve_semantic_doc_ids_for_hits_infers_remote_source_from_origin_host_when_
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
             crate::franken_sync::SqliteValue::Integer(11),
-            crate::franken_sync::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Text(content.clone()),
         ],
     )?;
 
@@ -1320,7 +1320,7 @@ fn gh395_browse_by_date_snippet_only_uses_full_content_for_hit_identity() -> Res
         &[
             crate::franken_sync::SqliteValue::Integer(1),
             crate::franken_sync::SqliteValue::Integer(0),
-            crate::franken_sync::SqliteValue::Text(first.clone().into()),
+            crate::franken_sync::SqliteValue::Text(first.clone()),
             crate::franken_sync::SqliteValue::Integer(101),
         ],
     )?;
@@ -1330,7 +1330,7 @@ fn gh395_browse_by_date_snippet_only_uses_full_content_for_hit_identity() -> Res
         &[
             crate::franken_sync::SqliteValue::Integer(2),
             crate::franken_sync::SqliteValue::Integer(0),
-            crate::franken_sync::SqliteValue::Text(second.clone().into()),
+            crate::franken_sync::SqliteValue::Text(second.clone()),
             crate::franken_sync::SqliteValue::Integer(102),
         ],
     )?;

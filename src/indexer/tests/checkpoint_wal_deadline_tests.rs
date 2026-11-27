@@ -497,7 +497,7 @@ fn best_effort_abort_wal_checkpoint_truncates_and_is_noop_when_absent() -> Resul
         "DB file should still exist after checkpoint"
     );
     // A fresh connection can open and query it.
-    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())?;
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())?;
     let _ = conn.query("PRAGMA quick_check;");
     conn.close().ok();
     Ok(())

@@ -631,7 +631,7 @@ mod tests {
 mod contention_integration_tests {
     use super::{ContentionClass, classify_franken_error};
     use crate::franken_sync::TransactionBehavior;
-    use crate::franken_sync::compat::{RowExt, TransactionExt};
+    use crate::franken_sync::compat::RowExt;
     use crate::franken_sync::params as fparams;
     use crate::storage::sqlite::{
         ConnectionManagerConfig, FrankenConnectionManager, FrankenStorage, WriterGuard,

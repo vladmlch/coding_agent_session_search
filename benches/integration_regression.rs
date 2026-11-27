@@ -583,7 +583,7 @@ where
 // =============================================================================
 
 fn bench_concurrent_writes(c: &mut Criterion) {
-    use coding_agent_search::franken_sync::compat::{TransactionBehavior, TransactionExt};
+    use coding_agent_search::franken_sync::compat::TransactionBehavior;
 
     let mut group = c.benchmark_group("concurrent_writes");
     group.sample_size(10);

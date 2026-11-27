@@ -92,7 +92,7 @@ mod gh473_preflight {
         std::thread::scope(|scope| {
             let holder = scope.spawn(move || {
                 let writer = crate::franken_sync::Connection::open_existing_schema_only(
-                    path.to_string_lossy().into_owned(),
+                    path.to_string_lossy(),
                 )
                 .unwrap();
                 writer.execute("BEGIN IMMEDIATE").unwrap();
