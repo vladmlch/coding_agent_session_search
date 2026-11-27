@@ -27795,6 +27795,48 @@
                   }
                 }
               }
+            },
+            "memory": {
+              "type": "object",
+              "description": "Live resident-memory observation, absent before the sampler has run.",
+              "properties": {
+                "capacity_pct": {
+                  "type": "integer"
+                },
+                "inflight_byte_limit": {
+                  "type": "integer"
+                },
+                "target_resident_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "resident_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "available_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "effective_total_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "healthy_streak": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
             }
           }
         },

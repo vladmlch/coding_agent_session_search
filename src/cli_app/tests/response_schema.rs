@@ -143,6 +143,23 @@ mod response_schema_tests {
             state.get("rebuild").is_some(),
             "health.state schema missing rebuild block"
         );
+        let memory = &schemas["health"]["properties"]["responsiveness"]["properties"]["memory"]
+            ["properties"];
+        for field in [
+            "capacity_pct",
+            "inflight_byte_limit",
+            "target_resident_bytes",
+            "resident_bytes",
+            "available_bytes",
+            "effective_total_bytes",
+            "healthy_streak",
+            "reason",
+        ] {
+            assert!(
+                memory.get(field).is_some(),
+                "health.responsiveness.memory schema missing field {field}"
+            );
+        }
         assert!(
             schemas["health"]["properties"]
                 .get("rebuild_progress")
