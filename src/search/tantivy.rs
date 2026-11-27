@@ -3,7 +3,6 @@ use std::path::Path;
 
 use crate::connectors::NormalizedConversation;
 use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};
-use crate::sources::provenance::LOCAL_SOURCE_ID;
 use anyhow::{Context, Result};
 // CASS->Quill flip: index open/create, ingest, read, and compaction are all on
 // Quill now. What remains from the incumbent is the schema-generation sentinel
@@ -47,57 +46,9 @@ pub use federated::{
     write_lexical_search_evidence_bundle_manifest,
 };
 
-pub(crate) fn normalized_index_source_id(
-    source_id: Option<&str>,
-    origin_kind: Option<&str>,
-    origin_host: Option<&str>,
-) -> String {
-    let trimmed_source_id = source_id.unwrap_or_default().trim();
-    if !trimmed_source_id.is_empty() {
-        if trimmed_source_id.eq_ignore_ascii_case(LOCAL_SOURCE_ID) {
-            return LOCAL_SOURCE_ID.to_string();
-        }
-        return trimmed_source_id.to_string();
-    }
-
-    let trimmed_origin_host = origin_host.map(str::trim).filter(|value| !value.is_empty());
-    let trimmed_origin_kind = origin_kind.unwrap_or_default().trim();
-    if trimmed_origin_kind.eq_ignore_ascii_case("ssh")
-        || trimmed_origin_kind.eq_ignore_ascii_case("remote")
-    {
-        return trimmed_origin_host.unwrap_or("remote").to_string();
-    }
-    if let Some(origin_host) = trimmed_origin_host {
-        return origin_host.to_string();
-    }
-
-    LOCAL_SOURCE_ID.to_string()
-}
-
-pub(crate) fn normalized_index_origin_kind(source_id: &str, origin_kind: Option<&str>) -> String {
-    if let Some(kind) = origin_kind.map(str::trim).filter(|value| !value.is_empty()) {
-        if kind.eq_ignore_ascii_case("local") {
-            return LOCAL_SOURCE_ID.to_string();
-        }
-        if kind.eq_ignore_ascii_case("ssh") || kind.eq_ignore_ascii_case("remote") {
-            return "remote".to_string();
-        }
-        return kind.to_ascii_lowercase();
-    }
-
-    if source_id == LOCAL_SOURCE_ID {
-        LOCAL_SOURCE_ID.to_string()
-    } else {
-        "remote".to_string()
-    }
-}
-
-pub(crate) fn normalized_index_origin_host(origin_host: Option<&str>) -> Option<String> {
-    origin_host
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
+pub(crate) use crate::model::origin_identity::{
+    normalized_index_origin_host, normalized_index_origin_kind, normalized_index_source_id,
+};
 
 pub const SCHEMA_HASH: &str = CASS_SCHEMA_HASH;
 const ENV_TANTIVY_ADD_BATCH_MAX_CHARS: &str = "CASS_TANTIVY_ADD_BATCH_MAX_CHARS";
@@ -121,7 +72,7 @@ fn positive_usize_env(name: &str) -> Option<usize> {
 fn host_memory_bytes_for_tantivy_default() -> Option<u64> {
     // GH #496: MemAvailable clamped to this process's cgroup headroom, so a
     // memory-capped unit does not size its writer heap from the whole host.
-    crate::indexer::responsiveness::available_memory_bytes()
+    crate::connectors::host_responsiveness::available_memory_bytes()
 }
 
 #[cfg(target_os = "macos")]
@@ -201,7 +152,7 @@ pub(crate) fn tantivy_writer_parallelism_hint_for_available_governed(
     available_parallelism: usize,
 ) -> usize {
     let raw = tantivy_writer_parallelism_hint_for_available(available_parallelism);
-    crate::indexer::responsiveness::effective_worker_count(raw).max(1)
+    crate::connectors::host_responsiveness::effective_worker_count(raw).max(1)
 }
 
 pub(crate) fn tantivy_writer_parallelism_hint() -> usize {
@@ -414,7 +365,9 @@ impl TantivyIndex {
         // path remains for indexer/mod.rs callers until that file's
         // exclusive lock is released and they can migrate too.
         let provenance = ConversationPacketProvenance::local();
-        let packet = ConversationPacket::from_normalized_conversation(conv, provenance);
+        let packet = crate::connectors::packet_bridge::conversation_packet_from_normalized(
+            conv, provenance,
+        );
         self.add_messages_from_packet(&packet, None, None, |_| Ok(()))
     }
 
@@ -424,7 +377,9 @@ impl TantivyIndex {
         conversation_id: Option<i64>,
     ) -> Result<()> {
         let provenance = ConversationPacketProvenance::local();
-        let mut packet = ConversationPacket::from_normalized_conversation(conv, provenance);
+        let mut packet = crate::connectors::packet_bridge::conversation_packet_from_normalized(
+            conv, provenance,
+        );
         // Stamp the canonical id onto the packet identity so the lexical
         // doc carries the same conversation_id the legacy path emitted.
         packet.payload.identity.conversation_id = conversation_id;

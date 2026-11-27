@@ -233,11 +233,10 @@ fn large_codex_session_keeps_full_extras_end_to_end_and_is_not_extra_compacted()
     // Viewer-facts half: the session must not be classified as
     // `extra_compacted`, the text inventory must be complete and the
     // tool call must pair with its recorded result.
-    let packet =
-        crate::model::conversation_packet::ConversationPacket::from_normalized_conversation(
-            &conv,
-            crate::model::conversation_packet::ConversationPacketProvenance::local(),
-        );
+    let packet = crate::connectors::packet_bridge::conversation_packet_from_normalized(
+        &conv,
+        crate::model::conversation_packet::ConversationPacketProvenance::local(),
+    );
     let publication = crate::viewer_extensions::facts::extract_session_facts(&packet, "codex");
     assert!(
         !publication.coverage.iter().any(|entry| entry

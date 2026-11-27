@@ -230,12 +230,12 @@ fn provenance_from_metadata(metadata: &Value) -> (String, Option<String>) {
     let raw_origin_kind = cass_origin
         .and_then(|origin| origin.get("kind"))
         .and_then(Value::as_str);
-    let origin_host = crate::search::tantivy::normalized_index_origin_host(
+    let origin_host = crate::model::origin_identity::normalized_index_origin_host(
         cass_origin
             .and_then(|origin| origin.get("host"))
             .and_then(Value::as_str),
     );
-    let source_id = crate::search::tantivy::normalized_index_source_id(
+    let source_id = crate::model::origin_identity::normalized_index_source_id(
         raw_source_id,
         raw_origin_kind,
         origin_host.as_deref(),

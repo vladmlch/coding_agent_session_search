@@ -32,7 +32,7 @@ pub(super) fn sample(cfg: &GovernorConfig) {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *state = State::default();
         drop(state);
-        crate::indexer::redact_secrets::update_redaction_retention_limit(usize::MAX);
+        crate::resource_plan::redact_secrets::update_redaction_retention_limit(usize::MAX);
         return;
     }
     let observation = Sample {
@@ -57,7 +57,7 @@ pub(super) fn sample(cfg: &GovernorConfig) {
     // CPU load would make their expensive redaction work run more often).
     // Workers release their own entries; the sampler never locks a cache or
     // touches its values, and leases continue accounting for idle owners.
-    crate::indexer::redact_secrets::update_redaction_retention_limit(
+    crate::resource_plan::redact_secrets::update_redaction_retention_limit(
         usize::try_from(decision.inflight_byte_limit).unwrap_or(usize::MAX),
     );
     // Do not emit the same pressure warning on every tick. A change of state

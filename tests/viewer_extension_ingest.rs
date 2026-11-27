@@ -56,7 +56,10 @@ fn packet(
         metadata,
         messages,
     };
-    ConversationPacket::from_normalized_conversation(&conv, ConversationPacketProvenance::local())
+    coding_agent_search::connectors::packet_bridge::conversation_packet_from_normalized(
+        &conv,
+        ConversationPacketProvenance::local(),
+    )
 }
 
 fn coverage<'a>(
@@ -7651,7 +7654,10 @@ fn projection_sparse_index_and_opaque_remote_source() {
             msg(90, "assistant", "tail", json!({})),
         ],
     };
-    let packet = ConversationPacket::from_normalized_conversation(&conv, provenance);
+    let packet =
+        coding_agent_search::connectors::packet_bridge::conversation_packet_from_normalized(
+            &conv, provenance,
+        );
     let facts = extract_session_facts(&packet, "antigravity");
     let structure = project_session_structure(&packet, &facts);
 
