@@ -576,7 +576,7 @@ impl SearchClient {
         let mut seen_exact = HashSet::new();
         let mut exact_query_keys = Vec::new();
         let mut seen_fallback = HashSet::new();
-        let mut fallback_query_keys = Vec::new();
+        let mut fallback_query_keys: Vec<ProgressiveFallbackQueryKey> = Vec::new();
         for (source_id, source_path, conversation_id, _title, idx, _created_at, _content_hash) in
             lookup_keys.iter().flatten()
         {
