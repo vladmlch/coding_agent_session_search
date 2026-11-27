@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::connectors::NormalizedConversation;
-use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};
+use crate::model::conversation_packet::ConversationPacketProvenance;
 use anyhow::{Context, Result};
 // CASS->Quill flip: index open/create, ingest, read, and compaction are all on
 // Quill now. What remains from the incumbent is the schema-generation sentinel

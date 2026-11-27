@@ -459,7 +459,9 @@ pub enum RobotTopic {
     Recipes,
 }
 
+#[allow(unused_imports)]
 pub use crate::model::cli_error::{CliError, CliResult, RobotFormat};
+#[allow(unused_imports)]
 pub(crate) use crate::model::cli_error::{CLI_ERROR_ALREADY_REPORTED_SENTINEL, WrapConfig};
 
 /// Human-readable display format for CLI output (non-JSON)

@@ -87,6 +87,7 @@ pub(crate) struct StateDbSnapshot {
     pub(crate) integrity_detail: Option<String>,
 }
 
+#[allow(unused_imports)]
 pub(crate) use crate::storage::sqlite::open_and_locks::{
     StateDbIntegrity, bounded_canonical_db_corruption_probe, corruption_class_franken_error,
     probe_state_db_integrity,
@@ -714,6 +715,7 @@ pub(crate) fn format_timestamp_millis_rfc3339(ts: i64) -> Option<String> {
     chrono::DateTime::from_timestamp_millis(ts).map(|dt| dt.to_rfc3339())
 }
 
+#[allow(unused_imports)]
 pub(crate) use crate::model::paths::{
     normalize_path_identity, path_identities_match, stored_path_identity_matches,
 };

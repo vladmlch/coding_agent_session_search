@@ -5,7 +5,7 @@
 //! interactive shells, editors, and a foreground `cass search` feel dead
 //! while a rebuild runs. This module provides a lightweight, hysteresis-aware
 //! governor that publishes a *capacity factor* (an integer percentage in
-//! `[min_capacity_pct, 100]`). Callers consult [`effective_worker_count`]
+//! `[min_capacity_pct, 100]`). Callers consult `effective_worker_count`
 //! before committing to a worker fan-out, and get back a bounded count that
 //! respects the current system load.
 //!
@@ -14,7 +14,7 @@
 //! * **Conservative by default.** Defaults never grow past caller-requested
 //!   fan-out; they only shrink when the box is already under pressure.
 //! * **Explainable.** Thresholds live in named env vars and the full decision
-//!   history is queryable via [`telemetry_snapshot`].
+//!   history is queryable via `telemetry_snapshot`.
 //! * **Non-oscillating.** Shrink is immediate so responsiveness recovers
 //!   fast, but growth back to full capacity requires multiple consecutive
 //!   healthy ticks (hysteresis) so flapping loads do not flap the worker count.
@@ -36,7 +36,7 @@
 //! Scheduled maintenance (`cass schedule run`, `cass models backfill
 //! --scheduled`, the daemon's periodic index spawn) can additionally require
 //! console idle time via `CASS_RESPONSIVENESS_MIN_USER_IDLE_SECS` — see
-//! [`user_idle_gate`]. That gate is deliberately *not* consulted by foreground
+//! `user_idle_gate`. That gate is deliberately *not* consulted by foreground
 //! indexing: a human who typed `cass index` wants it to run now.
 
 mod resident;

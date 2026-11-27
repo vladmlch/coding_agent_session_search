@@ -678,7 +678,7 @@ fn add_prebuilt_documents_streams_large_payloads_without_dropping_docs() {
 /// `add_messages_from_packet` with confidence.
 #[test]
 fn packet_driven_lexical_pipeline_matches_legacy_for_normalized_conv() {
-    use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};
+    use crate::model::conversation_packet::ConversationPacketProvenance;
 
     fn make_conv() -> NormalizedConversation {
         NormalizedConversation {
