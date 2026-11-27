@@ -343,29 +343,31 @@ fn quarantined_generation_gc_reason(
     }
 }
 
-fn new_cleanup_apply_action(
+struct CleanupApplyActionSpec<'a> {
     asset_class: DoctorAssetClass,
-    artifact_kind: &str,
+    artifact_kind: &'a str,
     path: String,
     generation_id: Option<String>,
     disposition: Option<crate::indexer::lexical_generation::LexicalCleanupDisposition>,
     reason: String,
     planned_reclaimable_bytes: u64,
     skip_reason: Option<String>,
-) -> DiagCleanupApplyAction {
+}
+
+fn new_cleanup_apply_action(spec: CleanupApplyActionSpec<'_>) -> DiagCleanupApplyAction {
     DiagCleanupApplyAction {
-        asset_safety: doctor_asset_safety(asset_class),
-        artifact_kind: artifact_kind.to_string(),
-        path,
-        generation_id,
+        asset_safety: doctor_asset_safety(spec.asset_class),
+        artifact_kind: spec.artifact_kind.to_string(),
+        path: spec.path,
+        generation_id: spec.generation_id,
         shard_id: None,
-        disposition,
-        reason,
-        planned_reclaimable_bytes,
+        disposition: spec.disposition,
+        reason: spec.reason,
+        planned_reclaimable_bytes: spec.planned_reclaimable_bytes,
         reclaimed_bytes: 0,
         applied: false,
-        skipped: skip_reason.is_some(),
-        skip_reason,
+        skipped: spec.skip_reason.is_some(),
+        skip_reason: spec.skip_reason,
         mutation_receipt: None,
     }
 }
@@ -668,7 +670,7 @@ pub(crate) fn collect_diag_quarantine_report_inner(
     report.quarantined_artifacts.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
-            .then_with(|| left.artifact_kind.cmp(&right.artifact_kind))
+            .then_with(|| left.artifact_kind.cmp(right.artifact_kind))
             .then_with(|| left.generation_id.cmp(&right.generation_id))
             .then_with(|| left.shard_id.cmp(&right.shard_id))
     });
@@ -879,16 +881,16 @@ pub(crate) fn planned_cleanup_apply_actions(
         .iter()
         .filter(|artifact| artifact.safe_to_gc)
     {
-        actions.push(new_cleanup_apply_action(
-            DoctorAssetClass::RetainedPublishBackup,
-            "retained_publish_backup",
-            artifact.path.clone(),
-            None,
-            None,
-            artifact.gc_reason.clone(),
-            artifact.size_bytes,
-            None,
-        ));
+        actions.push(new_cleanup_apply_action(CleanupApplyActionSpec {
+            asset_class: DoctorAssetClass::RetainedPublishBackup,
+            artifact_kind: "retained_publish_backup",
+            path: artifact.path.clone(),
+            generation_id: None,
+            disposition: None,
+            reason: artifact.gc_reason.clone(),
+            planned_reclaimable_bytes: artifact.size_bytes,
+            skip_reason: None,
+        }));
     }
 
     if !apply_gate.apply_allowed {
@@ -923,16 +925,16 @@ pub(crate) fn planned_cleanup_apply_actions(
                     lexical_cleanup_disposition_label(inventory.disposition)
                 )
             });
-        actions.push(new_cleanup_apply_action(
+        actions.push(new_cleanup_apply_action(CleanupApplyActionSpec {
             asset_class,
-            "lexical_generation",
-            entry.path.display().to_string(),
-            Some(entry.manifest.generation_id.clone()),
-            Some(inventory.disposition),
-            inventory.reason.clone(),
-            inventory.reclaimable_bytes,
+            artifact_kind: "lexical_generation",
+            path: entry.path.display().to_string(),
+            generation_id: Some(entry.manifest.generation_id.clone()),
+            disposition: Some(inventory.disposition),
+            reason: inventory.reason.clone(),
+            planned_reclaimable_bytes: inventory.reclaimable_bytes,
             skip_reason,
-        ));
+        }));
     }
     doctor_sorted_cleanup_actions(&actions)
 }
@@ -1109,16 +1111,16 @@ pub(crate) fn apply_diag_quarantine_cleanup(
     {
         let path = PathBuf::from(&artifact.path);
         let asset_class = DoctorAssetClass::RetainedPublishBackup;
-        let mut action = new_cleanup_apply_action(
+        let mut action = new_cleanup_apply_action(CleanupApplyActionSpec {
             asset_class,
-            "retained_publish_backup",
-            artifact.path.clone(),
-            None,
-            None,
-            artifact.gc_reason.clone(),
-            artifact.size_bytes,
-            None,
-        );
+            artifact_kind: "retained_publish_backup",
+            path: artifact.path.clone(),
+            generation_id: None,
+            disposition: None,
+            reason: artifact.gc_reason.clone(),
+            planned_reclaimable_bytes: artifact.size_bytes,
+            skip_reason: None,
+        });
 
         let action_id = doctor_cleanup_action_id(&action);
         let mutation_started_at_ms = doctor_now_ms();
@@ -1199,16 +1201,16 @@ pub(crate) fn apply_diag_quarantine_cleanup(
             }
 
             let asset_class = doctor_asset_class_for_cleanup_disposition(inventory.disposition);
-            let mut action = new_cleanup_apply_action(
+            let mut action = new_cleanup_apply_action(CleanupApplyActionSpec {
                 asset_class,
-                "lexical_generation",
-                entry.path.display().to_string(),
-                Some(entry.manifest.generation_id.clone()),
-                Some(inventory.disposition),
-                inventory.reason.clone(),
-                inventory.reclaimable_bytes,
-                None,
-            );
+                artifact_kind: "lexical_generation",
+                path: entry.path.display().to_string(),
+                generation_id: Some(entry.manifest.generation_id.clone()),
+                disposition: Some(inventory.disposition),
+                reason: inventory.reason.clone(),
+                planned_reclaimable_bytes: inventory.reclaimable_bytes,
+                skip_reason: None,
+            });
 
             let generation_fully_reclaimable = inventory.retained_bytes == 0
                 && inventory.reclaimable_bytes >= inventory.artifact_bytes;
