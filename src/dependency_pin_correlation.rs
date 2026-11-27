@@ -20,6 +20,8 @@
 use crate::root_cause_taxonomy::RootCauseFamily;
 use serde::{Deserialize, Serialize};
 
+pub mod build_metadata;
+
 /// Stable schema version for the pin-correlation wire format.
 pub const DEPENDENCY_PIN_SCHEMA_VERSION: u32 = 1;
 

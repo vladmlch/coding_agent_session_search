@@ -979,6 +979,7 @@ mod synthetic_history {
 
     #[test]
     fn gh537_unchanged_history_and_shared_sibling_work_counts() -> Result<()> {
+        coding_agent_search::ensure_runtime_hooks_registered();
         run_case([4, 4, 4, 4], 48, false)
     }
 
@@ -1005,6 +1006,7 @@ mod synthetic_history {
     #[test]
     #[ignore = "fresh-process worker invoked by GH537 workload tests"]
     fn gh537_index_child() -> Result<()> {
+        coding_agent_search::ensure_runtime_hooks_registered();
         let root = PathBuf::from(
             dotenvy::var("CASS_HISTORY_PROBE_ROOT").context("run via GH537 workload driver")?,
         );

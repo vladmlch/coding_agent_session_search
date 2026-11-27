@@ -672,7 +672,12 @@ pub(in crate::indexer) fn source_ledger_matches(
     observation: &str,
     source: &DiscoveredSourceFile,
 ) -> bool {
-    source_ledger_matches_with_contract(observation, source, env!("CASS_SOURCE_INGEST_CONTRACT"))
+    source_ledger_matches_with_contract(
+        observation,
+        source,
+        crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+            .ingest_contract,
+    )
 }
 
 /// A connector capability, not an inference from this scan's sidecar list.
@@ -741,8 +746,9 @@ pub(in crate::indexer) fn scan_with_durable_source_boundaries(
     sender: &mut StreamingBatchSender<'_>,
     mut prepare: impl FnMut(NormalizedConversation) -> Result<Option<NormalizedConversation>>,
 ) -> Result<()> {
+    let build_meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
     let producer_contract =
-        WorkspaceExclusions::from_env()?.bind_contract(env!("CASS_SOURCE_INGEST_CONTRACT"));
+        WorkspaceExclusions::from_env()?.bind_contract(build_meta.ingest_contract);
     if !connector.supports_source_boundaries() {
         return connector.scan_with_callback(ctx, &mut |conversation| {
             if let Some(conversation) = prepare(conversation)? {
@@ -821,7 +827,7 @@ pub(in crate::indexer) fn scan_with_durable_source_boundaries(
                 .or_insert_with(|| observation.clone());
         }
         *primary_before.borrow_mut() = primary_observation;
-        let skip = env!("CASS_SOURCE_INGEST_REUSE") == "true"
+        let skip = build_meta.ingest_reuse
             && !filtered.get()
             && source_ledger_key(source, &ctx)
                 .and_then(|key| config.source_ledger.get(&key))

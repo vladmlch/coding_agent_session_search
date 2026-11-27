@@ -85,6 +85,7 @@ fn create_corpus(tmp: &TempDir, count: usize) -> (std::path::PathBuf, std::path:
 }
 
 fn bench_index_full(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().join("data");
     let db_path = data_dir.join("agent_search.db");
@@ -120,6 +121,7 @@ fn bench_index_full(c: &mut Criterion) {
 /// for normal message content and should stay at one RegexSet scan with no
 /// owned output allocation.
 fn bench_redact_text(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let mut group = c.benchmark_group("redact_text");
     let harmless = "ordinary tool output with code review notes and no credentials";
     let key_label = ["api", "_", "key", "="].concat();
@@ -149,6 +151,7 @@ fn bench_redact_text(c: &mut Criterion) {
 /// against the original batch mode. Streaming uses bounded channels with
 /// backpressure to reduce peak memory usage.
 fn bench_streaming_vs_batch(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let mut group = c.benchmark_group("streaming_vs_batch");
 
     // Test with multiple corpus sizes to see scaling behavior
@@ -222,6 +225,7 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
 /// Measures the impact of different channel buffer sizes on throughput.
 /// The STREAMING_CHANNEL_SIZE constant (32) balances memory vs throughput.
 fn bench_channel_overhead(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let corpus_size = 100;
     let tmp = TempDir::new().unwrap();
     let (data_dir, db_path) = create_corpus(&tmp, corpus_size);
@@ -282,6 +286,7 @@ fn scan_codex_conversation_count(data_dir: &Path, scan_roots: &[ScanRoot]) -> us
 /// `explicit_files_scan_only` row isolates the connector-side savings available
 /// once a faster enumerator produces the same explicit-file set.
 fn bench_codex_scan_preflight(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let corpus_size = 1_000usize;
     let tmp = TempDir::new().unwrap();
     let (data_dir, _db_path) = create_corpus(&tmp, corpus_size);
@@ -359,6 +364,7 @@ fn build_semantic_corpus(count: usize) -> Vec<EmbeddingInput> {
 /// hash embedder so the benchmark stays fast, deterministic, and dependency-
 /// free (no ONNX model download).
 fn bench_semantic_embedding(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let mut group = c.benchmark_group("semantic_embedding");
     group.sample_size(20);
     let messages = build_semantic_corpus(2_000);
@@ -400,6 +406,7 @@ fn bench_semantic_embedding(c: &mut Criterion) {
 /// file publishing, per-shard manifest cost, and optional shard-local ANN build
 /// without depending on model downloads.
 fn bench_semantic_shard_generation(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let mut group = c.benchmark_group("semantic_shard_generation");
     group.sample_size(10);
     let indexer = SemanticIndexer::new("hash", None).unwrap();
@@ -609,6 +616,7 @@ fn bench_semantic_shard_generation(c: &mut Criterion) {
 /// such as `/usr/bin/time -v`. Criterion does not report memory itself, so keep
 /// these rows narrow and filterable: run one row at a time when collecting RSS.
 fn bench_semantic_shard_generation_large(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let mut group = c.benchmark_group("semantic_shard_generation_large");
     group.sample_size(10);
     let indexer = SemanticIndexer::new("hash", None).unwrap();
@@ -656,6 +664,7 @@ fn bench_semantic_shard_generation_large(c: &mut Criterion) {
 /// whether the governor is silently costing throughput on an otherwise
 /// idle box.
 fn bench_ingest_with_responsiveness(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let mut group = c.benchmark_group("ingest_responsiveness");
     group.sample_size(15);
     let corpus_size = 200;
@@ -716,6 +725,7 @@ fn bench_ingest_with_responsiveness(c: &mut Criterion) {
 /// 200 matches the existing `ingest_responsiveness` bench so the
 /// criterion baseline comparator can attribute the delta.
 fn bench_card_defaults_ab(c: &mut Criterion) {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let mut group = c.benchmark_group("card_defaults_ab");
     group.sample_size(10);
     let corpus_size = 200;

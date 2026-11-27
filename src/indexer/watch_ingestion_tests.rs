@@ -16,6 +16,7 @@ struct Fixture {
     options: IndexOptions,
     index_path: PathBuf,
     previous_active_skip: bool,
+    _build_meta: crate::dependency_pin_correlation::build_metadata::TestBuildMetadataGuard,
 }
 
 impl Fixture {
@@ -43,6 +44,10 @@ impl Fixture {
             watch_once_paths: None,
             watch_interval_secs: 1,
         };
+        let _build_meta =
+            crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+                &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+            );
         Ok(Self {
             _temp: temp,
             kind,
@@ -51,6 +56,7 @@ impl Fixture {
             index_path,
             previous_active_skip: ACTIVE_SESSION_SOURCE_SKIP_OBSERVED
                 .swap(false, Ordering::Relaxed),
+            _build_meta,
         })
     }
 
@@ -1065,6 +1071,10 @@ fn gh538_watch_absent_root_honors_exclusion_skip_and_defer_policies() -> Result<
         "CASS_DEFER_LEXICAL_UPDATES",
     ];
     if let Some(data) = std::env::var_os(CHILD_DATA) {
+        let _build_meta =
+            crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+                &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+            );
         let data = PathBuf::from(data);
         let root = ScanRoot::local(PathBuf::from(
             std::env::var_os(CHILD_ROOT).context("policy root")?,

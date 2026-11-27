@@ -157,7 +157,9 @@ pub(crate) fn run_doctor_undo(
 
     // Best-effort: identify the cass build sha for the new undo run id. If
     // unavailable (development build), use a sentinel that hashes deterministically.
-    let target_sha = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
+    let target_sha = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+        .git_sha
+        .unwrap_or("unknown");
 
     let receipt = crate::doctor_undo::undo_run(&data_dir, &resolved_run_id, target_sha).map_err(
         |e| match e {

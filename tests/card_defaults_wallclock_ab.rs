@@ -111,6 +111,7 @@ fn run_cell(label: &str, governor: &str, combine: &str, shadow: &str, corpus_siz
 
 #[test]
 fn card_defaults_wallclock_ab_cell_child() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     if std::env::var_os(WALLCLOCK_CELL_CHILD_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
     }
@@ -157,6 +158,7 @@ fn card_defaults_wallclock_ab_cell_child() {
 #[test]
 #[ignore = "wall-clock A/B; run with --ignored --nocapture in release mode"]
 fn card_defaults_wallclock_ab_4cell() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     eprintln!("=== card_defaults_wallclock_ab_4cell starting ===");
     use std::io::Write;
     let _ = std::io::stderr().flush();

@@ -198,6 +198,7 @@ pub struct ParsedCli {
 }
 
 pub fn parse_cli(raw_args: Vec<String>) -> CliResult<ParsedCli> {
+    crate::ensure_runtime_hooks_registered();
     // A removed command or flag errors here, before normalization, alias
     // expansion, implicit-search folding or typo recovery can rewrite the
     // invocation into a different live command (cass-local plan, task 6).
@@ -305,11 +306,13 @@ pub fn parse_cli(raw_args: Vec<String>) -> CliResult<ParsedCli> {
 }
 
 pub async fn run() -> CliResult<()> {
+    crate::ensure_runtime_hooks_registered();
     let parsed = parse_cli(std::env::args().collect())?;
     run_with_parsed(parsed).await
 }
 
 pub async fn run_with_parsed(parsed: ParsedCli) -> CliResult<()> {
+    crate::ensure_runtime_hooks_registered();
     let ParsedCli {
         cli,
         raw_args,
@@ -387,6 +390,7 @@ pub async fn run_with_parsed(parsed: ParsedCli) -> CliResult<()> {
 /// subprocess latency tests, so keep both commands on this synchronous path
 /// and leave the general async runner for commands that actually need it.
 pub fn try_run_with_parsed_fast(parsed: ParsedCli) -> Result<CliResult<()>, Box<ParsedCli>> {
+    crate::ensure_runtime_hooks_registered();
     let ParsedCli {
         cli,
         raw_args,
