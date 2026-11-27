@@ -152,6 +152,7 @@ impl UdsDaemonClient {
             })?;
         remove_stale_daemon_socket(&self.config.socket_path)?;
         check(deadline)?;
+        // ubs:ignore[rust.security.command-executable] — spawns trusted cass daemon binary (daemon_binary config or current_exe)
         let mut command = Command::new(binary);
         command
             .arg("daemon")

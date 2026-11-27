@@ -1050,8 +1050,11 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_once(
                                 max_message_id = max_message_id.max(last_message_id);
                             }
                             equivalence_accumulator.absorb_packet(&packet);
-                            if let Some(chunk) =
-                                packet.chunk.clone().filter(|chunk| !chunk.is_final)
+                            if let Some(gate) = packet
+                                .chunk
+                                .as_ref()
+                                .filter(|chunk| !chunk.is_final)
+                                .map(|chunk| Arc::clone(&chunk.gate))
                             {
                                 // A non-final chunk of a long conversation
                                 // (bgn6s): flush it into the index now, freeing
@@ -1079,7 +1082,7 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_once(
                                     page_size,
                                     perf_profile.as_mut(),
                                 )?;
-                                chunk.gate.flushed();
+                                gate.flushed();
                                 bump_index_run_lock_progress_if_present(progress_bump.as_ref());
                                 continue;
                             }

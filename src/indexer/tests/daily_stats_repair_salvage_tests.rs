@@ -142,6 +142,7 @@ fn repair_daily_stats_if_drifted_bypasses_the_unbounded_packet_rebuild() {
 }
 
 #[test]
+#[serial]
 fn packet_daily_stats_projection_matches_streaming_storage_rebuild() {
     fn load_daily_stats_rows(
         storage: &FrankenStorage,

@@ -647,6 +647,7 @@ impl LexicalGenerationManifest {
 
 /// Canonical manifest path inside a generation directory.
 pub(crate) fn manifest_path(generation_dir: &Path) -> PathBuf {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time LEXICAL_GENERATION_MANIFEST_FILE constant
     generation_dir.join(LEXICAL_GENERATION_MANIFEST_FILE)
 }
 

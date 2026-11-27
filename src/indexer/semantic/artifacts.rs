@@ -300,6 +300,7 @@ impl BackfillArtifacts {
             for shard in &shards.shards {
                 protected.index(&self.data_dir.join(&shard.index_path))?;
                 if let Some(path) = &shard.ann_index_path {
+                    // ubs:ignore[rust.security.path-traversal] — protected.index only adds paths to GC allowlist, never writes or deletes
                     protected.index(&self.data_dir.join(path))?;
                 }
             }
@@ -420,6 +421,7 @@ impl BackfillArtifacts {
                         %error,
                         "semantic scratch artifact retained; cleanup will retry"
                     );
+                    // ubs:ignore[rust.security.path-traversal] — Vec::push, not PathBuf::push
                     report.failed_paths.push(path);
                 }
             }
@@ -720,6 +722,7 @@ fn protect_selected_generation(
                     .all(|component| matches!(component, Component::Normal(_))),
             "unsafe selected semantic artifact path"
         );
+        // ubs:ignore[rust.security.path-traversal] — relative validated to contain only Component::Normal at L716-721
         protected.index(&selected.generation_dir.join(relative))?;
     }
     Ok(())

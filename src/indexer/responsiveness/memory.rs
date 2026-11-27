@@ -391,6 +391,13 @@ pub(super) fn cgroup_memory_budget(
         } else {
             continue;
         };
+        if std::path::Path::new(relative)
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        // ubs:ignore[rust.security.path-traversal] — relative validated to contain only Component::Normal above
         let mut level = base.join(relative);
         loop {
             if v2 {

@@ -231,7 +231,7 @@ pub(in crate::raw_mirror) fn publish_content_addressed_temp(
 ) -> Result<bool> {
     let expected_relative_path = raw_mirror_blob_relative_path(expected_blake3)
         .ok_or_else(|| anyhow!("computed invalid raw mirror blake3 digest"))?;
-    if final_path != root.join(&expected_relative_path) {
+    if final_path != join_validated_raw_mirror_relative_path(root, &expected_relative_path)? {
         return Err(anyhow!(
             "raw mirror blob publish target {} is not the canonical path for {}",
             final_path.display(),
@@ -368,8 +368,10 @@ pub(in crate::raw_mirror) fn merge_raw_mirror_manifest_db_links(
         return Err(anyhow!("raw mirror manifest path contains a symlink"));
     }
     let mut manifest = read_raw_mirror_manifest(manifest_path)?;
-    let expected_manifest_path =
-        root.join(raw_mirror_manifest_relative_path(&manifest.manifest_id));
+    let expected_manifest_path = join_validated_raw_mirror_relative_path(
+        root,
+        &raw_mirror_manifest_relative_path(&manifest.manifest_id),
+    )?;
     if manifest_path != expected_manifest_path {
         return Err(anyhow!(
             "raw mirror manifest {} is not at its canonical path {}",
@@ -510,6 +512,24 @@ fn raw_mirror_manifest_path_from_relative(root: &Path, relative_path: &str) -> R
         ));
     }
 
+    // ubs:ignore[rust.security.path-traversal] — relative validated to contain only Component::Normal above
+    Ok(root.join(relative))
+}
+
+pub(in crate::raw_mirror) fn join_validated_raw_mirror_relative_path(
+    root: &Path,
+    relative_path: &str,
+) -> Result<PathBuf> {
+    let relative = Path::new(relative_path);
+    anyhow::ensure!(
+        !relative_path.is_empty()
+            && !relative.is_absolute()
+            && relative
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "raw mirror path must use only normal relative components: {relative_path}"
+    );
+    // ubs:ignore[rust.security.path-traversal] — relative validated to contain only Component::Normal above
     Ok(root.join(relative))
 }
 
@@ -555,9 +575,10 @@ pub(in crate::raw_mirror) fn validated_existing_manifest(
     expected_blob_blake3: &str,
 ) -> Result<RawMirrorManifestFile> {
     let parsed_manifest = read_raw_mirror_manifest(path)?;
-    let expected_manifest_path = root.join(raw_mirror_manifest_relative_path(
-        &parsed_manifest.manifest_id,
-    ));
+    let expected_manifest_path = join_validated_raw_mirror_relative_path(
+        root,
+        &raw_mirror_manifest_relative_path(&parsed_manifest.manifest_id),
+    )?;
     if path != expected_manifest_path {
         return Err(anyhow!(
             "existing raw mirror manifest {} is not at its canonical path {}",

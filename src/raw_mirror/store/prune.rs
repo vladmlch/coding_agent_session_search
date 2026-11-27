@@ -6,9 +6,9 @@ use super::io::{
     system_time_to_ms, try_acquire_index_run_lock_for_prune,
 };
 use super::manifest::{
-    raw_mirror_blob_relative_path, raw_mirror_manifest_blob_references,
-    raw_mirror_manifest_relative_path, read_raw_mirror_manifest,
-    read_validated_raw_mirror_manifest, same_source_identity,
+    join_validated_raw_mirror_relative_path, raw_mirror_blob_relative_path,
+    raw_mirror_manifest_blob_references, raw_mirror_manifest_relative_path,
+    read_raw_mirror_manifest, read_validated_raw_mirror_manifest, same_source_identity,
     validate_raw_mirror_manifest_contents, validated_existing_manifest,
     verify_existing_blob_reference,
 };
@@ -19,6 +19,7 @@ use super::types::{
 };
 use anyhow::{Context, Result, anyhow};
 use serde_json::json;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -126,9 +127,9 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
     let mut blob_size_by_relative: HashMap<String, u64> = HashMap::new();
     for manifest in &manifests {
         manifest_by_id.insert(manifest.manifest_id.clone(), manifest);
-        let mut seen_manifest_blobs = HashSet::new();
+        let mut seen_manifest_blobs: HashSet<&str> = HashSet::new();
         for blob_reference in &manifest.blob_references {
-            if !seen_manifest_blobs.insert(blob_reference.blob_relative_path.clone()) {
+            if !seen_manifest_blobs.insert(blob_reference.blob_relative_path.as_str()) {
                 continue;
             }
             blob_to_manifests
@@ -261,9 +262,9 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
     report.pinned_blob_count = pinned_blobs.len() as u64;
 
     let mut selected_manifests: HashSet<String> = HashSet::new();
-    let mut manifest_reasons: HashMap<String, String> = HashMap::new();
+    let mut manifest_reasons: HashMap<String, Cow<'static, str>> = HashMap::new();
     let mut selected_orphan_blobs: HashSet<String> = HashSet::new();
-    let mut orphan_blob_reasons: HashMap<String, String> = HashMap::new();
+    let mut orphan_blob_reasons: HashMap<String, Cow<'static, str>> = HashMap::new();
 
     if let Some(older_than_ms) = options.older_than_ms {
         let cutoff_ms = now.saturating_sub(older_than_ms.max(0));
@@ -274,7 +275,7 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
                 selected_manifests.insert(manifest.manifest_id.clone());
                 manifest_reasons
                     .entry(manifest.manifest_id.clone())
-                    .or_insert_with(|| format!("captured_at_ms <= {cutoff_ms}"));
+                    .or_insert_with(|| Cow::Owned(format!("captured_at_ms <= {cutoff_ms}")));
             }
         }
         for blob in &orphan_blobs {
@@ -286,7 +287,7 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
                 selected_orphan_blobs.insert(blob.relative_path.clone());
                 orphan_blob_reasons.insert(
                     blob.relative_path.clone(),
-                    format!("unreferenced blob modified_at_ms <= {cutoff_ms}"),
+                    Cow::Owned(format!("unreferenced blob modified_at_ms <= {cutoff_ms}")),
                 );
             }
         }
@@ -300,7 +301,9 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
             manifest_reasons
                 .entry(manifest_id.clone())
                 .or_insert_with(|| {
-                    format!("superseded by the newest {keep_latest} captures of its source file")
+                    Cow::Owned(format!(
+                        "superseded by the newest {keep_latest} captures of its source file"
+                    ))
                 });
             selected_manifests.insert(manifest_id);
         }
@@ -341,9 +344,9 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
             selected_orphan_blobs.insert(blob.relative_path.clone());
             orphan_blob_reasons
                 .entry(blob.relative_path.clone())
-                .or_insert_with(|| {
-                    "max-size over budget; reclaiming oldest unreferenced blob".to_string()
-                });
+                .or_insert(Cow::Borrowed(
+                    "max-size over budget; reclaiming oldest unreferenced blob",
+                ));
             projected_bytes = projected_bytes.saturating_sub(blob.size_bytes);
         }
 
@@ -359,13 +362,13 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
             selected_manifests.insert(manifest.manifest_id.clone());
             manifest_reasons
                 .entry(manifest.manifest_id.clone())
-                .or_insert_with(|| {
-                    "max-size over budget; retiring oldest unpinned capture".to_string()
-                });
+                .or_insert(Cow::Borrowed(
+                    "max-size over budget; retiring oldest unpinned capture",
+                ));
 
-            let mut seen_manifest_blobs = HashSet::new();
+            let mut seen_manifest_blobs: HashSet<&str> = HashSet::new();
             for blob_reference in &manifest.blob_references {
-                if !seen_manifest_blobs.insert(blob_reference.blob_relative_path.clone()) {
+                if !seen_manifest_blobs.insert(blob_reference.blob_relative_path.as_str()) {
                     continue;
                 }
                 let becomes_unreferenced = blob_to_manifests
@@ -415,6 +418,7 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
         }
         let reason = manifest_reasons
             .remove(manifest_id)
+            .map(Cow::into_owned)
             .unwrap_or_else(|| "selected by retention policy".to_string());
         entries.push(RawMirrorPruneEntry {
             kind: "manifest".to_string(),
@@ -447,6 +451,7 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
             .map(ToOwned::to_owned);
         let reason = orphan_blob_reasons
             .remove(&blob_relative_path)
+            .map(Cow::into_owned)
             .unwrap_or_else(|| {
                 "no retained manifest references this blob after prune plan".to_string()
             });
@@ -532,7 +537,7 @@ pub fn prune(data_dir: &Path, options: RawMirrorPruneOptions) -> Result<RawMirro
             .with_context(|| format!("preflight selected raw mirror blob {}", entry.path))?;
         }
         for entry in &report.entries {
-            let path = root.join(&entry.path);
+            let path = join_validated_raw_mirror_relative_path(&root, &entry.path)?;
             if entry.kind == "staging" {
                 validate_prune_target_staging(&root, &path)
             } else {
@@ -567,7 +572,7 @@ pub(in crate::raw_mirror) fn apply_prune_entries(
     policy::forget_measured_usage(root);
     append_prune_audit_records(audit_file, audit_path, &report.entries, "intent")?;
     for entry in &mut report.entries {
-        let path = root.join(&entry.path);
+        let path = join_validated_raw_mirror_relative_path(root, &entry.path)?;
         let removed = remove_prune_entry_file(root, entry)
             .with_context(|| format!("applying raw mirror prune for {}", path.display()))?;
         entry.applied = removed;
@@ -630,9 +635,10 @@ pub(in crate::raw_mirror) fn collect_prune_manifests(
             );
         }
         let parsed_manifest = read_raw_mirror_manifest(&path)?;
-        let expected_path = root.join(raw_mirror_manifest_relative_path(
-            &parsed_manifest.manifest_id,
-        ));
+        let expected_path = join_validated_raw_mirror_relative_path(
+            root,
+            &raw_mirror_manifest_relative_path(&parsed_manifest.manifest_id),
+        )?;
         if path != expected_path {
             anyhow::bail!(
                 "refusing to prune non-canonical raw mirror manifest path {}; expected {}",
@@ -853,10 +859,12 @@ pub(in crate::raw_mirror) fn collect_raw_mirror_physical_blobs(
                 format!("raw mirror blob escaped inventory root {}", path.display())
             })?;
             if actual_relative != Path::new(&expected_relative) {
+                // ubs:ignore[rust.security.path-traversal] — expected_relative from 64-hex raw_mirror_blob_relative_path
+                let expected_path = root.join(&expected_relative);
                 return Err(anyhow!(
                     "refusing non-canonical raw mirror blob path {}; expected {}",
                     path.display(),
-                    root.join(&expected_relative).display()
+                    expected_path.display()
                 ));
             }
             blobs.push(RawMirrorPhysicalBlob {
@@ -901,7 +909,7 @@ pub(in crate::raw_mirror) fn remove_prune_entry_file(
     root: &Path,
     entry: &RawMirrorPruneEntry,
 ) -> Result<bool> {
-    let path = root.join(&entry.path);
+    let path = join_validated_raw_mirror_relative_path(root, &entry.path)?;
     if entry.kind == "staging" {
         return remove_abandoned_capture_staging(root, &path, entry.size_bytes);
     }

@@ -597,8 +597,8 @@ pub(crate) const BACKGROUND_MALLOC_ARENA_MAX: &str = "2";
 /// Shared shape of every detached cass child: stdio to `log`, own process
 /// group, and `CASS_AUTO_REFRESH=0` so a child never spawns children.
 fn build_detached_command(binary: &Path, args: &[OsString], log: &Path) -> Command {
-    // ubs:ignore — `binary` is always `std::env::current_exe()` (the running
-    // cass), never user-supplied input; same pattern as daemon auto-spawn.
+    // `binary` is always `std::env::current_exe()` (the running cass), never user-supplied input.
+    // ubs:ignore[rust.security.command-executable] — spawns trusted current_exe cass binary
     let mut cmd = Command::new(binary);
     cmd.args(args);
     // The child never searches, but be explicit: a catch-up must not spawn

@@ -288,6 +288,15 @@ pub(crate) fn reclaim_orphaned_staging_dirs_under_index_run_lock(
                 std::process::id(),
                 RECLAIM_SEQ.fetch_add(1, Ordering::Relaxed)
             );
+            let mut marker_components = Path::new(&marker_name).components();
+            if !matches!(
+                marker_components.next(),
+                Some(std::path::Component::Normal(_))
+            ) || marker_components.next().is_some()
+            {
+                continue;
+            }
+            // ubs:ignore[rust.security.path-traversal] — marker_name validated as single Component::Normal above
             let marker_path: PathBuf = staging_root.join(marker_name);
             match fs::rename(&path, &marker_path) {
                 Ok(()) => marker_path,

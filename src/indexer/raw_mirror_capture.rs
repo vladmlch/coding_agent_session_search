@@ -41,6 +41,7 @@ pub(in crate::indexer) fn build_scan_roots_with_missing(
                     // path, independent of remote home expansion.
                     let safe_name = path_to_safe_dirname(path);
                     let mirror_base = data_dir.join("remotes").join(&source.name).join("mirror");
+                    // ubs:ignore[rust.security.path-traversal] — safe_name sanitized to single normal dir by path_to_safe_dirname
                     let mirror_path = mirror_base.join(&safe_name);
 
                     if mirror_path.exists() {

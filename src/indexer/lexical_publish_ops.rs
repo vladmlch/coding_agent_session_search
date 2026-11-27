@@ -728,6 +728,7 @@ pub(in crate::indexer) fn remove_lexical_index_dir_placeholder(index_path: &Path
     };
     let placeholder_sidecars = [
         lexical_rebuild_state_path(index_path),
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time ARCHIVE_FINGERPRINT_CACHE_FILE constant
         index_path.join(ARCHIVE_FINGERPRINT_CACHE_FILE),
     ];
     let mut sidecars = Vec::new();

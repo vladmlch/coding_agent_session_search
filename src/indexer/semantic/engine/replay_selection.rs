@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -626,7 +627,7 @@ pub(in crate::indexer::semantic::engine) fn fetch_canonical_embedding_conversati
         if idx > 0 {
             envelope_sql.push_str(", ");
         }
-        envelope_sql.push_str(&format!("?{}", idx + 1));
+        let _ = write!(envelope_sql, "?{}", idx + 1);
         params.push(ParamValue::from(*conversation_id));
     }
     envelope_sql.push_str(") ORDER BY c.id ASC");
