@@ -269,7 +269,7 @@ fn pi_agent_slug_normalization_composes_with_renderer_identity() {
 
 #[test]
 fn connector_registry_slugs_have_specific_html_identity() {
-    for (slug, _) in crate::indexer::get_connector_factories() {
+    for (slug, _) in crate::connectors::get_connector_factories() {
         assert_ne!(
             agent_css_class(slug),
             "agent-default",

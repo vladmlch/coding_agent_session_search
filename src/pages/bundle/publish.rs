@@ -295,7 +295,7 @@ fn try_publish_linux_bundle_via_atomic_exchange(
         };
     }
 
-    match crate::indexer::atomic_exchange_paths(final_dir, backup_dir) {
+    match crate::resource_plan::fs_atomic::atomic_exchange_paths(final_dir, backup_dir) {
         Ok(()) => {
             if let Err(sync_error) = sync_parent_directory(final_dir) {
                 *retain_temp_on_error = true;
@@ -325,7 +325,7 @@ fn try_publish_linux_bundle_via_atomic_exchange(
             Ok(true)
         }
         Err(exchange_error)
-            if crate::indexer::linux_atomic_exchange_is_unsupported(&exchange_error) =>
+            if crate::resource_plan::fs_atomic::linux_atomic_exchange_is_unsupported(&exchange_error) =>
         {
             restore_linux_atomic_staged_candidate(
                 backup_dir,

@@ -4,6 +4,12 @@ use std::fs;
 use std::process::Command;
 use std::thread;
 
+pub mod daemon_monitor;
+pub mod fs_atomic;
+pub mod memoization;
+pub mod redact_secrets;
+pub mod text_filters;
+
 pub const SCHEMA_VERSION: &str = "cass.guide.resource_plan.v2";
 pub const DEFAULT_TARGET_DIR: &str = "${TMPDIR:-/tmp}/cass-resource-plan-target";
 pub const ACTIONS: &[&str] = &[

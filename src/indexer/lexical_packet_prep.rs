@@ -367,7 +367,7 @@ impl LexicalRebuildConversationPacket {
     #[cfg(test)]
     pub(in crate::indexer) fn from_normalized_conversation(conv: &NormalizedConversation) -> Self {
         let (provenance, provenance_mode) = lexical_rebuild_packet_provenance_from_metadata(conv);
-        let contract = ConversationPacket::from_normalized_conversation(
+        let contract = crate::connectors::packet_bridge::conversation_packet_from_normalized(
             conv,
             lexical_rebuild_contract_provenance(&provenance),
         );

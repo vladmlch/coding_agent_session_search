@@ -702,24 +702,7 @@ pub(crate) struct LexicalRebuildSnapshot {
     pub updated_at_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct LexicalRebuildCheckpoint {
-    pub db_path: String,
-    pub total_conversations: usize,
-    pub storage_fingerprint: String,
-    pub committed_offset: i64,
-    pub committed_conversation_id: Option<i64>,
-    pub processed_conversations: usize,
-    pub indexed_docs: usize,
-    /// Task 5: the share of `indexed_docs` that is search-region
-    /// documents; `indexed_docs - indexed_region_docs` is the canonical
-    /// message count.
-    pub indexed_region_docs: usize,
-    pub schema_hash: String,
-    pub page_size: i64,
-    pub completed: bool,
-    pub updated_at_ms: i64,
-}
+pub(crate) use crate::storage::lexical_checkpoint_io::LexicalRebuildCheckpoint;
 
 #[cfg(test)]
 pub(in crate::indexer) mod fallback_fts_repair_pending_tests {

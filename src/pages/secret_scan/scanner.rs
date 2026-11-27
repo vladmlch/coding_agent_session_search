@@ -863,7 +863,7 @@ fn scan_sensitive_json_fields(
         }
         serde_json::Value::Object(fields) => {
             for (field, field_value) in fields {
-                if crate::indexer::redact_secrets::is_sensitive_json_field(field) {
+                if crate::resource_plan::redact_secrets::is_sensitive_json_field(field) {
                     if !structured_value_contains_material(field_value)
                         || structured_value_is_fully_allowlisted(field_value, config)
                         || structured_field_has_equal_or_higher_text_detector(

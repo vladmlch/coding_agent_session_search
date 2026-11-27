@@ -869,14 +869,16 @@ pub(super) fn normalized_storage_source_parts(
     origin_kind: Option<&str>,
     origin_host: Option<&str>,
 ) -> (String, SourceKind, Option<String>) {
-    let host_label = crate::search::tantivy::normalized_index_origin_host(origin_host);
-    let source_id = crate::search::tantivy::normalized_index_source_id(
+    let host_label = crate::model::origin_identity::normalized_index_origin_host(origin_host);
+    let source_id = crate::model::origin_identity::normalized_index_source_id(
         source_id,
         origin_kind,
         host_label.as_deref(),
     );
-    let normalized_kind =
-        crate::search::tantivy::normalized_index_origin_kind(source_id.as_str(), origin_kind);
+    let normalized_kind = crate::model::origin_identity::normalized_index_origin_kind(
+        source_id.as_str(),
+        origin_kind,
+    );
     if normalized_kind == LOCAL_SOURCE_ID {
         (source_id, SourceKind::Local, None)
     } else {

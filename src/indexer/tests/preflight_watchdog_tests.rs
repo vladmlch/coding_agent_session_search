@@ -262,16 +262,19 @@ fn watch_startup_sub_phase_taxonomy_is_documented_and_stable() -> Result<()> {
     // must appear in src/indexer/mod.rs (this file). This makes
     // a refactor that drops a preflight call fail this test
     // before the next release ships.
-    let indexer_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/indexer");
+    let root = crate::subsystem_coverage_matrix::workspace_paths::workspace_root();
     let mut src = String::new();
     for rel in [
-        "mod.rs",
-        "run_lock.rs",
-        "run_index_preflight.rs",
-        "run_index_lexical.rs",
-        "run_index_finalize.rs",
+        "src/indexer/mod.rs",
+        "src/indexer/run_lock.rs",
+        "src/storage/run_lock.rs",
+        "src/indexer/run_index_preflight.rs",
+        "src/indexer/run_index_lexical.rs",
+        "src/indexer/run_index_finalize.rs",
     ] {
-        let path = indexer_dir.join(rel);
+        let path = crate::subsystem_coverage_matrix::workspace_paths::resolve_workspace_source_file(
+            &root, rel,
+        );
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("read production indexer source {}", path.display()))?;
         src.push_str(&content);

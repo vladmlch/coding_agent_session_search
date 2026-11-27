@@ -4395,9 +4395,7 @@ pub fn validate_doctor_e2e_run_summary_manifest_value(value: &Value) -> Result<(
 }
 
 pub fn default_doctor_e2e_run_root() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let manifest_dir = super::ws_paths_1b::workspace_root();
     manifest_dir
         .join("test-results/e2e/doctor-v2")
         .join(format!("run-{}-{}", epoch_millis(), std::process::id()))

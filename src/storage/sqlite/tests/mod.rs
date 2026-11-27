@@ -100,7 +100,7 @@ pub(super) fn sqlite3_cli_available_or_skip(test: &str) -> bool {
     available
 }
 
-pub(super) struct EnvGuard {
+pub(crate) struct EnvGuard {
     key: &'static str,
     previous: Option<String>,
 }
@@ -121,7 +121,7 @@ impl Drop for EnvGuard {
     }
 }
 
-pub(super) fn set_env_var(key: &'static str, value: impl AsRef<str>) -> EnvGuard {
+pub(crate) fn set_env_var(key: &'static str, value: impl AsRef<str>) -> EnvGuard {
     let previous = dotenvy::var(key).ok();
     // SAFETY: test helper toggles a process-local env var for isolation.
     unsafe {

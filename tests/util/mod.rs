@@ -3,6 +3,8 @@ pub mod doctor_fixture;
 pub mod e2e_log;
 pub mod search_asset_simulation;
 pub mod timeout;
+#[path = "../ws_paths_1b/mod.rs"]
+pub mod ws_paths_1b;
 
 // =============================================================================
 // Shared CLI-invocation helpers (bead coding_agent_session_search-ju50o)
@@ -251,11 +253,7 @@ impl VerboseLogger {
     /// Log file is written to: test-results/e2e/verbose_{suite}_{test}_{timestamp}.log
     pub fn new(suite: &str, test_name: &str) -> Self {
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
+        let manifest_dir = ws_paths_1b::workspace_root();
 
         let log_path = manifest_dir
             .join("test-results")

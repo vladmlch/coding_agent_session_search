@@ -41,7 +41,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use super::{DoctorCheck, DoctorDbWalProbeResult, DoctorLexicalWorkspaceReport, DoctorRunState};
 
 #[allow(clippy::collapsible_if, clippy::collapsible_else_if)]
-pub(super) fn probe_doctor_database_and_wal(
+pub(crate) fn probe_doctor_database_and_wal(
     state: DoctorRunState,
 ) -> (DoctorRunState, DoctorDbWalProbeResult) {
     #[allow(unused_imports)]
@@ -669,7 +669,7 @@ pub(super) fn probe_doctor_database_and_wal(
 }
 
 #[allow(clippy::collapsible_if, clippy::collapsible_else_if)]
-pub(super) fn probe_doctor_lexical_and_workspace(
+pub(crate) fn probe_doctor_lexical_and_workspace(
     state: DoctorRunState,
     db_wal: DoctorDbWalProbeResult,
 ) -> (DoctorRunState, DoctorLexicalWorkspaceReport) {

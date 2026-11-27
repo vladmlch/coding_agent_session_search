@@ -64,6 +64,7 @@ fn sample_conversation(external_id: &str, content: &str) -> Conversation {
 }
 
 fn seed_three_conversations(db_path: &Path) -> TestResult<FrankenStorage> {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let storage = FrankenStorage::open(db_path)?;
     let agent_id = storage.ensure_agent(&sample_agent())?;
     storage.insert_conversation_tree(
@@ -95,6 +96,7 @@ fn current_db_fingerprint(_db_path: &Path) -> TestResult<String> {
 
 #[test]
 fn checkpoint_persists_last_message_id_after_partial_backfill() -> TestResult {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let workdir = TempDir::new()?;
     let data_dir = workdir.path().join("data");
     fs::create_dir_all(&data_dir)?;
@@ -153,6 +155,7 @@ fn checkpoint_persists_last_message_id_after_partial_backfill() -> TestResult {
 
 #[test]
 fn resume_skips_messages_with_id_at_or_below_last_message_id() -> TestResult {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let workdir = TempDir::new()?;
     let data_dir = workdir.path().join("data");
     fs::create_dir_all(&data_dir)?;
@@ -235,6 +238,7 @@ fn resume_skips_messages_with_id_at_or_below_last_message_id() -> TestResult {
 
 #[test]
 fn forward_compat_fallback_for_v1_shape_manifest_without_last_message_id() -> TestResult {
+    coding_agent_search::ensure_runtime_hooks_registered();
     // Simulate a pre-#257 binary having written a v1-shape manifest
     // with an active conversation-offset-only checkpoint. The current
     // binary must:

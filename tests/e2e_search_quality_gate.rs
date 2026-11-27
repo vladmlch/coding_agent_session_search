@@ -115,7 +115,7 @@ struct QrelsFile {
 
 /// Path to a checked-in fixture under `tests/fixtures/search_quality/`.
 fn fixture_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    util::ws_paths_1b::workspace_root()
         .join("tests/fixtures/search_quality")
         .join(name)
 }

@@ -43,7 +43,7 @@ use super::{
 };
 
 #[allow(clippy::collapsible_if, clippy::collapsible_else_if)]
-pub(super) fn finalize_and_render_doctor_report(
+pub(crate) fn finalize_and_render_doctor_report(
     state: DoctorRunState,
     lexical_ws: DoctorLexicalWorkspaceReport,
     evidence: DoctorRecoveryEvidence,

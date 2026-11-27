@@ -38,6 +38,35 @@ use tracing::{info, warn};
 #[allow(unused_imports)]
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+use clap::builder::TypedValueParser as _;
+
+/// Clap-only parser mirror for [`RobotFormat`] so `cass-model` stays free of `clap`.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum RobotFormatArg {
+    /// Pretty-printed JSON object (default, backward compatible)
+    Json,
+    /// Newline-delimited JSON: one object per line with optional _meta header
+    Jsonl,
+    /// Compact single-line JSON (no pretty printing)
+    Compact,
+    /// Session paths only: one source_path per line (for chained searches)
+    Sessions,
+    /// Token-Optimized Object Notation (encodes via toon crate)
+    Toon,
+}
+
+impl From<RobotFormatArg> for RobotFormat {
+    fn from(arg: RobotFormatArg) -> Self {
+        match arg {
+            RobotFormatArg::Json => Self::Json,
+            RobotFormatArg::Jsonl => Self::Jsonl,
+            RobotFormatArg::Compact => Self::Compact,
+            RobotFormatArg::Sessions => Self::Sessions,
+            RobotFormatArg::Toon => Self::Toon,
+        }
+    }
+}
+
 /// Command-line interface.
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -89,7 +118,11 @@ pub struct Cli {
     pub nowrap: bool,
 
     /// Output format for robot mode (overrides --json when specified)
-    #[arg(long, value_enum, global = true)]
+    #[arg(
+        long,
+        global = true,
+        value_parser = clap::builder::EnumValueParser::<RobotFormatArg>::new().map(RobotFormat::from)
+    )]
     pub robot_format: Option<RobotFormat>,
 
     #[command(subcommand)]

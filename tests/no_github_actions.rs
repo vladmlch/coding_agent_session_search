@@ -8,8 +8,10 @@
 
 use std::path::PathBuf;
 
+mod ws_paths_1c;
+
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
 }
 
 #[test]

@@ -48,12 +48,14 @@ use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod ws_paths_1c;
+
 // ---------------------------------------------------------------------------
 // Filesystem helpers
 // ---------------------------------------------------------------------------
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
 }
 
 fn read_text(path: &Path) -> String {
@@ -456,14 +458,19 @@ fn is_src_test_only(path: &str) -> bool {
 
 fn src_files() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    collect_files(&repo_root().join("src"), &mut v);
+    for dir in ws_paths_1c::workspace_source_dirs() {
+        collect_files(&dir, &mut v);
+    }
     v.retain(|p| p.extension().map(|e| e == "rs").unwrap_or(false));
     v
 }
 
 fn asset_files() -> Vec<PathBuf> {
     let mut v = Vec::new();
-    collect_files(&repo_root().join("src/pages_assets"), &mut v);
+    collect_files(
+        &ws_paths_1c::resolve_workspace_source("src/pages_assets"),
+        &mut v,
+    );
     v.retain(|p| {
         let r = rel(p);
         if r.ends_with("vendor/manifest.json") {
@@ -663,13 +670,17 @@ fn word_in(text: &str, word: &str) -> bool {
 
 #[test]
 fn src_code_has_no_remote_client_or_remote_tool() {
+    let allowlist_paths: Vec<PathBuf> = SRC_DIAGNOSTIC_ALLOWLIST
+        .iter()
+        .map(|a| ws_paths_1c::resolve_workspace_source(a))
+        .collect();
     let mut violations = Vec::new();
     for file in src_files() {
         let r = rel(&file);
         if is_src_test_only(&r) {
             continue;
         }
-        let allow = SRC_DIAGNOSTIC_ALLOWLIST.iter().any(|a| r == *a);
+        let allow = allowlist_paths.iter().any(|p| p == &file);
         let src = read_text(&file);
         let view = production_view(&src);
 
@@ -939,7 +950,10 @@ fn pages_assets_load_only_archive_local_resources() {
 fn export_templates_reference_no_external_resources() {
     let patterns = remote_resource_patterns();
     let mut files = Vec::new();
-    collect_files(&repo_root().join("src/html_export"), &mut files);
+    collect_files(
+        &ws_paths_1c::resolve_workspace_source("src/html_export"),
+        &mut files,
+    );
     files.retain(|p| p.extension().map(|e| e == "rs").unwrap_or(false));
     assert!(
         !files.is_empty(),
@@ -1181,19 +1195,79 @@ fn dep_key_re(name: &str) -> Regex {
 #[test]
 fn cargo_manifest_and_lockfile_carry_no_remote_deps() {
     let root = repo_root();
-    let toml = read_text(&root.join("Cargo.toml"));
+    let mut manifest_paths = vec![root.join("Cargo.toml")];
+    let crates_dir = root.join("crates");
+    if crates_dir.is_dir() {
+        let mut crate_manifests: Vec<PathBuf> = fs::read_dir(&crates_dir)
+            .unwrap_or_else(|e| panic!("audit: cannot list {}: {e}", crates_dir.display()))
+            .flatten()
+            .map(|entry| entry.path().join("Cargo.toml"))
+            .filter(|path| path.is_file())
+            .collect();
+        crate_manifests.sort();
+        manifest_paths.extend(crate_manifests);
+    }
     let lock = read_text(&root.join("Cargo.lock"));
 
     let mut violations = Vec::new();
-    for name in BANNED_CRATES {
-        for m in dep_key_re(name).find_iter(&toml) {
+    let mut found_deps_section = false;
+    for manifest_path in &manifest_paths {
+        let rel_manifest = rel(manifest_path);
+        let toml = read_text(manifest_path);
+        for name in BANNED_CRATES {
+            for m in dep_key_re(name).find_iter(&toml) {
+                violations.push(Violation {
+                    file: rel_manifest.clone(),
+                    line: line_of(&toml, m.start()),
+                    rule: "banned-dep",
+                    text: snippet(&toml, m.start()),
+                });
+            }
+        }
+        // `url` may exist in the lockfile only via franken-agent-detection; it
+        // must never be a direct dep.
+        for m in dep_key_re("url").find_iter(&toml) {
             violations.push(Violation {
-                file: "Cargo.toml".into(),
+                file: rel_manifest.clone(),
                 line: line_of(&toml, m.start()),
-                rule: "banned-dep",
+                rule: "direct-url-dep",
                 text: snippet(&toml, m.start()),
             });
         }
+        // `semver` is dev-only.
+        for header in ["[dependencies]", "[workspace.dependencies]"] {
+            let mut search_from = 0usize;
+            while let Some(rel_start) = toml[search_from..].find(header) {
+                let deps_start = search_from + rel_start;
+                let line_start = deps_start == 0 || toml.as_bytes()[deps_start - 1] == b'\n';
+                let after = deps_start + header.len();
+                let line_end = after == toml.len()
+                    || matches!(toml.as_bytes()[after], b'\n' | b'\r' | b' ' | b'\t');
+                if line_start && line_end {
+                    found_deps_section = true;
+                    let deps_end = toml[after..]
+                        .find("\n[")
+                        .map(|i| after + i)
+                        .unwrap_or(toml.len());
+                    let deps = &toml[deps_start..deps_end];
+                    for m in dep_key_re("semver").find_iter(deps) {
+                        violations.push(Violation {
+                            file: rel_manifest.clone(),
+                            line: line_of(&toml, deps_start + m.start()),
+                            rule: "semver-in-dependencies",
+                            text: snippet(&toml, deps_start + m.start()),
+                        });
+                    }
+                }
+                search_from = after;
+            }
+        }
+    }
+    assert!(
+        found_deps_section,
+        "audit: no [dependencies] or [workspace.dependencies] section found"
+    );
+    for name in BANNED_CRATES {
         for m in banned_name_re(name).find_iter(&lock) {
             violations.push(Violation {
                 file: "Cargo.lock".into(),
@@ -1202,31 +1276,6 @@ fn cargo_manifest_and_lockfile_carry_no_remote_deps() {
                 text: snippet(&lock, m.start()),
             });
         }
-    }
-    // `url` may exist in the lockfile only via franken-agent-detection; it
-    // must never be a direct dep.
-    for m in dep_key_re("url").find_iter(&toml) {
-        violations.push(Violation {
-            file: "Cargo.toml".into(),
-            line: line_of(&toml, m.start()),
-            rule: "direct-url-dep",
-            text: snippet(&toml, m.start()),
-        });
-    }
-    // `semver` is dev-only.
-    let deps_start = toml.find("[dependencies]").expect("audit: [dependencies]");
-    let deps_end = toml[deps_start..]
-        .find("\n[")
-        .map(|i| deps_start + i)
-        .unwrap_or(toml.len());
-    let deps = &toml[deps_start..deps_end];
-    for m in dep_key_re("semver").find_iter(deps) {
-        violations.push(Violation {
-            file: "Cargo.toml".into(),
-            line: line_of(&toml, deps_start + m.start()),
-            rule: "semver-in-dependencies",
-            text: snippet(&toml, deps_start + m.start()),
-        });
     }
     report(&violations, "cargo-remote-deps");
 
@@ -1285,9 +1334,12 @@ fn nextest_config_keeps_local_only_invariants() {
 fn removed_command_matrix_is_fully_active() {
     let root = repo_root();
     let cov = read_text(&root.join("tests/cli_dispatch_coverage.rs"));
-    let mut lib_paths = vec![root.join("src/lib.rs")];
+    let mut lib_paths = vec![ws_paths_1c::resolve_workspace_source("src/lib.rs")];
     for subdir in ["cli_root", "lib_doctor", "cli_app"] {
-        collect_files(&root.join("src").join(subdir), &mut lib_paths);
+        collect_files(
+            &ws_paths_1c::resolve_workspace_source(&format!("src/{subdir}")),
+            &mut lib_paths,
+        );
     }
     lib_paths.retain(|p| {
         p.extension().and_then(|e| e.to_str()) == Some("rs") && !is_src_test_only(&rel(p))
@@ -1443,7 +1495,7 @@ fn audit_exception_surface_is_narrow() {
     let root = repo_root();
     for a in SRC_DIAGNOSTIC_ALLOWLIST {
         assert!(
-            root.join(a).is_file(),
+            ws_paths_1c::resolve_workspace_source(a).is_file(),
             "audit: allowlisted file {a} is missing"
         );
     }

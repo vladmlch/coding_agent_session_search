@@ -55,6 +55,7 @@ const AGY_CALLS_UUID: &str = "bbbb2222-cccc-3333-dddd-444455556666";
 /// Run a closed-world index into `tmp/cass-data/agent_search.db`, scanning
 /// exactly the per-connector roots given. Returns the db path.
 fn run_isolated_index(tmp: &TempDir, roots: HashMap<String, Vec<PathBuf>>) -> PathBuf {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let data_dir = tmp.path().join("cass-data");
     fs::create_dir_all(&data_dir).unwrap();
     let db_path = data_dir.join("agent_search.db");

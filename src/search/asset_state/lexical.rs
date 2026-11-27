@@ -2,10 +2,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::indexer::{
-    LEXICAL_REBUILD_PAGE_SIZE_PUBLIC, LexicalRebuildCheckpoint,
-    lexical_rebuild_page_size_is_compatible, lexical_storage_fingerprint_for_db,
-    load_lexical_rebuild_checkpoint,
+use crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db;
+use crate::storage::lexical_checkpoint_io::{
+    LexicalRebuildCheckpoint, load_lexical_rebuild_checkpoint,
+};
+use crate::storage::run_lock::{
+    LEXICAL_REBUILD_PAGE_SIZE_PUBLIC, lexical_rebuild_page_size_is_compatible,
 };
 use crate::search::tantivy::SCHEMA_HASH;
 
@@ -95,7 +97,7 @@ pub(super) fn inspect_lexical_assets(
                 db_path.display()
             )
         })?;
-        crate::indexer::write_archive_fingerprint_cache_best_effort(
+        crate::storage::archive_fingerprint::write_archive_fingerprint_cache_best_effort(
             db_path,
             &index_path,
             &fingerprint,
@@ -109,7 +111,10 @@ pub(super) fn inspect_lexical_assets(
         // fresh. Serve the identity-keyed sidecar fingerprint — never an
         // open — and stay honestly null when the sidecar does not describe
         // the current archive identity.
-        crate::indexer::lexical_storage_fingerprint_for_db_cached_readonly(db_path, &index_path)
+        crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db_cached_readonly(
+            db_path,
+            &index_path,
+        )
     } else {
         None
     };

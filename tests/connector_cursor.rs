@@ -10,6 +10,8 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
+mod ws_paths_1b;
+
 // ============================================================================
 // Helper
 // ============================================================================
@@ -64,7 +66,7 @@ struct CursorFixture {
 }
 
 fn load_cursor_fixture(name: &str) -> CursorFixture {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1b::workspace_root()
         .join("tests/fixtures/cursor")
         .join(name);
     let body = fs::read_to_string(&path)

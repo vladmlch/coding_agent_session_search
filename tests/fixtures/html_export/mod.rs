@@ -48,9 +48,12 @@
 
 use std::path::PathBuf;
 
+#[path = "../../ws_paths_1b/mod.rs"]
+mod ws_paths_1b;
+
 /// Get the path to a fixture file.
 pub fn fixture_path(category: &str, name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1b::workspace_root()
         .join("tests/fixtures/html_export")
         .join(category)
         .join(name)
@@ -58,7 +61,7 @@ pub fn fixture_path(category: &str, name: &str) -> PathBuf {
 
 /// Get all fixture files in a category.
 pub fn fixtures_in_category(category: &str) -> Vec<PathBuf> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let dir = ws_paths_1b::workspace_root()
         .join("tests/fixtures/html_export")
         .join(category);
 

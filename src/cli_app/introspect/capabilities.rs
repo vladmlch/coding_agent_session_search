@@ -51,10 +51,19 @@ pub struct SourceIngestReuseCapability {
 }
 
 impl SourceIngestReuseCapability {
+    #[allow(dead_code)]
     pub(crate) fn compiled() -> Self {
-        let blocker = env!("CASS_SOURCE_INGEST_REUSE_BLOCKER");
+        Self::compiled_with_metadata(
+            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current(),
+        )
+    }
+
+    pub(crate) fn compiled_with_metadata(
+        meta: &crate::dependency_pin_correlation::build_metadata::BuildMetadata,
+    ) -> Self {
+        let blocker = meta.ingest_reuse_blocker;
         Self {
-            enabled: env!("CASS_SOURCE_INGEST_REUSE") == "true",
+            enabled: meta.ingest_reuse,
             disabled_by: (!blocker.is_empty()).then(|| blocker.to_string()),
         }
     }
@@ -1244,17 +1253,14 @@ pub(crate) fn build_mistake_recovery_capabilities() -> Vec<MistakeRecoveryCapabi
 
 /// Discover the first-stop self-description contract for agent introspection.
 pub(crate) fn run_capabilities(output_format: Option<RobotFormat>) -> CliResult<()> {
+    let meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
     let crate_version = env!("CARGO_PKG_VERSION").to_string();
     let response = CapabilitiesResponse {
         version: crate_version.clone(),
         crate_version,
-        build_commit: option_env!("CASS_BUILD_COMMIT")
-            .unwrap_or("unknown")
-            .to_string(),
-        build_commit_date: option_env!("CASS_BUILD_COMMIT_DATE")
-            .unwrap_or("unknown")
-            .to_string(),
-        source_ingest_reuse: SourceIngestReuseCapability::compiled(),
+        build_commit: meta.build_commit.unwrap_or("unknown").to_string(),
+        build_commit_date: meta.build_commit_date.unwrap_or("unknown").to_string(),
+        source_ingest_reuse: SourceIngestReuseCapability::compiled_with_metadata(meta),
         api_version: 1,
         contract_version: CONTRACT_VERSION.to_string(),
         features: vec![

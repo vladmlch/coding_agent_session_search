@@ -5,6 +5,7 @@ use super::ingest::{
 };
 use super::*;
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
+use crate::model::conversation_packet::ConversationPacket;
 use frankensearch::quill::cass::{
     CassDocument as FsCassDocument, CassDocumentRef as FsCassDocumentRef,
 };
@@ -181,7 +182,10 @@ fn gh423_lexical_packet(count: usize) -> ConversationPacket {
             })
             .collect(),
     };
-    ConversationPacket::from_normalized_conversation(&conv, ConversationPacketProvenance::local())
+    crate::connectors::packet_bridge::conversation_packet_from_normalized(
+        &conv,
+        ConversationPacketProvenance::local(),
+    )
 }
 
 /// The indexer preflight asked for the summary, then validated the
@@ -675,7 +679,7 @@ fn add_prebuilt_documents_streams_large_payloads_without_dropping_docs() {
 /// `add_messages_from_packet` with confidence.
 #[test]
 fn packet_driven_lexical_pipeline_matches_legacy_for_normalized_conv() {
-    use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};
+    use crate::model::conversation_packet::ConversationPacketProvenance;
 
     fn make_conv() -> NormalizedConversation {
         NormalizedConversation {
@@ -745,7 +749,7 @@ fn packet_driven_lexical_pipeline_matches_legacy_for_normalized_conv() {
 
     let packet_dir = TempDir::new().expect("packet temp dir");
     let mut packet_idx = TantivyIndex::open_or_create(packet_dir.path()).expect("packet idx");
-    let packet = ConversationPacket::from_normalized_conversation(
+    let packet = crate::connectors::packet_bridge::conversation_packet_from_normalized(
         &conv,
         ConversationPacketProvenance::local(),
     );

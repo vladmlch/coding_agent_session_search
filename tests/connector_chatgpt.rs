@@ -25,7 +25,7 @@ fn write_json(dir: &Path, rel_path: &str, content: &str) -> std::path::PathBuf {
 }
 
 fn chatgpt_real_fixture_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chatgpt_real")
+    util::ws_paths_1b::workspace_root().join("tests/fixtures/chatgpt_real")
 }
 
 const CHATGPT_TEST_KEY: [u8; 32] = [

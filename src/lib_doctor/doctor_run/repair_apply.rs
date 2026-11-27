@@ -44,7 +44,7 @@ use super::{
 };
 
 #[allow(clippy::collapsible_if, clippy::collapsible_else_if)]
-pub(super) fn execute_doctor_repairs_and_cleanup(
+pub(crate) fn execute_doctor_repairs_and_cleanup(
     state: DoctorRunState,
     lexical_ws: &DoctorLexicalWorkspaceReport,
     evidence: DoctorRecoveryEvidence,
@@ -924,7 +924,9 @@ pub(super) fn execute_doctor_repairs_and_cleanup(
         // Journaling is best-effort: if the run-dir cannot be created we still
         // run the cleanup (the FsMutationExecutor itself is the safety gate),
         // we just lose the post-hoc observability for this invocation.
-        let target_sha = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
+        let target_sha = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+            .git_sha
+            .unwrap_or("unknown");
         let journal_run_id = crate::doctor_runs::RunId::new(target_sha);
         let journal_run_id_str = journal_run_id.as_str().to_string();
         let journal_run_dir = match crate::doctor_runs::create_run_dir(&data_dir, &journal_run_id) {

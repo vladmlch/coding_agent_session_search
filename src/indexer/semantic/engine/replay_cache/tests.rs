@@ -117,6 +117,9 @@ fn select(
     plan: &SemanticBackfillStoragePlan,
     caps: SemanticCheckpointCaps,
 ) -> Result<(ReconcileSelection, ReplayProof)> {
+    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+    );
     let database_path = storage.database_path()?;
     cache.select(
         indexer,
@@ -657,6 +660,9 @@ fn replay_cache_is_not_available_inside_an_explicit_read_transaction() -> Result
 #[test]
 #[cfg(unix)]
 fn replay_cache_live_backfill_converges_with_identical_published_fsvi_coverage() -> Result<()> {
+    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+    );
     let (dir, storage) = fixture(&[
         "first message",
         "second message",
@@ -765,6 +771,9 @@ fn replay_cache_records_same_invocation_uncached_and_cached_work() -> Result<()>
 #[test]
 #[cfg(unix)]
 fn replay_cache_fresh_indexer_reuses_disk_inventory_without_rewriting_it() -> Result<()> {
+    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+    );
     let (dir, storage) = fixture(&["first message", "second message", "third message"])?;
     let plan = plan(1);
     let indexer = SemanticIndexer::new("hash", None)?;
@@ -816,6 +825,9 @@ fn replay_cache_fresh_indexer_reuses_disk_inventory_without_rewriting_it() -> Re
 #[test]
 #[cfg(unix)]
 fn replay_cache_persisted_inventory_rejects_edits_deletions_and_producer_changes() -> Result<()> {
+    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+    );
     let (_dir, storage) = fixture(&["old content", "deleted content", "retained content"])?;
     let indexer = SemanticIndexer::new("hash", None)?;
     let mut plan = plan(3);
@@ -878,6 +890,9 @@ fn replay_cache_persisted_inventory_rejects_edits_deletions_and_producer_changes
 #[test]
 #[cfg(unix)]
 fn replay_cache_corrupt_inventory_falls_back_to_complete_canonical_selection() -> Result<()> {
+    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+    );
     let (dir, storage) = fixture(&["first message", "second message"])?;
     let indexer = SemanticIndexer::new("hash", None)?;
     let plan = plan(1);
@@ -924,6 +939,9 @@ fn replay_cache_corrupt_inventory_falls_back_to_complete_canonical_selection() -
 #[test]
 #[cfg(unix)]
 fn replay_cache_fresh_backfill_instances_converge_to_exact_published_coverage() -> Result<()> {
+    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+    );
     let (dir, storage) = fixture(&[
         "first message",
         "second message",
@@ -960,5 +978,50 @@ fn replay_cache_fresh_backfill_instances_converge_to_exact_published_coverage() 
         .collect();
     assert_eq!(vectors.live_doc_ids()?, expected);
     assert_eq!(expected.len(), 4);
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn replay_cache_contract_change_invalidates_persisted_inventory() -> Result<()> {
+    use crate::dependency_pin_correlation::build_metadata::{
+        BuildMetadata, PINNED_TEST_METADATA, install_thread_local_test_metadata,
+    };
+    static ALT_CONTRACT_METADATA: BuildMetadata = BuildMetadata {
+        ingest_contract: "alt_unit_test_contract",
+        ..PINNED_TEST_METADATA
+    };
+
+    let (dir, storage) = fixture(&["first message", "second message"])?;
+    let indexer = SemanticIndexer::new("hash", None)?;
+    let plan = plan(1);
+    let first = {
+        let _guard = install_thread_local_test_metadata(&PINNED_TEST_METADATA);
+        let cache = cache(MAX_RETAINED_BYTES);
+        let (first, _) = cache.select(
+            &indexer,
+            &storage,
+            dir.path(),
+            &plan,
+            &HashSet::new(),
+            SemanticCheckpointCaps::unlimited(),
+            &SemanticProgressSink::disabled(),
+        )?;
+        first
+    };
+    assert_eq!(first.replayed_conversations, 2);
+
+    let _alt = install_thread_local_test_metadata(&ALT_CONTRACT_METADATA);
+    let fresh_indexer = SemanticIndexer::new("hash", None)?;
+    let (replayed, _) = cache(MAX_RETAINED_BYTES).select(
+        &fresh_indexer,
+        &storage,
+        dir.path(),
+        &plan,
+        &first.selected_ids,
+        SemanticCheckpointCaps::unlimited(),
+        &SemanticProgressSink::disabled(),
+    )?;
+    assert_eq!(replayed.replayed_conversations, 2);
     Ok(())
 }

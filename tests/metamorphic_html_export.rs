@@ -24,8 +24,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+mod ws_paths_1c;
+
 fn fixture_path(category: &str, name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests/fixtures/html_export")
         .join(category)
         .join(name)

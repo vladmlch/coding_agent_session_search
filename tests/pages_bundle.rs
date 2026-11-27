@@ -1,5 +1,7 @@
 //! Integration tests for the bundle builder.
 
+mod ws_paths_1c;
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -46,7 +48,7 @@ mod tests {
                 "--eval",
                 script,
             ])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .current_dir(crate::ws_paths_1c::workspace_root())
             .output()?;
 
         assert!(
@@ -64,7 +66,7 @@ mod tests {
     /// and service-worker controllers. No cargo target ran them, and four of
     /// their tests drifted red unnoticed (0dpz2).
     fn pages_node_suites() -> Result<Vec<String>> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = crate::ws_paths_1c::workspace_root();
         let mut suites = Vec::new();
         for (dir, prefix) in [
             ("tests/pages", ""),
@@ -93,7 +95,7 @@ mod tests {
         let output = Command::new("node")
             .args(["--experimental-vm-modules", "--test", "--test-reporter=tap"])
             .args(&suites)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .current_dir(crate::ws_paths_1c::workspace_root())
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let count = |key: &str| {
@@ -648,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_stats_role_bar_markup_uses_slugged_class() {
-        let stats_js = include_str!("../src/pages_assets/stats.js");
+        let stats_js = crate::ws_paths_1c::read_pages_asset("stats.js");
         assert!(
             !stats_js.contains("role-${role.toLowerCase()}"),
             "stats role bar markup should not use the unsanitized role class"
@@ -661,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_stats_markup_stays_csp_safe_without_inline_styles() {
-        let stats_js = include_str!("../src/pages_assets/stats.js");
+        let stats_js = crate::ws_paths_1c::read_pages_asset("stats.js");
         assert!(
             !stats_js.contains("style=\"font-size:")
                 && !stats_js.contains("style=\"width: ${percent}%"),
@@ -683,7 +685,7 @@ mod tests {
 
     #[test]
     fn test_viewer_lock_paths_reset_hash_to_home() {
-        let viewer_js = include_str!("../src/pages_assets/viewer.js");
+        let viewer_js = crate::ws_paths_1c::read_pages_asset("viewer.js");
         assert!(
             viewer_js.contains("function syncLockedViewerState()"),
             "viewer lock handling should centralize state/hash reset"
@@ -740,7 +742,7 @@ mod tests {
             "#,
         )?;
 
-        let conversation_js = include_str!("../src/pages_assets/conversation.js");
+        let conversation_js = crate::ws_paths_1c::read_pages_asset("conversation.js");
         assert!(
             conversation_js
                 .contains("el.setAttribute(\"href\", sanitizeDestinationUrl(attr.value));"),
@@ -776,7 +778,7 @@ mod tests {
             "#,
         )?;
 
-        let search_js = include_str!("../src/pages_assets/search.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
         assert!(
             search_js.contains("article.id = buildResultCardId(result, index);"),
             "virtual result rendering should use the unique result id helper"
@@ -885,8 +887,8 @@ mod tests {
 
     #[test]
     fn test_archive_search_timestamp_filters_reject_fractional_values() {
-        let database_js = include_str!("../src/pages_assets/database.js");
-        let search_js = include_str!("../src/pages_assets/search.js");
+        let database_js = crate::ws_paths_1c::read_pages_asset("database.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
 
         assert!(
             search_js.contains(
@@ -903,8 +905,8 @@ mod tests {
 
     #[test]
     fn test_archive_search_time_filters_are_applied_before_pagination() {
-        let database_js = include_str!("../src/pages_assets/database.js");
-        let search_js = include_str!("../src/pages_assets/search.js");
+        let database_js = crate::ws_paths_1c::read_pages_asset("database.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
 
         assert!(
             database_js.contains("searchMode = \"auto\",\n    since = null,\n    until = null"),
@@ -944,8 +946,8 @@ mod tests {
 
     #[test]
     fn test_archive_recent_filters_combine_agent_and_time_before_limit() {
-        let database_js = include_str!("../src/pages_assets/database.js");
-        let search_js = include_str!("../src/pages_assets/search.js");
+        let database_js = crate::ws_paths_1c::read_pages_asset("database.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
 
         assert!(
             database_js.contains(
@@ -977,7 +979,7 @@ mod tests {
 
     #[test]
     fn test_search_cleanup_paths_reset_virtual_results_presentation() {
-        let search_js = include_str!("../src/pages_assets/search.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
         assert!(
             search_js.contains("function destroyVirtualResultsView() {")
                 && search_js.contains("destroyVirtualList();")
@@ -994,7 +996,7 @@ mod tests {
 
     #[test]
     fn test_search_route_state_restores_filters_and_back_navigation() {
-        let viewer_js = include_str!("../src/pages_assets/viewer.js");
+        let viewer_js = crate::ws_paths_1c::read_pages_asset("viewer.js");
         assert!(
             viewer_js.contains("const searchParams = parseSearchParams(route);")
                 && viewer_js.contains("setSearchRoute(searchParams).catch")
@@ -1004,7 +1006,7 @@ mod tests {
             "viewer should restore routed search filters into the live search UI and preserve the current query/filter state when navigating back from a conversation"
         );
 
-        let search_js = include_str!("../src/pages_assets/search.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
         assert!(
             search_js
                 .contains("export async function setSearchRoute(routeSearch = {}, options = {}) {")
@@ -1514,7 +1516,7 @@ mod tests {
 
     #[test]
     fn test_conversation_load_has_error_boundary_for_render_failures() {
-        let conversation_js = include_str!("../src/pages_assets/conversation.js");
+        let conversation_js = crate::ws_paths_1c::read_pages_asset("conversation.js");
         assert!(
             conversation_js
                 .contains("console.error(`[Conversation] Failed to load conversation ${conversationId}:`, error);"),
@@ -1533,7 +1535,7 @@ mod tests {
 
     #[test]
     fn test_settings_async_handlers_await_rerender() {
-        let settings_js = include_str!("../src/pages_assets/settings.js");
+        let settings_js = crate::ws_paths_1c::read_pages_asset("settings.js");
         assert!(
             settings_js.contains("export async function initSettings(container, options = {})"),
             "settings initialization should be async so the initial render can be awaited"
@@ -1577,7 +1579,7 @@ mod tests {
             "settings must describe OPFS as legacy plaintext residue, not expose it as an active cache mode"
         );
 
-        let storage_js = include_str!("../src/pages_assets/storage.js");
+        let storage_js = crate::ws_paths_1c::read_pages_asset("storage.js");
         assert!(
             storage_js.contains("const LEGACY_OPFS_MODE = \"opfs\";")
                 && storage_js.contains("clearLegacyOpfsPreferences();")
@@ -1586,7 +1588,7 @@ mod tests {
             "storage should retain cleanup for legacy OPFS preferences without treating OPFS as an active backend"
         );
 
-        let viewer_js = include_str!("../src/pages_assets/viewer.js");
+        let viewer_js = crate::ws_paths_1c::read_pages_asset("viewer.js");
         assert!(
             viewer_js.contains("await initSettings(elements.settingsView, {"),
             "viewer settings bootstrap should await async settings initialization"
@@ -1599,7 +1601,7 @@ mod tests {
 
     #[test]
     fn test_index_bootstrap_respects_csp_without_inline_module_script() {
-        let index_html = include_str!("../src/pages_assets/index.html");
+        let index_html = crate::ws_paths_1c::read_pages_asset("index.html");
         assert!(
             index_html.contains("script-src 'self' 'wasm-unsafe-eval';"),
             "pages bundle should keep the strict CSP script policy"
@@ -1613,7 +1615,7 @@ mod tests {
             "pages bundle should not ship inline module scripts that its own CSP blocks"
         );
 
-        let auth_js = include_str!("../src/pages_assets/auth.js");
+        let auth_js = crate::ws_paths_1c::read_pages_asset("auth.js");
         assert!(
             auth_js.contains(
                 "import {\n  COI_STATE,\n  getCOIState,\n  initCOIDetection,\n  onServiceWorkerActivated,\n} from \"./coi-detector.js\";"
@@ -1643,7 +1645,7 @@ mod tests {
 
     #[test]
     fn test_service_worker_activation_callbacks_handle_async_rejections() {
-        let coi_detector_js = include_str!("../src/pages_assets/coi-detector.js");
+        let coi_detector_js = crate::ws_paths_1c::read_pages_asset("coi-detector.js");
         assert!(
             coi_detector_js.contains("Promise.resolve(registeredCallback()).catch((error) => {")
                 && coi_detector_js
@@ -1689,7 +1691,7 @@ mod tests {
 
     #[test]
     fn test_service_worker_message_handler_ignores_malformed_payloads() {
-        let sw_js = include_str!("../src/pages_assets/sw.js");
+        let sw_js = crate::ws_paths_1c::read_pages_asset("sw.js");
         assert!(
             sw_js.contains(
                 "const payload = event.data && typeof event.data === \"object\" ? event.data : null;"
@@ -1710,7 +1712,7 @@ mod tests {
 
     #[test]
     fn test_service_worker_fetch_keeps_network_success_when_cache_write_fails() {
-        let sw_js = include_str!("../src/pages_assets/sw.js");
+        let sw_js = crate::ws_paths_1c::read_pages_asset("sw.js");
         assert!(
             sw_js.contains("const cacheWrite = trackResourceMutation(resource, async () => {")
                 && sw_js.contains("await cache.put(request, responseForCache);")
@@ -1777,7 +1779,7 @@ mod tests {
 
     #[test]
     fn test_sw_register_handles_unsupported_or_missing_registrations_safely() {
-        let sw_register_js = include_str!("../src/pages_assets/sw-register.js");
+        let sw_register_js = crate::ws_paths_1c::read_pages_asset("sw-register.js");
         assert!(
             sw_register_js.contains("void applyUpdate().catch((error) => {")
                 && sw_register_js
@@ -1849,7 +1851,7 @@ mod tests {
 
     #[test]
     fn test_stats_timeline_tabs_only_expose_available_data_views() {
-        let stats_js = include_str!("../src/pages_assets/stats.js");
+        let stats_js = crate::ws_paths_1c::read_pages_asset("stats.js");
         assert!(
             stats_js
                 .contains("const availableTimelineViews = getAvailableTimelineViews(timeline);")
@@ -1872,7 +1874,7 @@ mod tests {
 
     #[test]
     fn test_stats_fallback_top_terms_tie_breaks_deterministically() {
-        let stats_js = include_str!("../src/pages_assets/stats.js");
+        let stats_js = crate::ws_paths_1c::read_pages_asset("stats.js");
         assert!(
             stats_js.contains(
                 ".sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))"
@@ -1883,7 +1885,7 @@ mod tests {
 
     #[test]
     fn test_stats_precomputed_fetches_are_bounded() {
-        let stats_js = include_str!("../src/pages_assets/stats.js");
+        let stats_js = crate::ws_paths_1c::read_pages_asset("stats.js");
         assert!(
             stats_js.contains("const ANALYTICS_FETCH_TIMEOUT_MS = 10000;")
                 && stats_js.contains("async function fetchWithTimeout(url)")
@@ -2148,7 +2150,7 @@ mod tests {
 
     #[test]
     fn test_attachment_manifest_failures_only_cache_true_absence() {
-        let attachments_js = include_str!("../src/pages_assets/attachments.js");
+        let attachments_js = crate::ws_paths_1c::read_pages_asset("attachments.js");
         assert!(
             attachments_js.contains("function shouldCacheManifestAbsence(error) {")
                 && attachments_js
@@ -2182,7 +2184,7 @@ mod tests {
 
     #[test]
     fn test_conversation_attachment_state_keeps_transient_manifest_failures_retryable() {
-        let conversation_js = include_str!("../src/pages_assets/conversation.js");
+        let conversation_js = crate::ws_paths_1c::read_pages_asset("conversation.js");
         assert!(
             conversation_js.contains("state.ready = true;")
                 && conversation_js.contains("return state.available;")
@@ -2196,7 +2198,7 @@ mod tests {
 
     #[test]
     fn test_search_keyboard_navigation_tracks_logical_result_indices() {
-        let search_js = include_str!("../src/pages_assets/search.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
         assert!(
             search_js.contains("function focusResultCardAtIndex(index, align = \"start\") {")
                 && search_js.contains("virtualList.scrollToIndex(index, align);")
@@ -2641,7 +2643,7 @@ mod tests {
 
     #[test]
     fn pages_runtime_uses_pinned_official_vendor_apis() {
-        let database_js = include_str!("../src/pages_assets/database.js");
+        let database_js = crate::ws_paths_1c::read_pages_asset("database.js");
         let deserialize_call = database_js
             .find("sqliteApi.capi.sqlite3_deserialize(")
             .expect("official sqlite3_deserialize call");
@@ -2678,7 +2680,7 @@ mod tests {
                 && !database_js.contains("getAsObject()")
         );
 
-        let auth_js = include_str!("../src/pages_assets/auth.js");
+        let auth_js = crate::ws_paths_1c::read_pages_asset("auth.js");
         assert!(
             auth_js.contains("const expectedSize = getUnencryptedPayloadSize();")
                 && auth_js.contains("if (response.status !== 200) {")
@@ -2694,13 +2696,16 @@ mod tests {
             "unencrypted database loading must stream within its declared size and zero temporary plaintext bytes"
         );
 
-        let attrs = include_str!("../.gitattributes");
+        let attrs = fs::read_to_string(
+            crate::ws_paths_1c::workspace_root().join(".gitattributes"),
+        )
+        .expect("read .gitattributes");
         assert!(attrs.contains("src/pages_assets/vendor/sqlite3.mjs whitespace=-trailing-space"));
         assert!(attrs.contains(
             "src/pages_assets/vendor/sqlite3-opfs-async-proxy.js whitespace=-trailing-space"
         ));
 
-        let sw_js = include_str!("../src/pages_assets/sw.js");
+        let sw_js = crate::ws_paths_1c::read_pages_asset("sw.js");
         for vendor_asset in EXPECTED_VENDOR_ASSETS {
             assert!(
                 sw_js.contains(&format!("\"./{vendor_asset}\"")),

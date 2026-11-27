@@ -19,6 +19,8 @@ use std::collections::BTreeSet;
 use assert_cmd::Command;
 use serde_json::Value;
 
+mod ws_paths_1d;
+
 fn is_src_test_only(rel: &str) -> bool {
     rel.ends_with("_tests.rs")
         || rel.ends_with(".tests.rs")
@@ -27,7 +29,7 @@ fn is_src_test_only(rel: &str) -> bool {
 }
 
 fn collect_non_test_rs_files(
-    manifest_dir: &std::path::Path,
+    workspace_root: &std::path::Path,
     dir: &std::path::Path,
     out: &mut Vec<std::path::PathBuf>,
 ) {
@@ -42,10 +44,10 @@ fn collect_non_test_rs_files(
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
-            collect_non_test_rs_files(manifest_dir, &path, out);
+            collect_non_test_rs_files(workspace_root, &path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             let rel = path
-                .strip_prefix(manifest_dir)
+                .strip_prefix(workspace_root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
@@ -57,13 +59,19 @@ fn collect_non_test_rs_files(
 }
 
 /// Extract `(alias, target)` pairs from the `SUBCOMMAND_ALIASES` table in
-/// `src/lib.rs` and `src/cli_root/**/*.rs`. Scoped to the const block so
-/// unrelated `("x", "y")` tuples elsewhere in the file are ignored.
+/// `src/lib.rs` and `src/cli_root/**/*.rs` across workspace source dirs. Scoped
+/// to the const block so unrelated `("x", "y")` tuples elsewhere in the file are
+/// ignored.
 fn alias_targets_from_source() -> BTreeSet<String> {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src_dir = manifest_dir.join("src");
-    let mut files = vec![src_dir.join("lib.rs")];
-    collect_non_test_rs_files(manifest_dir, &src_dir.join("cli_root"), &mut files);
+    let root = ws_paths_1d::workspace_root();
+    let mut files = Vec::new();
+    for src_dir in ws_paths_1d::workspace_source_dirs() {
+        let lib_rs = src_dir.join("lib.rs");
+        if lib_rs.is_file() {
+            files.push(lib_rs);
+        }
+        collect_non_test_rs_files(&root, &src_dir.join("cli_root"), &mut files);
+    }
 
     let mut targets = BTreeSet::new();
 

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::indexer::redact_secrets::redact_text;
+use crate::resource_plan::redact_secrets::redact_text;
 
 use super::redaction::redact_pack_output_text;
 use super::scoring::{
@@ -118,7 +118,7 @@ pub fn plan_answer_pack(
         .iter()
         .map(|candidate| {
             if !request.include_skill_content
-                && crate::export::is_skill_injection(&candidate.excerpt)
+                && crate::resource_plan::text_filters::is_skill_injection(&candidate.excerpt)
             {
                 // Reuse the export default unless the operator opted in.
                 // Credential redaction still applies to included skills.

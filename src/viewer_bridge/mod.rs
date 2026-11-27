@@ -702,7 +702,7 @@ impl Session {
         let write_privilege = self.write_enabled && extension.installed;
         Ok(json!({
             "bridge_protocol":1,"cass_crate_version":env!("CARGO_PKG_VERSION"),
-            "cass_build_commit":option_env!("CASS_BUILD_COMMIT").unwrap_or("unknown"),
+            "cass_build_commit":coding_agent_search::dependency_pin_correlation::build_metadata::BuildMetadata::current().build_commit.unwrap_or("unknown"),
             "source_api_version":1,"source_contract_version":"1","db_schema_version":reader::STRICT_SCHEMA_VERSION,
             "db_path":stamp.canonical_path,"data_dir":self.data_dir,
             "archive_stamp":stamp,"catalog_revision":revision,"worker_epoch":self.worker_epoch,
@@ -1534,7 +1534,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         &mut io::stdout().lock(),
     );
     drop(session);
-    if !coding_agent_search::shutdown_thread_local_bridge_runtimes() {
+    if !coding_agent_search::search::quill_bridge::shutdown_thread_local_bridge_runtimes() {
         eprintln!("cass-viewer-bridge: engine runtime cleanup did not complete");
         return ExitCode::FAILURE;
     }

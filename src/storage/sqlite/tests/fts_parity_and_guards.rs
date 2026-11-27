@@ -320,13 +320,13 @@ fn fts_exact_rowid_probe_5k_is_bounded_against_two_million_unrelated_rows() {
             created_at: None,
         })
         .collect();
-    let rss_before = crate::indexer::responsiveness::process_resident_memory_bytes();
+    let rss_before = crate::connectors::host_responsiveness::process_resident_memory_bytes();
     let started = Instant::now();
     let found = storage
         .load_fts_message_rowid_set_for_batch(&rows)
         .expect("probe realistic 5k FTS repair page");
     let elapsed = started.elapsed();
-    let rss_after = crate::indexer::responsiveness::process_resident_memory_bytes();
+    let rss_after = crate::connectors::host_responsiveness::process_resident_memory_bytes();
 
     assert_eq!(found.len(), REQUESTED_ROWS / 2);
     assert!(

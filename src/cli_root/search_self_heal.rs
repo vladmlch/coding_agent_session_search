@@ -211,8 +211,10 @@ pub(crate) fn search_lexical_checkpoint_diagnosis(
     index_path: &Path,
     db_path: &Path,
 ) -> CliResult<Option<SearchLexicalSelfHealDiagnosis>> {
-    let checkpoint =
-        crate::indexer::load_lexical_rebuild_checkpoint(index_path).map_err(|e| CliError {
+    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(
+        index_path,
+    )
+    .map_err(|e| CliError {
             code: 5,
             kind: CliErrorKind::LexicalRebuild.kind_str(),
             message: format!("failed to inspect lexical rebuild checkpoint: {e}"),
@@ -250,12 +252,12 @@ pub(crate) fn search_lexical_checkpoint_diagnosis(
             "lexical checkpoint schema no longer matches this cass binary",
         )));
     }
-    if !crate::indexer::lexical_rebuild_page_size_is_compatible(checkpoint.page_size) {
+    if !crate::storage::run_lock::lexical_rebuild_page_size_is_compatible(checkpoint.page_size) {
         return Ok(Some(SearchLexicalSelfHealDiagnosis::checkpoint(
             "lexical checkpoint page-size contract is incompatible with this cass binary",
         )));
     }
-    if !crate::indexer::completed_lexical_storage_fingerprint_matches_total(
+    if !crate::storage::lexical_checkpoint_io::completed_lexical_storage_fingerprint_matches_total(
         &checkpoint.storage_fingerprint,
         checkpoint.total_conversations,
     ) {
@@ -268,7 +270,9 @@ pub(crate) fn search_lexical_checkpoint_diagnosis(
     // archive, which cost every default `cass search` ~4 s before the engine
     // query even ran (see `lexical_storage_fingerprint_for_db_cached`).
     let cached_fingerprint =
-        crate::indexer::lexical_storage_fingerprint_for_db_cached(db_path, index_path);
+        crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db_cached(
+            db_path, index_path,
+        );
     let current_storage_fingerprint = match cached_fingerprint {
         Ok(fingerprint) => fingerprint,
         Err(err) => {
@@ -501,7 +505,7 @@ pub(crate) fn describe_background_lexical_repair(
 /// Progress of the lexical rebuild recorded under `index_path`, for messages
 /// that tell a caller how far an active rebuild has come.
 pub(crate) fn lexical_rebuild_progress_note(index_path: &Path) -> Option<String> {
-    let checkpoint = crate::indexer::load_lexical_rebuild_checkpoint(index_path)
+    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(index_path)
         .ok()
         .flatten()?;
     if checkpoint.completed || checkpoint.total_conversations == 0 {
@@ -563,8 +567,10 @@ pub(crate) fn search_lexical_read_only_diagnosis(
         ))));
     }
 
-    let checkpoint =
-        crate::indexer::load_lexical_rebuild_checkpoint(index_path).map_err(|err| CliError {
+    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(
+        index_path,
+    )
+    .map_err(|err| CliError {
             code: 5,
             kind: CliErrorKind::LexicalRebuild.kind_str(),
             message: format!(
@@ -604,12 +610,12 @@ pub(crate) fn search_lexical_read_only_diagnosis(
             "lexical checkpoint schema no longer matches this cass binary",
         )));
     }
-    if !crate::indexer::lexical_rebuild_page_size_is_compatible(checkpoint.page_size) {
+    if !crate::storage::run_lock::lexical_rebuild_page_size_is_compatible(checkpoint.page_size) {
         return Ok(Some(SearchLexicalSelfHealDiagnosis::checkpoint(
             "lexical checkpoint page-size contract is incompatible with this cass binary",
         )));
     }
-    if !crate::indexer::completed_lexical_storage_fingerprint_matches_total(
+    if !crate::storage::lexical_checkpoint_io::completed_lexical_storage_fingerprint_matches_total(
         &checkpoint.storage_fingerprint,
         checkpoint.total_conversations,
     ) {
@@ -795,8 +801,10 @@ pub(crate) fn verify_search_lexical_repair_publication(
     db_path: &Path,
     indexed_docs: usize,
 ) -> anyhow::Result<()> {
-    let checkpoint =
-        crate::indexer::load_lexical_rebuild_checkpoint(index_path)?.ok_or_else(|| {
+    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(
+        index_path,
+    )?
+    .ok_or_else(|| {
             anyhow::anyhow!("lexical repair returned success without a published checkpoint")
         })?;
     anyhow::ensure!(

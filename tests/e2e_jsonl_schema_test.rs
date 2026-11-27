@@ -32,7 +32,7 @@ fn selected_e2e_root() -> Option<PathBuf> {
 }
 
 fn e2e_root_for_run(run_id: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    util::ws_paths_1b::workspace_root()
         .join("test-results/e2e/runs")
         .join(run_id)
 }
@@ -954,7 +954,7 @@ fn trace_jsonl_files_are_valid_correlated_and_bounded() -> SchemaTestResult {
 #[test]
 fn e2e_subprocess_sources_cannot_mutate_the_parent_environment() -> SchemaTestResult {
     let tracker = tracker_for("e2e_subprocess_sources_cannot_mutate_the_parent_environment");
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = util::ws_paths_1b::workspace_root();
     let sources = [
         "tests/card_defaults_wallclock_ab.rs",
         "tests/connector_chatgpt.rs",

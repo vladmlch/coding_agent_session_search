@@ -497,7 +497,7 @@ pub fn redact_swarm_json_value(value: &Value) -> Value {
     // secret. Running it last keeps that guarantee while letting the specific
     // rules label what they can actually see.
     let swarm_redacted = redact_swarm_json_value_with_engine(&engine, value);
-    crate::indexer::redact_secrets::redact_json(&swarm_redacted)
+    crate::resource_plan::redact_secrets::redact_json(&swarm_redacted)
 }
 
 fn insert_redacted_swarm_entry(
@@ -544,7 +544,7 @@ fn redact_swarm_scalar_with_engine(engine: &RedactionEngine, input: &str) -> Red
     // report lost the ability to say *what kind* of secret had been there.
     let mut redacted =
         redact_rch_command(engine, input).unwrap_or_else(|| engine.redact_text(input));
-    let floored = crate::indexer::redact_secrets::redact_text(&redacted.output).into_owned();
+    let floored = crate::resource_plan::redact_secrets::redact_text(&redacted.output).into_owned();
     if floored != redacted.output {
         redacted.output = floored;
         // `changes` counts pattern-class passes rather than individual matches.

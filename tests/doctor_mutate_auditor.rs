@@ -22,6 +22,8 @@
 
 use std::fs;
 
+mod ws_paths_1b;
+
 const DOCTOR_MODULES_TO_AUDIT: &[&str] = &[
     "src/doctor_chokepoint.rs",
     "src/doctor_runs.rs",
@@ -80,9 +82,9 @@ const ALLOWED_BUDGETS: &[(&str, &[&str])] = &[
 
 #[test]
 fn pass4_no_forbidden_fs_writes_in_doctor_modules() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
+    let root = ws_paths_1b::workspace_root();
     for module in DOCTOR_MODULES_TO_AUDIT {
-        let path = format!("{manifest}/{module}");
+        let path = ws_paths_1b::resolve_workspace_source(&root, module);
         let body = match fs::read_to_string(&path) {
             Ok(b) => b,
             Err(e) => panic!("doctor module {module} not readable: {e}"),
@@ -129,9 +131,12 @@ fn pass4_no_forbidden_fs_writes_in_doctor_modules() {
 
 #[test]
 fn pass4_doctor_chokepoint_is_canonical() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let chokepoint = fs::read_to_string(format!("{manifest}/src/doctor_chokepoint.rs"))
-        .expect("chokepoint module readable");
+    let root = ws_paths_1b::workspace_root();
+    let chokepoint = fs::read_to_string(ws_paths_1b::resolve_workspace_source(
+        &root,
+        "src/doctor_chokepoint.rs",
+    ))
+    .expect("chokepoint module readable");
     // The chokepoint module declares the canonical APIs.
     for marker in [
         "pub(crate) fn mutate(",
@@ -152,9 +157,12 @@ fn pass4_doctor_chokepoint_is_canonical() {
 
 #[test]
 fn pass4_doctor_undo_uses_chokepoint_run_dir_layout() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let undo =
-        fs::read_to_string(format!("{manifest}/src/doctor_undo.rs")).expect("undo module readable");
+    let root = ws_paths_1b::workspace_root();
+    let undo = fs::read_to_string(ws_paths_1b::resolve_workspace_source(
+        &root,
+        "src/doctor_undo.rs",
+    ))
+    .expect("undo module readable");
     // Undo MUST consume actions.jsonl + the per-run backups dir produced by
     // the chokepoint. Source-level grep is the regression guard.
     for marker in [
@@ -210,11 +218,21 @@ fn collect_non_test_rs_files(
 }
 
 fn read_lib_split_production_sources() -> String {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src_dir = manifest_dir.join("src");
-    let mut files = vec![src_dir.join("lib.rs")];
-    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
-        collect_non_test_rs_files(manifest_dir, &src_dir.join(subdir), &mut files);
+    let root = ws_paths_1b::workspace_root();
+    let root_src = root.join("src");
+    let mut files = Vec::new();
+    for src_dir in ws_paths_1b::workspace_source_dirs(&root) {
+        if src_dir == root_src {
+            let lib_rs = src_dir.join("lib.rs");
+            if lib_rs.is_file() {
+                files.push(lib_rs);
+            }
+            for subdir in ["cli_root", "lib_doctor", "cli_app"] {
+                collect_non_test_rs_files(&root, &src_dir.join(subdir), &mut files);
+            }
+        } else {
+            collect_non_test_rs_files(&root, &src_dir, &mut files);
+        }
     }
     files
         .iter()
@@ -303,9 +321,12 @@ fn pass6_watch_helper_routes_through_doctor_runs_apis() {
 
 #[test]
 fn pass6_band_journal_helpers_present() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let runs = std::fs::read_to_string(format!("{manifest}/src/doctor_runs.rs"))
-        .expect("doctor_runs readable");
+    let root = ws_paths_1b::workspace_root();
+    let runs = std::fs::read_to_string(ws_paths_1b::resolve_workspace_source(
+        &root,
+        "src/doctor_runs.rs",
+    ))
+    .expect("doctor_runs readable");
     for marker in [
         "pub(crate) fn append_band_started",
         "pub(crate) fn append_band_completed",

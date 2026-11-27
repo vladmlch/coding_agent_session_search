@@ -80,8 +80,9 @@ impl WatchSourceLedger {
         }
         let mut ctx = ctx.clone();
         ctx.since_ts = None;
+        let build_meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
         let producer_contract =
-            WorkspaceExclusions::from_env()?.bind_contract(env!("CASS_SOURCE_INGEST_CONTRACT"));
+            WorkspaceExclusions::from_env()?.bind_contract(build_meta.ingest_contract);
         // As in startup, a self-contained provider needs no second inventory
         // merely to prove that it has no sidecars. Unknown policies fail closed.
         let observes_parent_directory =
@@ -146,7 +147,7 @@ impl WatchSourceLedger {
             let key = source_ledger_key(source, &ctx);
             let saved_observation = key.as_ref().and_then(|key| saved.get(key));
             let reusable = allow_reuse
-                && env!("CASS_SOURCE_INGEST_REUSE") == "true"
+                && build_meta.ingest_reuse
                 && !filtered.get()
                 && saved_observation.is_some_and(|observation| {
                     (!replay_canonical || observation_has_watch_publication(observation))

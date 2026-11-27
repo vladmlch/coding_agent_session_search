@@ -6,7 +6,8 @@ pub(super) use std::fs::OpenOptions;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::time::Duration;
 
-pub(super) use crate::indexer::{LEXICAL_REBUILD_PAGE_SIZE_PUBLIC, LexicalRebuildCheckpoint};
+pub(super) use crate::storage::lexical_checkpoint_io::LexicalRebuildCheckpoint;
+pub(super) use crate::storage::run_lock::LEXICAL_REBUILD_PAGE_SIZE_PUBLIC;
 pub(super) use crate::search::ann_index::hnsw_index_path;
 pub(super) use crate::search::embedder::Embedder;
 pub(super) use crate::search::fastembed_embedder::FastEmbedder;

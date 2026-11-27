@@ -5,8 +5,10 @@ use tempfile::TempDir;
 use coding_agent_search::connectors::{Connector, ScanContext, ScanRoot, codex::CodexConnector};
 use serde_json::Value;
 
+mod ws_paths_1b;
+
 fn codex_real_fixture_home() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex_real")
+    ws_paths_1b::workspace_root().join("tests/fixtures/codex_real")
 }
 
 #[test]

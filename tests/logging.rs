@@ -20,6 +20,7 @@ fn norm_msg(idx: i64) -> NormalizedMessage {
 
 #[test]
 fn search_logs_backend_selection() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let trace = TestTracing::new();
     let _guard = trace.install();
 
@@ -71,6 +72,7 @@ fn search_logs_backend_selection() {
 
 #[test]
 fn persist_conversation_logs_counts() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let trace = TestTracing::new();
     let _guard = trace.install();
 
@@ -102,6 +104,7 @@ fn persist_conversation_logs_counts() {
 
 #[test]
 fn run_index_does_not_drop_storage_without_explicit_close() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let trace = TestTracing::new();
     let _guard = trace.install();
 

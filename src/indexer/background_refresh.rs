@@ -901,7 +901,7 @@ pub fn apply_background_priority() -> BackgroundPriority {
         .unwrap_or(DEFAULT_BACKGROUND_IONICE_CLASS);
     #[cfg(unix)]
     {
-        let monitor = crate::daemon::resource::ResourceMonitor::new();
+        let monitor = crate::resource_plan::daemon_monitor::ResourceMonitor::new();
         let nice_applied = monitor.apply_nice(nice);
         let ionice_applied = monitor.apply_ionice(ionice_class);
         BackgroundPriority {

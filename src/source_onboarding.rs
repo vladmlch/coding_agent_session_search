@@ -18,6 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod conv_map;
+
 /// Stable schema version for the onboarding wire format.
 pub const ONBOARDING_SCHEMA_VERSION: u32 = 1;
 

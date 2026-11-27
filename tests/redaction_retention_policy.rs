@@ -2,20 +2,14 @@
 //! these source modules in this integration target gives the regression its
 //! own production retention pool without mutating another test's process.
 
-#[path = "../src/indexer/memoization.rs"]
+#[path = "../src/resource_plan/memoization.rs"]
 pub(crate) mod memoization;
 // This target uses part of the redactor; the library target lints the rest.
 #[allow(dead_code)]
-#[path = "../src/indexer/redact_secrets.rs"]
+#[path = "../src/resource_plan/redact_secrets.rs"]
 mod redact_secrets;
-#[path = "../src/indexer/responsiveness/resident/policy.rs"]
+#[path = "../src/connectors/host_responsiveness/resident/policy.rs"]
 mod resident_policy;
-
-// The production redactor names its cache through crate::indexer. Re-export
-// the actual module, not a replacement implementation or a fake allocator.
-mod indexer {
-    pub(crate) use super::memoization;
-}
 
 use redact_secrets::{MemoizingRedactor, update_redaction_retention_limit};
 use resident_policy::{Decision, Policy, Sample};

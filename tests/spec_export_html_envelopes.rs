@@ -46,6 +46,8 @@ use coding_agent_search::storage::sqlite::FrankenStorage;
 use serde_json::Value;
 use tempfile::TempDir;
 
+mod ws_paths_1d;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn test_error(message: impl Into<String>) -> Box<dyn Error> {
@@ -61,7 +63,7 @@ fn ensure(condition: bool, message: impl Into<String>) -> TestResult {
 }
 
 fn real_jsonl_session() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1d::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("message_grouping")

@@ -14,6 +14,8 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod ws_paths_1c;
+
 #[allow(deprecated)]
 fn cass_cmd(test_home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("cass").expect("cass binary");
@@ -31,7 +33,7 @@ fn cass_cmd(test_home: &Path) -> Command {
 }
 
 fn fixture_path(parts: &[&str]) -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut path = ws_paths_1c::workspace_root().join("tests/fixtures");
     for part in parts {
         path.push(part);
     }

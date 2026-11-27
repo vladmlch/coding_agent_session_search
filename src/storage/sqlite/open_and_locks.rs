@@ -985,3 +985,267 @@ mod doctor_mutation_lock_error_tests {
         ));
     }
 }
+
+const CANONICAL_DB_CORRUPTION_PROBE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const CANONICAL_DB_CORRUPTION_PROBE_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+const CANONICAL_DB_CORRUPTION_PROBE_QUERY_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn sqlite_sidecar_path(db_path: &Path, suffix: &str) -> Option<PathBuf> {
+    let mut file_name = db_path.file_name()?.to_os_string();
+    file_name.push(suffix);
+    Some(db_path.with_file_name(file_name))
+}
+
+fn corruption_probe_query_row_map_retry<T, F>(
+    conn: &FrankenConnection,
+    sql: &str,
+    params: &[crate::franken_sync::compat::ParamValue],
+    map: F,
+) -> std::result::Result<T, FrankenError>
+where
+    F: Copy + Fn(&crate::franken_sync::Row) -> std::result::Result<T, FrankenError>,
+{
+    let deadline = Instant::now() + CANONICAL_DB_CORRUPTION_PROBE_QUERY_RETRY_TIMEOUT;
+    let mut backoff = Duration::from_millis(4);
+    // negs9: a failure raised by the row-mapping callback is NOT engine
+    // contention, even when its text resembles one ("busy"/"locked"), and
+    // must never cause the query — and the callback — to be replayed.
+    let callback_failed = std::cell::Cell::new(false);
+    loop {
+        callback_failed.set(false);
+        let mapped = conn.query_row_map(sql, params, |row| {
+            map(row).inspect_err(|_| callback_failed.set(true))
+        });
+        match mapped {
+            Ok(value) => return Ok(value),
+            Err(err) if callback_failed.get() => return Err(err),
+            Err(err) if retryable_franken_error(&err) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(err);
+                }
+                let remaining = deadline.saturating_duration_since(now);
+                sleep_with_franken_retry_backoff(
+                    &mut backoff,
+                    remaining,
+                    Duration::from_millis(64),
+                );
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// i6upe: verdict of the bounded real-column integrity probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StateDbIntegrity {
+    Ok,
+    Corrupt,
+}
+
+/// True for FrankenError classes that mean the archive's stored pages are
+/// malformed — never for busy/locked/transient classes.
+pub(crate) fn corruption_class_franken_error(err: &FrankenError) -> bool {
+    if matches!(
+        err,
+        FrankenError::DatabaseCorrupt { .. }
+            | FrankenError::NotADatabase { .. }
+            | FrankenError::WalCorrupt { .. }
+    ) {
+        return true;
+    }
+    let lower = err.to_string().to_ascii_lowercase();
+    lower.contains("malformed") || lower.contains("disk image")
+}
+
+/// i6upe: real-column corruption probe used only below a physical archive
+/// bundle-size ceiling.
+///
+/// `SELECT COUNT(*)` is answered from index B-trees without touching table
+/// pages, so a DB whose table pages are malformed counts perfectly and only
+/// fails when real columns are read (proven on ts2/csd 2026-07-26, where
+/// counts matched while every projection failed). Each probe here projects
+/// real columns from a single row at both ends of the two hot tables. The SQL
+/// shape is logically bounded, but GH #413 proved that a query may still read
+/// or hydrate a large fraction of a huge archive while executing it. Callers
+/// must therefore enforce a physical main+sidecar byte ceiling before using
+/// this probe.
+///
+/// Returns `(Some(Ok), None)` when every probe reads (or the table is
+/// empty), `(Some(Corrupt), Some(detail))` on a corruption-class error, and
+/// `(None, None)` when a transient error prevents classification — never a
+/// false-positive `Corrupt` from a busy archive.
+///
+/// `run_probe` executes one probe statement and reads its first column, so
+/// the classification is shared by the ordinary-connection lane and the
+/// dedicated-owner strict lane (`probe_state_db_strict_bounded`).
+pub(crate) fn probe_state_db_integrity(
+    run_probe: impl Fn(&str) -> std::result::Result<(), FrankenError>,
+) -> (Option<StateDbIntegrity>, Option<String>) {
+    const PROBES: [&str; 4] = [
+        "SELECT id, title, source_path FROM conversations ORDER BY id LIMIT 1",
+        "SELECT id, title, source_path FROM conversations ORDER BY id DESC LIMIT 1",
+        "SELECT id, conversation_id, role FROM messages ORDER BY id LIMIT 1",
+        "SELECT id, conversation_id, role FROM messages ORDER BY id DESC LIMIT 1",
+    ];
+    for sql in PROBES {
+        match run_probe(sql) {
+            Ok(()) => {}
+            Err(FrankenError::QueryReturnedNoRows) => {}
+            Err(err) if corruption_class_franken_error(&err) => {
+                return (Some(StateDbIntegrity::Corrupt), Some(err.to_string()));
+            }
+            Err(_) => return (None, None),
+        }
+    }
+    (Some(StateDbIntegrity::Ok), None)
+}
+
+/// Read the canonical database's fixed-size SQLite header, then run the
+/// stronger real-column probe only when the complete main+sidecar bundle is
+/// below 256 MiB. `Some(detail)` means corruption was classified; `None`
+/// means the bounded checks passed or could not safely classify the archive.
+///
+/// This is deliberately not a complete page-integrity check. Large archives
+/// receive only the constant-size header check; deeper corruption still needs
+/// a current doctor integrity attestation or an explicit full integrity scan.
+pub(crate) fn bounded_canonical_db_corruption_probe(
+    db_path: &Path,
+    reason: &str,
+) -> Option<String> {
+    if !db_path.is_file() {
+        return None;
+    }
+    // GH #413: this preflight must have a physical-I/O bound, not merely a
+    // SQL row-count bound. A query can hydrate a large part of the
+    // B-tree while executing an ORDER BY ... LIMIT 1 edge lookup; the old
+    // four-query "bounded" probe read 8.4 GiB from a 35.7 GB archive before
+    // indexing had even entered its preparing phase. A query timeout would
+    // not repair that contract because the synchronous query cannot be
+    // cancelled safely from this call site.
+    //
+    // Reading the fixed 100-byte SQLite database header is genuinely bounded
+    // regardless of archive size. The stronger real-column probe below is
+    // retained for small bundles, where its worst-case physical work is also
+    // bounded, so the earlier i6upe smashed-page guard does not regress.
+    let mut header = [0_u8; 100];
+    let file_len = fs::metadata(db_path).ok()?.len();
+    if file_len == 0 {
+        // SQLite permits a zero-byte file as a new, empty database.
+        return None;
+    }
+    if file_len < header.len() as u64 {
+        return Some(format!(
+            "{reason}: truncated SQLite database header ({} bytes; expected at least {})",
+            file_len,
+            header.len()
+        ));
+    }
+    let mut file = fs::File::open(db_path).ok()?;
+    std::io::Read::read_exact(&mut file, &mut header).ok()?;
+
+    const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+    if &header[..SQLITE_MAGIC.len()] != SQLITE_MAGIC {
+        return Some(format!("{reason}: invalid SQLite database header magic"));
+    }
+
+    let encoded_page_size = u16::from_be_bytes([header[16], header[17]]);
+    let page_size = if encoded_page_size == 1 {
+        65_536_u32
+    } else {
+        u32::from(encoded_page_size)
+    };
+    if !(512..=65_536).contains(&page_size) || !page_size.is_power_of_two() {
+        return Some(format!(
+            "{reason}: invalid SQLite database page size {page_size}"
+        ));
+    }
+    if file_len % u64::from(page_size) != 0 {
+        return Some(format!(
+            "{reason}: SQLite database length {file_len} is not a multiple of page size {page_size}"
+        ));
+    }
+    let reserved_bytes = u32::from(header[20]);
+    if page_size.saturating_sub(reserved_bytes) < 480 {
+        return Some(format!(
+            "{reason}: invalid SQLite reserved-byte count {reserved_bytes} for page size {page_size}"
+        ));
+    }
+    if !matches!(header[18], 1 | 2) || !matches!(header[19], 1 | 2) {
+        return Some(format!(
+            "{reason}: invalid SQLite file format versions write={} read={}",
+            header[18], header[19]
+        ));
+    }
+    if header[21..24] != [64, 32, 32] {
+        return Some(format!(
+            "{reason}: invalid SQLite payload fractions {},{},{}",
+            header[21], header[22], header[23]
+        ));
+    }
+
+    let mut bundle_bytes = file_len;
+    for suffix in ["-wal", "-shm"] {
+        let sidecar_path = sqlite_sidecar_path(db_path, suffix)?;
+        match fs::symlink_metadata(&sidecar_path) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                bundle_bytes = bundle_bytes.saturating_add(metadata.len());
+            }
+            Ok(_) => return None,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    if bundle_bytes > CANONICAL_DB_CORRUPTION_PROBE_MAX_BYTES {
+        return None;
+    }
+
+    // This observation also runs before a read-only force rebuild has archive
+    // writer admission. It must never repair WAL or schema state on open.
+    match FrankenStorage::open_strict_readonly_with_timeout(
+        db_path,
+        CANONICAL_DB_CORRUPTION_PROBE_OPEN_TIMEOUT,
+    ) {
+        Ok(storage) => {
+            let mut conn = storage.into_raw();
+            let (integrity, detail) = probe_state_db_integrity(|sql| {
+                corruption_probe_query_row_map_retry(&conn, sql, &[], |row| {
+                    row.get_typed::<i64>(0).map(|_| ())
+                })
+            });
+            if let Err(err) = conn.close_without_checkpoint_in_place() {
+                tracing::warn!(
+                    error = %err,
+                    db_path = %db_path.display(),
+                    reason,
+                    "checkpoint-free close failed for canonical DB corruption probe; falling back to best-effort owner-thread cleanup"
+                );
+                conn.close_best_effort_in_place();
+            }
+            match integrity {
+                Some(StateDbIntegrity::Corrupt) => {
+                    Some(detail.unwrap_or_else(|| "corruption-class read failure".to_owned()))
+                }
+                _ => None,
+            }
+        }
+        Err(err) if !retryable_franken_anyhow(&err) => {
+            let message = format!("{err:#}");
+            let lower = message.to_ascii_lowercase();
+            // Duplicate `fts_messages` rows in sqlite_master make the strict
+            // open report a malformed image, but they describe the derived
+            // FTS catalog, not the archive's data. The writable open that
+            // follows deduplicates them (dedupe_conflicting_fts_schema_rows_
+            // via_sqlite3), so refusing here would block the repair.
+            if lower.contains("conflicting virtual-table entries") && lower.contains("fts_messages")
+            {
+                return None;
+            }
+            (lower.contains("malformed")
+                || lower.contains("disk image")
+                || lower.contains("not a database"))
+            .then_some(message)
+        }
+        Err(_) => None,
+    }
+}

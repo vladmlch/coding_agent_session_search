@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::indexer::semantic::expected_vector_space_revision;
+use crate::search_defaults::expected_vector_space_revision;
 use crate::search::ann_index::hnsw_index_path;
 use crate::search::embedder::Embedder;
 use crate::search::fastembed_embedder::{FastEmbedder, LazyFastEmbedder};
@@ -482,9 +482,11 @@ fn load_complete_shard_artifacts_for_current_db(
         context_label,
         || {
             if strict_read_only {
-                crate::indexer::lexical_storage_fingerprint_for_db_strict(db_path)
+                crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db_strict(
+                    db_path,
+                )
             } else {
-                crate::indexer::lexical_storage_fingerprint_for_db(db_path)
+                crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db(db_path)
             }
         },
     )
@@ -1042,7 +1044,9 @@ fn refuse_stale_semantic_assets(
             });
         }
     }
-    let db_fingerprint = match crate::indexer::lexical_storage_fingerprint_for_storage(storage) {
+    let db_fingerprint =
+        match crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_storage(storage)
+        {
         Ok(fingerprint) => fingerprint,
         Err(err) => {
             // The archive answered the open but not the fingerprint queries;

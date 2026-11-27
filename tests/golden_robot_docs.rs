@@ -14,7 +14,9 @@
 //! ```
 
 use assert_cmd::Command;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+mod ws_paths_1c;
 
 /// Build a `cass` invocation with knobs pinned for deterministic text.
 fn cass_cmd(test_home: &Path) -> Command {
@@ -41,7 +43,7 @@ fn scrub_robot_docs(input: &str, test_home: &Path) -> String {
 /// `assert_golden` mirrors the helper in `tests/golden_robot_json.rs`:
 /// `UPDATE_GOLDENS=1` regenerates the file; otherwise diff against it.
 fn assert_golden(name: &str, actual: &str) {
-    let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let golden_path = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join(name);
@@ -278,7 +280,7 @@ fn pack_robot_docs_contract_matrix_is_current() {
 
 #[test]
 fn answer_pack_workflow_docs_cover_agent_and_operator_paths() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = ws_paths_1c::workspace_root();
     let docs = [
         (
             "README.md",
@@ -340,7 +342,7 @@ fn answer_pack_workflow_docs_cover_agent_and_operator_paths() {
 
 #[test]
 fn doctor_runbook_documents_archive_first_safety_contract() {
-    let runbook_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let runbook_path = ws_paths_1c::workspace_root()
         .join("docs")
         .join("planning")
         .join("RECOVERY_RUNBOOK.md");

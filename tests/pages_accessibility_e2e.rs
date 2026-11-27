@@ -9,6 +9,8 @@
 //! Note: Full axe-core testing requires a browser environment.
 //! These tests validate the generated HTML structure for accessibility.
 
+mod ws_paths_1c;
+
 /// WCAG 2.1 Level AA color contrast requirements
 const MIN_CONTRAST_NORMAL_TEXT: f64 = 4.5;
 const MIN_CONTRAST_LARGE_TEXT: f64 = 3.0;
@@ -442,11 +444,14 @@ pub fn generate_report(audit: &AccessibilityAudit) -> String {
 mod tests {
     use super::*;
 
-    const TEST_HTML: &str = include_str!("../src/pages_assets/index.html");
+    fn test_html() -> String {
+        crate::ws_paths_1c::read_pages_asset("index.html")
+    }
 
     #[test]
     fn test_audit_index_html() {
-        let audit = audit_html(TEST_HTML);
+        let test_html = test_html();
+        let audit = audit_html(&test_html);
 
         // Print report for debugging
         let report = generate_report(&audit);
@@ -639,9 +644,10 @@ mod tests {
 
     #[test]
     fn test_index_html_has_aria_labels() {
+        let test_html = test_html();
         // Check that the auth screen has proper ARIA labels
         assert!(
-            TEST_HTML.contains("aria-label="),
+            test_html.contains("aria-label="),
             "index.html should have aria-label attributes"
         );
     }
@@ -651,23 +657,24 @@ mod tests {
         // Phase-0 removed the password auth form from index.html; verify no
         // unlabelled fields exist in index.html and every live form control in
         // search.js and viewer.js carries <label for="..."> or aria-label="...".
-        let audit = audit_html(TEST_HTML);
+        let test_html = test_html();
+        let audit = audit_html(&test_html);
         assert!(
             !audit.warnings.iter().any(|w| w.rule == "label"),
             "index.html must have no unlabelled form inputs: {:?}",
             audit.warnings
         );
 
-        let search_js = include_str!("../src/pages_assets/search.js");
-        let viewer_js = include_str!("../src/pages_assets/viewer.js");
+        let search_js = crate::ws_paths_1c::read_pages_asset("search.js");
+        let viewer_js = crate::ws_paths_1c::read_pages_asset("viewer.js");
         let control_re = regex::Regex::new(r"(?s)<(input|select|textarea)\b[^>]*>").unwrap();
         let id_re = regex::Regex::new(r#"id="([^"]+)""#).unwrap();
 
         let mut checked_controls = 0usize;
         for (name, src) in [
-            ("index.html", TEST_HTML),
-            ("search.js", search_js),
-            ("viewer.js", viewer_js),
+            ("index.html", test_html.as_str()),
+            ("search.js", search_js.as_str()),
+            ("viewer.js", viewer_js.as_str()),
         ] {
             for m in control_re.find_iter(src) {
                 checked_controls += 1;
@@ -692,7 +699,7 @@ mod tests {
     #[test]
     fn test_reduced_motion_support() {
         // Check CSS for reduced motion media query
-        let css = include_str!("../src/pages_assets/styles.css");
+        let css = crate::ws_paths_1c::read_pages_asset("styles.css");
         // The CSS might not have this yet, so we'll just check if transitions are defined
         assert!(
             css.contains("transition"),
@@ -702,7 +709,7 @@ mod tests {
 
     #[test]
     fn test_focus_styles_exist() {
-        let css = include_str!("../src/pages_assets/styles.css");
+        let css = crate::ws_paths_1c::read_pages_asset("styles.css");
         assert!(
             css.contains(":focus") || css.contains(":focus-visible"),
             "CSS should have focus styles"

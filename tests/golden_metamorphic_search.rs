@@ -19,6 +19,7 @@ use coding_agent_search::search::tantivy::TantivyIndex;
 use tempfile::TempDir;
 
 mod util;
+mod ws_paths_1c;
 
 // ---------------------------------------------------------------------------
 // Corpus (must exactly match metamorphic_search.rs to keep goldens coherent)
@@ -68,7 +69,7 @@ fn seed_corpus(index: &mut TantivyIndex, dir: &std::path::Path, now_ms: i64) {
 // ---------------------------------------------------------------------------
 
 fn golden_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join("metamorphic")

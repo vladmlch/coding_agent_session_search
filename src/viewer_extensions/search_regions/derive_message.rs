@@ -151,7 +151,7 @@ pub fn derive_message_regions(
         let (step_index, turn_index) = anchors.anchors_for(idx);
 
         if !content.is_empty() {
-            let noise = crate::search::canonicalize::is_hard_message_noise(
+            let noise = crate::resource_plan::text_filters::is_hard_message_noise(
                 Some(message.role.as_str()),
                 content,
             );

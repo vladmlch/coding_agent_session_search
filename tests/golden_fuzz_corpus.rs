@@ -16,6 +16,8 @@ use arbitrary::{Arbitrary, Unstructured};
 use coding_agent_search::parse_cli;
 use std::path::PathBuf;
 
+mod ws_paths_1c;
+
 const SUBCOMMANDS: &[&str] = &[
     "search",
     "find",
@@ -216,14 +218,14 @@ fn contains_help_or_version(argv: &[String]) -> bool {
 }
 
 fn corpus_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("fuzz")
         .join("corpus")
         .join("fuzz_cli_argv")
 }
 
 fn golden_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join("fuzz_corpus_stats.json.golden")

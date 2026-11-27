@@ -3256,7 +3256,7 @@ fn gh520_remote_mirrors_index_structural_agents_end_to_end() {
     // <container>/<basename>/...
     let mirror = data.join("remotes/laptop/mirror");
     let container = |path: &str| mirror.join(path_to_safe_dirname(path));
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let fixtures = util::ws_paths_1b::workspace_root().join("tests/fixtures");
     let copy_tree = |from: &Path, to: &Path| {
         for entry in walkdir::WalkDir::new(from) {
             let entry = entry.unwrap();

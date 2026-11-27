@@ -39,6 +39,8 @@ use assert_cmd::Command;
 use serde_json::Value;
 use tempfile::TempDir;
 
+mod ws_paths_1d;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn test_error(message: impl Into<String>) -> Box<dyn Error> {
@@ -153,7 +155,7 @@ fn status_top_level_keys_stable_across_initialized_and_uninitialized_states() ->
     let uninitialized = status_against_dir(empty.path().to_str().ok_or("non-utf8 path")?)?;
 
     let fixture = TempDir::new()?;
-    let demo_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let demo_path = ws_paths_1d::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("search_demo_data");
@@ -235,7 +237,7 @@ fn status_recommended_commands_invoke_canonical_subcommands() -> TestResult {
 }
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Recursive copy via walkdir-free std::fs. Used by the cross-state test
 /// to materialize the search_demo_data fixture into a tempdir for the

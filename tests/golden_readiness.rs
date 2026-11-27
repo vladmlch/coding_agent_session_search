@@ -16,7 +16,9 @@ use coding_agent_search::search::semantic_manifest::{
 use coding_agent_search::search::tantivy::index_dir;
 use coding_agent_search::storage::sqlite::FrankenStorage;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+mod ws_paths_1c;
 
 fn cass_cmd(test_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
@@ -94,7 +96,7 @@ fn scrub_robot_json(input: &str, test_home: &Path) -> String {
 }
 
 fn assert_golden(name: &str, actual: &str) {
-    let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let golden_path = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join(name);

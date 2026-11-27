@@ -296,7 +296,7 @@ pub(crate) fn project_search_completeness(
         // Inspect-first pointer: the list names the excluded conversations and
         // carries `quarantine_status()`'s retry verdict. `cass diag
         // --quarantine` covers derived assets and names none of them.
-        next_command: crate::indexer::quarantine_retry::QUARANTINE_LIST_COMMAND.to_string(),
+        next_command: crate::search_defaults::QUARANTINE_LIST_COMMAND.to_string(),
     }
 }
 

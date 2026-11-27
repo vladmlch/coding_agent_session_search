@@ -282,7 +282,7 @@ fn rendered_answer_pack_with_correlation(
             skill_content_included: plan
                 .evidence
                 .iter()
-                .any(|item| crate::export::is_skill_injection(&item.candidate.excerpt)),
+                .any(|item| crate::resource_plan::text_filters::is_skill_injection(&item.candidate.excerpt)),
             redaction_counts,
         },
         warnings,

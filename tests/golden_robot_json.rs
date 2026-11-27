@@ -36,6 +36,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use walkdir::WalkDir;
 
+mod ws_paths_1c;
+
 /// Build a `cass` binary invocation with the env knobs required for
 /// deterministic test output (no update check, no ambient data-dir or CWD
 /// connector-discovery surprise).
@@ -214,7 +216,7 @@ fn safe_fixture_destination(dst_root: &Path, rel: &Path) -> io::Result<PathBuf> 
 }
 
 fn isolated_search_demo_data(test_home: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let src = ws_paths_1c::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("search_demo_data");
@@ -777,13 +779,14 @@ fn live_value_scrubbing_normalizes_runtime_objects_with_type_fields() {
 #[test]
 fn live_value_scrubbing_redacts_repo_paths_and_result_content() -> Result<(), String> {
     let test_home = tempfile::tempdir().expect("create temp home");
-    let repo_root = env!("CARGO_MANIFEST_DIR");
+    let repo_root_buf = ws_paths_1c::workspace_root();
+    let repo_root = repo_root_buf.to_string_lossy();
     let legacy_fixture_root = "/data/projects/coding_agent_session_search";
     let input = serde_json::to_string_pretty(&json!({
         "results": [
             {
                 "source_path": format!("{repo_root}/.aider.chat.history.md"),
-                "workspace": repo_root,
+                "workspace": repo_root.as_ref(),
                 "line_number": 42,
                 "agent": "aider",
                 "snippet": "private snippet",
@@ -896,9 +899,10 @@ fn scrub_robot_json(input: &str, test_home: &std::path::Path) -> String {
     // 3b. Fixture databases can intentionally contain the repository root as
     // historical source metadata. Keep the field shape, but never freeze the
     // local checkout path into a public contract golden.
-    let repo_root = env!("CARGO_MANIFEST_DIR");
+    let repo_root_buf = ws_paths_1c::workspace_root();
+    let repo_root = repo_root_buf.to_string_lossy();
     if !repo_root.is_empty() {
-        out = out.replace(repo_root, "[REPO]");
+        out = out.replace(repo_root.as_ref(), "[REPO]");
     }
     // The checked-in search_demo_data fixture intentionally preserves source
     // metadata captured on the maintainer machine. CI checkouts live under
@@ -1096,7 +1100,7 @@ fn strip_one_final_line_ending(input: &str) -> &str {
 }
 
 fn assert_golden(name: &str, actual: &str) {
-    let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let golden_path = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join(name);
@@ -1149,13 +1153,14 @@ fn robot_json_goldens_do_not_embed_repo_paths_or_raw_session_content() {
         return;
     }
 
-    let golden_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let golden_root = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join("robot");
-    let repo_root = env!("CARGO_MANIFEST_DIR");
+    let repo_root_buf = ws_paths_1c::workspace_root();
+    let repo_root = repo_root_buf.to_string_lossy();
     let forbidden = [
-        repo_root,
+        repo_root.as_ref(),
         "/data/projects/coding_agent_session_search",
         ".venv/bin/aider --no-git --message",
         "Using openrouter/deepseek",
@@ -1193,7 +1198,7 @@ fn should_scan_for_offloaded_golden_regeneration_recipe(rel_path: &str) -> bool 
 
 #[test]
 fn golden_regeneration_hints_do_not_use_remote_offload() {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = ws_paths_1c::workspace_root();
     // Golden regeneration hints must run under local Cargo. Offload-shaped
     // regen instructions (the UPDATE_GOLDENS=1 + remote-exec prefix, and the
     // remote wrapper bypass variable) are exactly what the local-only port
@@ -1239,7 +1244,7 @@ fn golden_regeneration_hints_do_not_use_remote_offload() {
 
 #[test]
 fn agents_md_does_not_recommend_remote_offload() {
-    let agents_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("AGENTS.md");
+    let agents_path = ws_paths_1c::workspace_root().join("AGENTS.md");
     let contents = fs::read_to_string(&agents_path)
         .unwrap_or_else(|err| panic!("read {}: {err}", agents_path.display()));
     // Development is local-only: cargo runs directly or via
@@ -2599,7 +2604,7 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
         Connection as FrankenConnection, compat::ConnectionExt, compat::RowExt, params,
     };
 
-    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let fixture_dir = ws_paths_1c::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("search_demo_data");

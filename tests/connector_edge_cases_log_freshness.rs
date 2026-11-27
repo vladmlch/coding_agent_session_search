@@ -8,8 +8,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+mod ws_paths_1b;
+
 fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1b::workspace_root()
 }
 
 fn log_path() -> PathBuf {

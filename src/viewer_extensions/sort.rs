@@ -27,35 +27,7 @@
 //! canonical provenance, `identity_conflict`/`provenance_conflict`
 //! refusals), so a persisted tie key can never diverge from the overlay
 //! the read path verifies at emit time.
-#[path = "../viewer_bridge/extra.rs"]
-mod extra;
-// The include shares the WHOLE resolver verbatim — the reverse-direction
-// half (public-id → conversation_id) is unused on this lane, which is the
-// price of never forking the evidence rules.
-#[allow(dead_code)]
-#[path = "../viewer_bridge/identity.rs"]
-mod identity;
-
-/// Minimal refusal envelope for the shared `identity` module's
-/// `super::protocol::refuse` calls — mirrors
-/// `viewer_bridge::protocol::Refusal` so kind strings downcast identically
-/// inside this crate.
-mod protocol {
-    #[derive(Debug, thiserror::Error)]
-    #[error("{message}")]
-    pub struct Refusal {
-        pub kind: &'static str,
-        pub message: String,
-    }
-
-    pub fn refuse(kind: &'static str, message: impl Into<String>) -> anyhow::Error {
-        Refusal {
-            kind,
-            message: message.into(),
-        }
-        .into()
-    }
-}
+use super::identity::{self, Refusal};
 
 use anyhow::{Context, Result};
 use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
@@ -80,7 +52,7 @@ pub enum SortTie {
 fn resolve_sort_tie(connection: &Connection, conversation_id: i64) -> Result<SortTie> {
     match identity::resolve_public_id(connection, conversation_id) {
         Ok(verified) => Ok(SortTie::Resolved(verified.public_id)),
-        Err(error) => match error.downcast_ref::<protocol::Refusal>() {
+        Err(error) => match error.downcast_ref::<Refusal>() {
             Some(refusal) => Ok(SortTie::Refused(refusal.kind)),
             None => Err(error),
         },

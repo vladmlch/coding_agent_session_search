@@ -12,6 +12,7 @@ use tempfile::TempDir;
 
 #[test]
 fn claude_parses_project_fixture() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     // Setup isolated environment with "claude" in path to satisfy detector
     let tmp = tempfile::TempDir::new().unwrap();
     let fixture_src =
@@ -58,6 +59,7 @@ fn claude_parses_project_fixture() {
 
 /// Helper to create a Claude-style temp directory
 fn create_claude_temp() -> TempDir {
+    coding_agent_search::ensure_runtime_hooks_registered();
     TempDir::new().unwrap()
 }
 
@@ -1132,6 +1134,7 @@ fn connector_respects_since_ts_filter() {
 /// which FAD keeps as a fallback when `aiTitle` is absent.
 #[test]
 fn generated_title_survives_fad_ingest() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     const GENERATED_MARKER: &str = "P2A-GENERATED-TITLE-PROBE";
     const LEGACY_MARKER: &str = "P2A-LEGACY-TITLE-PROBE";
 

@@ -317,6 +317,110 @@ fn validate_mode(value: &str) -> Result<String, String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum SearchMaintenanceMode {
+    Index,
+    WatchStartup,
+    Watch,
+    WatchOnce,
+}
+
+impl SearchMaintenanceMode {
+    pub fn as_lock_value(self) -> &'static str {
+        match self {
+            Self::Index => "index",
+            Self::WatchStartup => "watch_startup",
+            Self::Watch => "watch",
+            Self::WatchOnce => "watch_once",
+        }
+    }
+
+    pub fn parse_lock_value(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "index" => Some(Self::Index),
+            "watch_startup" => Some(Self::WatchStartup),
+            "watch" => Some(Self::Watch),
+            "watch_once" => Some(Self::WatchOnce),
+            _ => None,
+        }
+    }
+
+    pub fn watch_active(self) -> bool {
+        matches!(self, Self::WatchStartup | Self::Watch)
+    }
+
+    pub fn rebuild_active(self) -> bool {
+        !matches!(self, Self::Watch)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum SearchMaintenanceJobKind {
+    LexicalRefresh,
+    SemanticAcquire,
+    SemanticRebuild,
+    AnalyticsRebuild,
+}
+
+impl SearchMaintenanceJobKind {
+    pub fn as_lock_value(self) -> &'static str {
+        match self {
+            Self::LexicalRefresh => "lexical_refresh",
+            Self::SemanticAcquire => "semantic_acquire",
+            Self::SemanticRebuild => "semantic_rebuild",
+            Self::AnalyticsRebuild => "analytics_rebuild",
+        }
+    }
+
+    pub fn parse_lock_value(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "lexical_refresh" => Some(Self::LexicalRefresh),
+            "semantic_acquire" => Some(Self::SemanticAcquire),
+            "semantic_rebuild" => Some(Self::SemanticRebuild),
+            "analytics_rebuild" => Some(Self::AnalyticsRebuild),
+            _ => None,
+        }
+    }
+}
+
+/// The command that lists quarantined conversations. `cass diag --quarantine`
+/// inventories derived-asset quarantine (seed bundles, lexical generations)
+/// and never names a quarantined conversation.
+pub const QUARANTINE_LIST_COMMAND: &str = "cass quarantine list --json";
+
+pub const HASH_VECTOR_SPACE_REVISION: &str = "hash-fnv1a-modular-v1:passages-v2";
+
+/// FSVI vector-space revision for the native MiniLM implementation.
+///
+/// The model revision alone is insufficient: pre-#308 ONNX and current native
+/// inference can share an embedder ID and dimension without producing an
+/// identical vector space. Persisting the engine generation prevents those
+/// same-shape vectors from being mixed silently. The CASS passage suffix also
+/// fences prefix-only indexes from the current bounded input representation;
+/// the model weights and their artifact revision are unchanged.
+pub const MINILM_VECTOR_SPACE_REVISION: &str =
+    "native-minilm-v1:c9745ed1d9f207416be6d2e6f8de32d1f16199bf:passages-v2";
+
+/// FSVI vector-space revision for the opt-in multilingual native model.
+///
+/// Includes the frozen Frankensearch artifact/execution-manifest fingerprint
+/// and the CASS input contract, not merely the shared 384-dimensional geometry.
+pub const MULTILINGUAL_MINILM_VECTOR_SPACE_REVISION: &str = "native-multilingual-minilm-v1:59160d9e43d396d05b4139c99f9feb7922da14868587fca7e33d379821a41405:passages-v2";
+
+/// Return the exact vector-space revision that is safe for a current embedder.
+/// ID and dimension alone are insufficient because inference-engine changes
+/// can preserve both while changing vector values. Identities produced by the
+/// removed external HTTP embedder intentionally have no current revision:
+/// legacy external spaces are reported, never loaded or served.
+pub fn expected_vector_space_revision(embedder_id: &str) -> Option<&'static str> {
+    match embedder_id {
+        "minilm-384" => Some(MINILM_VECTOR_SPACE_REVISION),
+        "multilingual-minilm-384" => Some(MULTILINGUAL_MINILM_VECTOR_SPACE_REVISION),
+        "fnv1a-384" => Some(HASH_VECTOR_SPACE_REVISION),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

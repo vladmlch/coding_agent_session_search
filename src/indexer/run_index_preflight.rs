@@ -211,7 +211,10 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     // verified raw mirror, rather than to an external sqlite3 '.recover'.
     if !dotenvy::var("CASS_INDEX_ALLOW_MALFORMED_DB").is_ok_and(|v| v == "1")
         && let Some(detail) =
-            crate::bounded_canonical_db_corruption_probe(&opts.db_path, "index-preflight")
+            crate::storage::sqlite::open_and_locks::bounded_canonical_db_corruption_probe(
+                &opts.db_path,
+                "index-preflight",
+            )
     {
         return Err(canonical_archive_unhealthy_for_index_error(
             &opts.db_path,

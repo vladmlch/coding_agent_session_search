@@ -20,7 +20,7 @@ fn discovered(path: &Path, slug: &str) -> DiscoveredSourceFile {
 fn saved_row(source: &DiscoveredSourceFile, dependencies: Vec<serde_json::Value>) -> String {
     serde_json::json!({
         "primary": source_file_observation(&source.source_path).unwrap(),
-        "producer_contract": env!("CASS_SOURCE_INGEST_CONTRACT"),
+        "producer_contract": crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract,
         "dependencies": dependencies,
     })
     .to_string()
@@ -565,7 +565,12 @@ fn gh512_incumbent_source_ledger_matches(observation: &str, source: &DiscoveredS
     let Ok(saved) = serde_json::from_str::<serde_json::Value>(observation) else {
         return false;
     };
-    if saved["producer_contract"].as_str() != Some(env!("CASS_SOURCE_INGEST_CONTRACT")) {
+    if saved["producer_contract"].as_str()
+        != Some(
+            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+                .ingest_contract,
+        )
+    {
         return false;
     }
     if saved["primary"] != source_file_observation(&source.source_path).unwrap_or_default() {
@@ -619,6 +624,9 @@ impl Connector for LedgerDiscoveryCounter {
 
 #[test]
 fn gh512_real_connectors_complete_during_growth_without_redundant_discovery() -> Result<()> {
+    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+    );
     let factories: Vec<_> = crate::connectors::get_connector_factories()
         .into_iter()
         .filter(|(name, _)| matches!(*name, "claude" | "codex"))
@@ -730,7 +738,9 @@ fn gh512_real_connectors_complete_during_growth_without_redundant_discovery() ->
             },
         )?;
         sender.flush()?;
-        let reusable = env!("CASS_SOURCE_INGEST_REUSE") == "true";
+        let reusable =
+            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+                .ingest_reuse;
         assert_eq!(rescanned, usize::from(!reusable), "{name}");
         assert_eq!(connector.discoveries.get(), 0);
         if reusable {

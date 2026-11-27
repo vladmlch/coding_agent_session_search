@@ -4,6 +4,8 @@
 //! This module provides re-export stubs plus the CASS-specific wrappers used by
 //! every connector factory exposed to the indexer.
 
+pub mod host_responsiveness;
+pub mod packet_bridge;
 pub(crate) mod source_dependencies;
 
 use std::fs;

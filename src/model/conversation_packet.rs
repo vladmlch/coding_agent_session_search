@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{borrow::Cow, ops::Range, path::Path};
 
-use crate::connectors::{NormalizedConversation, NormalizedMessage, NormalizedSnippet};
 use crate::model::types::{Conversation, Message, MessageRole, Snippet};
 
 pub const CONVERSATION_PACKET_VERSION: u32 = 1;
@@ -326,36 +325,6 @@ impl ConversationPacketTextSlab {
 }
 
 impl ConversationPacket {
-    pub fn from_normalized_conversation(
-        conversation: &NormalizedConversation,
-        provenance: ConversationPacketProvenance,
-    ) -> Self {
-        let messages = conversation
-            .messages
-            .iter()
-            .map(packet_message_from_normalized)
-            .collect::<Vec<_>>();
-        let payload = ConversationPacketPayload {
-            identity: ConversationPacketIdentity {
-                conversation_id: None,
-                agent_slug: conversation.agent_slug.clone(),
-                external_id: conversation.external_id.clone(),
-                workspace: conversation.workspace.as_deref().map(path_to_packet_string),
-                source_path: path_to_packet_string(&conversation.source_path),
-                title: conversation.title.clone(),
-            },
-            provenance,
-            timestamps: timestamps_from_parts(
-                conversation.started_at,
-                conversation.ended_at,
-                &messages,
-            ),
-            metadata_json: conversation.metadata.clone(),
-            messages,
-        };
-        Self::from_payload(payload, ConversationPacketBuilder::RawConnectorScan)
-    }
-
     pub fn from_canonical_replay(
         conversation: &Conversation,
         provenance: ConversationPacketProvenance,
@@ -460,7 +429,8 @@ impl ConversationPacket {
         }
     }
 
-    fn from_payload(
+    #[doc(hidden)]
+    pub fn from_payload(
         payload: ConversationPacketPayload,
         builder: ConversationPacketBuilder,
     ) -> Self {
@@ -522,11 +492,13 @@ fn packet_total_content_bytes(messages: &[ConversationPacketMessage]) -> usize {
         .sum::<usize>()
 }
 
-fn path_to_packet_string(path: &Path) -> String {
+#[doc(hidden)]
+pub fn path_to_packet_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn normalize_role(role: &str) -> String {
+#[doc(hidden)]
+pub fn normalize_role(role: &str) -> String {
     match role.trim().to_ascii_lowercase().as_str() {
         "agent" | "assistant" => "assistant".to_string(),
         "user" => "user".to_string(),
@@ -543,23 +515,6 @@ fn canonical_role(role: &MessageRole) -> String {
         MessageRole::Tool => "tool".to_string(),
         MessageRole::System => "system".to_string(),
         MessageRole::Other(other) => normalize_role(other),
-    }
-}
-
-fn packet_message_from_normalized(message: &NormalizedMessage) -> ConversationPacketMessage {
-    ConversationPacketMessage {
-        message_id: None,
-        idx: message.idx,
-        role: normalize_role(&message.role),
-        author: message.author.clone(),
-        created_at: message.created_at,
-        content: message.content.clone(),
-        extra_json: message.extra.clone(),
-        snippets: message
-            .snippets
-            .iter()
-            .map(packet_snippet_from_normalized)
-            .collect(),
     }
 }
 
@@ -597,16 +552,6 @@ fn packet_message_from_canonical_owned(message: Message) -> ConversationPacketMe
     }
 }
 
-fn packet_snippet_from_normalized(snippet: &NormalizedSnippet) -> ConversationPacketSnippet {
-    ConversationPacketSnippet {
-        file_path: snippet.file_path.as_deref().map(path_to_packet_string),
-        start_line: snippet.start_line,
-        end_line: snippet.end_line,
-        language: snippet.language.clone(),
-        snippet_text: snippet.snippet_text.clone(),
-    }
-}
-
 fn packet_snippet_from_canonical(snippet: &Snippet) -> ConversationPacketSnippet {
     ConversationPacketSnippet {
         file_path: snippet.file_path.as_deref().map(path_to_packet_string),
@@ -627,7 +572,8 @@ fn packet_snippet_from_canonical_owned(snippet: Snippet) -> ConversationPacketSn
     }
 }
 
-fn timestamps_from_parts(
+#[doc(hidden)]
+pub fn timestamps_from_parts(
     started_at: Option<i64>,
     ended_at: Option<i64>,
     messages: &[ConversationPacketMessage],
@@ -837,51 +783,9 @@ fn update_usize(hasher: &mut blake3::Hasher, label: &str, value: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connectors::{NormalizedConversation, NormalizedMessage, NormalizedSnippet};
     use crate::model::types::{Conversation, Message, MessageRole, Snippet};
     use serde_json::json;
     use std::path::PathBuf;
-
-    fn raw_conversation() -> NormalizedConversation {
-        NormalizedConversation {
-            agent_slug: "codex".to_string(),
-            external_id: Some("session-1".to_string()),
-            title: Some("Packet contract".to_string()),
-            workspace: Some(PathBuf::from("/work/cass")),
-            source_path: PathBuf::from("/work/cass/.codex/session.jsonl"),
-            started_at: Some(1_700_000_000_000),
-            ended_at: Some(1_700_000_010_000),
-            metadata: json!({"model": "gpt-5", "temperature": 0}),
-            messages: vec![
-                NormalizedMessage {
-                    idx: 0,
-                    role: "user".to_string(),
-                    author: Some("human".to_string()),
-                    created_at: Some(1_700_000_000_000),
-                    content: "build the packet".to_string(),
-                    extra: json!({"turn": 1}),
-                    snippets: vec![NormalizedSnippet {
-                        file_path: Some(PathBuf::from("src/main.rs")),
-                        start_line: Some(10),
-                        end_line: Some(12),
-                        language: Some("rust".to_string()),
-                        snippet_text: Some("fn main() {}".to_string()),
-                    }],
-                    invocations: Vec::new(),
-                },
-                NormalizedMessage {
-                    idx: 1,
-                    role: "assistant".to_string(),
-                    author: None,
-                    created_at: Some(1_700_000_001_000),
-                    content: "packet built".to_string(),
-                    extra: json!({}),
-                    snippets: Vec::new(),
-                    invocations: Vec::new(),
-                },
-            ],
-        }
-    }
 
     fn canonical_conversation() -> Conversation {
         Conversation {
@@ -930,25 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_and_canonical_builders_produce_equivalent_packet_semantics() {
-        let provenance = ConversationPacketProvenance::local();
-        let raw = ConversationPacket::from_normalized_conversation(
-            &raw_conversation(),
-            provenance.clone(),
-        );
-        let canonical =
-            ConversationPacket::from_canonical_replay(&canonical_conversation(), provenance);
-
-        assert_eq!(raw.version, CONVERSATION_PACKET_VERSION);
-        assert!(raw.semantically_equivalent_to(&canonical));
-        assert_eq!(raw.payload.messages[1].role, "assistant");
-        assert_eq!(canonical.payload.messages[1].role, "assistant");
-        assert_eq!(raw.projections.lexical.message_indices, vec![0, 1]);
-        assert_eq!(raw.projections.analytics.user_messages, 1);
-        assert_eq!(raw.projections.analytics.assistant_messages, 1);
-    }
-
-    #[test]
     fn owned_canonical_replay_is_equivalent_to_borrowed_replay() {
         let conversation = canonical_conversation();
         let first_content_ptr = conversation.messages[0].content.as_ptr();
@@ -962,64 +847,6 @@ mod tests {
             first_content_ptr,
             "the owned replay path must move transcript storage instead of cloning it"
         );
-    }
-
-    #[test]
-    fn packet_hash_changes_when_normalized_content_changes() {
-        let mut changed = raw_conversation();
-        changed.messages[1].content = "packet changed".to_string();
-
-        let original = ConversationPacket::from_normalized_conversation(
-            &raw_conversation(),
-            ConversationPacketProvenance::local(),
-        );
-        let changed = ConversationPacket::from_normalized_conversation(
-            &changed,
-            ConversationPacketProvenance::local(),
-        );
-
-        assert_ne!(original.hashes.semantic_hash, changed.hashes.semantic_hash);
-        assert_ne!(original.hashes.message_hash, changed.hashes.message_hash);
-    }
-
-    #[test]
-    fn semantic_hash_ignores_raw_mirror_bookkeeping_only() {
-        let packet = |conversation: &NormalizedConversation| {
-            ConversationPacket::from_normalized_conversation(
-                conversation,
-                ConversationPacketProvenance::local(),
-            )
-        };
-        let mut base = raw_conversation();
-        base.metadata = json!({"model": "m", "cass": {"origin": {"source_id": "local"}}});
-        let mut captured = base.clone();
-        captured.metadata["cass"]["raw_mirror"] =
-            json!({"manifest_id": "a", "captured_at_ms": 1, "source_mtime_ms": 2});
-        let mut recaptured = base.clone();
-        recaptured.metadata["cass"]["raw_mirror"] =
-            json!({"manifest_id": "b", "captured_at_ms": 99, "chunk_count": 4});
-
-        // Absent, captured and re-captured pointers hash identically.
-        let base_hash = packet(&base).hashes.semantic_hash;
-        assert_eq!(packet(&captured).hashes.semantic_hash, base_hash);
-        assert_eq!(packet(&recaptured).hashes.semantic_hash, base_hash);
-        // The packet itself still carries the pointer unchanged.
-        assert_eq!(
-            packet(&captured).payload.metadata_json["cass"]["raw_mirror"]["manifest_id"],
-            json!("a")
-        );
-
-        // Every other metadata change still moves the hash, including a
-        // sibling under `cass` and a top-level `raw_mirror` key.
-        let mut origin_changed = captured.clone();
-        origin_changed.metadata["cass"]["origin"]["source_id"] = json!("other");
-        assert_ne!(packet(&origin_changed).hashes.semantic_hash, base_hash);
-        let mut top_level = base.clone();
-        top_level.metadata["raw_mirror"] = json!({"manifest_id": "a"});
-        assert_ne!(packet(&top_level).hashes.semantic_hash, base_hash);
-        let mut model_changed = captured;
-        model_changed.metadata["model"] = json!("other");
-        assert_ne!(packet(&model_changed).hashes.semantic_hash, base_hash);
     }
 
     #[test]

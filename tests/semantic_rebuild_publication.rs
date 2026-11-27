@@ -83,6 +83,7 @@ fn assert_no_scratch(parent: &Path) -> Result<()> {
 #[cfg(unix)]
 fn same_generation_publication_is_not_overwritten_by_a_full_rebuild() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -113,6 +114,7 @@ fn same_generation_publication_is_not_overwritten_by_a_full_rebuild() -> Result<
 #[test]
 fn same_generation_in_place_change_is_not_overwritten_by_a_full_rebuild() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -147,6 +149,7 @@ fn same_generation_in_place_change_is_not_overwritten_by_a_full_rebuild() -> Res
 #[test]
 fn rejected_public_replacements_preserve_bytes_and_fresh_reader_results() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -191,6 +194,7 @@ fn rejected_public_replacements_preserve_bytes_and_fresh_reader_results() -> Res
 #[test]
 fn valid_full_rebuild_refuses_acknowledged_wal_without_consuming_input() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     let mut writer = indexer.build_and_save_index(original, temp.path())?;
@@ -222,6 +226,7 @@ fn valid_full_rebuild_refuses_acknowledged_wal_without_consuming_input() -> Resu
 #[test]
 fn rejected_initial_build_never_installs_its_valid_prefix() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let mut input = rows(&indexer, 1)?;
     input[1].embedding[0] = f32::NAN;
@@ -237,6 +242,7 @@ fn rejected_initial_build_never_installs_its_valid_prefix() -> Result<()> {
 fn replacement_advances_generation_and_matches_an_independent_fresh_build() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let reference = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -265,6 +271,7 @@ fn replacement_advances_generation_and_matches_an_independent_fresh_build() -> R
 #[test]
 fn a_retained_reader_keeps_its_original_generation_during_public_rebuild() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -280,6 +287,7 @@ fn a_retained_reader_keeps_its_original_generation_during_public_rebuild() -> Re
 #[test]
 fn generation_wrap_uses_the_native_nonzero_successor() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let path = vector_index_path(temp.path(), indexer.embedder_id());
     fs::create_dir_all(path.parent().unwrap())?;
@@ -292,6 +300,7 @@ fn generation_wrap_uses_the_native_nonzero_successor() -> Result<()> {
 #[test]
 fn empty_full_replacement_publishes_an_empty_successor() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -309,6 +318,7 @@ fn empty_full_replacement_publishes_an_empty_successor() -> Result<()> {
 fn f16_signal_loss_or_overflow_cannot_replace_a_usable_generation() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let control = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -345,6 +355,7 @@ fn f16_signal_loss_or_overflow_cannot_replace_a_usable_generation() -> Result<()
 #[test]
 fn a_competing_publication_during_input_iteration_is_not_overwritten() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -376,6 +387,7 @@ fn a_competing_publication_during_input_iteration_is_not_overwritten() -> Result
 #[test]
 fn wal_created_during_input_iteration_survives_publication_refusal() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -410,6 +422,7 @@ fn wal_created_during_input_iteration_survives_publication_refusal() -> Result<(
 #[test]
 fn an_orphan_wal_entry_is_not_a_clean_initial_build() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let path = vector_index_path(temp.path(), indexer.embedder_id());
     fs::create_dir_all(path.parent().unwrap())?;
@@ -428,6 +441,7 @@ fn an_orphan_wal_entry_is_not_a_clean_initial_build() -> Result<()> {
 #[test]
 fn a_corrupt_destination_is_preserved_and_not_reclassified_as_missing() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let path = vector_index_path(temp.path(), indexer.embedder_id());
     fs::create_dir_all(path.parent().unwrap())?;
@@ -447,6 +461,7 @@ fn a_corrupt_destination_is_preserved_and_not_reclassified_as_missing() -> Resul
 #[test]
 fn a_symlink_destination_does_not_authorize_replacing_its_target() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let target = temp.path().join("unrelated.fsvi");
     write_generation(&target, &rows(&indexer, 1)?, 1)?;
@@ -467,6 +482,7 @@ fn a_symlink_destination_does_not_authorize_replacing_its_target() -> Result<()>
 #[test]
 fn recovery_parity_cannot_silently_remain_attached_to_a_replacement() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -534,7 +550,8 @@ fn retained_log(path: &Path, rows: &[EmbeddedMessage]) -> Result<()> {
 fn canonical_full_replacement_supersedes_retained_wal_at_generation_wrap() -> Result<()> {
     for generation in [1, 254, 255] {
         let temp = tempfile::tempdir()?;
-        let indexer = SemanticIndexer::new("hash", None)?;
+        coding_agent_search::ensure_runtime_hooks_registered();
+    let indexer = SemanticIndexer::new("hash", None)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;
         let original = rows(&indexer, 1)?;
@@ -572,6 +589,7 @@ fn canonical_full_replacement_supersedes_retained_wal_at_generation_wrap() -> Re
 #[test]
 fn canonical_delta_preserves_latest_wal_and_unchanged_vectors_without_resurrection() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -610,6 +628,7 @@ fn canonical_delta_preserves_latest_wal_and_unchanged_vectors_without_resurrecti
 #[test]
 fn canonical_missing_coverage_and_invalid_deltas_preserve_main_and_wal_bytes() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -662,6 +681,7 @@ fn canonical_missing_coverage_and_invalid_deltas_preserve_main_and_wal_bytes() -
 #[test]
 fn canonical_persisted_signal_loss_cannot_replace_a_usable_main_and_wal() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -692,6 +712,7 @@ fn canonical_persisted_signal_loss_cannot_replace_a_usable_main_and_wal() -> Res
 #[test]
 fn canonical_partial_reuse_preserves_full_precision_storage() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let path = vector_index_path(temp.path(), indexer.embedder_id());
     fs::create_dir_all(path.parent().unwrap())?;
@@ -740,6 +761,7 @@ fn canonical_partial_reuse_preserves_full_precision_storage() -> Result<()> {
 #[test]
 fn canonical_foreign_vector_space_requires_all_replacement_vectors() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let path = vector_index_path(temp.path(), indexer.embedder_id());
     fs::create_dir_all(path.parent().unwrap())?;
@@ -790,6 +812,7 @@ fn canonical_foreign_vector_space_requires_all_replacement_vectors() -> Result<(
 #[test]
 fn canonical_empty_set_retires_main_and_wal_membership() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     drop(indexer.build_and_save_index(rows(&indexer, 1)?, temp.path())?);
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -810,6 +833,7 @@ fn canonical_empty_set_retires_main_and_wal_membership() -> Result<()> {
 #[test]
 fn canonical_reconciliation_refuses_a_live_writer_and_unowned_recovery_parity() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -853,6 +877,7 @@ fn canonical_reconciliation_refuses_a_live_writer_and_unowned_recovery_parity() 
 #[test]
 fn canonical_unchanged_reconciliation_retains_the_same_inode_and_shared_readers() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     let path = vector_index_path(temp.path(), indexer.embedder_id());
@@ -893,6 +918,7 @@ fn canonical_unchanged_reconciliation_retains_the_same_inode_and_shared_readers(
 fn canonical_unchanged_reconciliation_preserves_recovery_parity_without_retiring_it() -> Result<()>
 {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -942,6 +968,7 @@ fn canonical_unchanged_reconciliation_preserves_recovery_parity_without_retiring
 fn canonical_empty_delta_does_not_skip_same_count_identity_changes_or_missing_coverage()
 -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -978,6 +1005,7 @@ fn canonical_empty_delta_does_not_skip_same_count_identity_changes_or_missing_co
 #[test]
 fn canonical_empty_delta_still_removes_deleted_documents() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -1005,6 +1033,7 @@ fn canonical_empty_delta_still_removes_deleted_documents() -> Result<()> {
 #[test]
 fn canonical_supplied_same_identity_vector_is_not_discarded_as_a_noop() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);
@@ -1032,7 +1061,8 @@ fn canonical_unchanged_reconciliation_admits_empty_and_f32_generations_without_r
 -> Result<()> {
     for empty in [false, true] {
         let temp = tempfile::tempdir()?;
-        let indexer = SemanticIndexer::new("hash", None)?;
+        coding_agent_search::ensure_runtime_hooks_registered();
+    let indexer = SemanticIndexer::new("hash", None)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;
         let mut original = if empty {
@@ -1077,7 +1107,8 @@ fn canonical_unchanged_reconciliation_admits_empty_and_f32_generations_without_r
 fn canonical_unchanged_admission_rejects_unusable_persisted_vectors() -> Result<()> {
     for value in [1e-20f32, 70_000.0f32] {
         let temp = tempfile::tempdir()?;
-        let indexer = SemanticIndexer::new("hash", None)?;
+        coding_agent_search::ensure_runtime_hooks_registered();
+    let indexer = SemanticIndexer::new("hash", None)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;
         let mut original = rows(&indexer, 1)?;
@@ -1111,7 +1142,8 @@ fn canonical_unchanged_admission_rejects_unusable_persisted_vectors() -> Result<
 fn canonical_unchanged_admission_requires_unique_rows_matching_the_current_space() -> Result<()> {
     for foreign in [false, true] {
         let temp = tempfile::tempdir()?;
-        let indexer = SemanticIndexer::new("hash", None)?;
+        coding_agent_search::ensure_runtime_hooks_registered();
+    let indexer = SemanticIndexer::new("hash", None)?;
         let original = rows(&indexer, 1)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;
@@ -1157,6 +1189,7 @@ fn canonical_unchanged_admission_requires_unique_rows_matching_the_current_space
 #[test]
 fn canonical_unchanged_admission_refuses_live_writers_and_absent_authority() -> Result<()> {
     let temp = tempfile::tempdir()?;
+    coding_agent_search::ensure_runtime_hooks_registered();
     let indexer = SemanticIndexer::new("hash", None)?;
     let original = rows(&indexer, 1)?;
     drop(indexer.build_and_save_index(original.clone(), temp.path())?);

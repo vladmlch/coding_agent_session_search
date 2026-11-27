@@ -14,9 +14,11 @@ use coding_agent_search::connectors::{
 };
 use std::path::PathBuf;
 
+mod ws_paths_1c;
+
 /// Load a golden fixture file from tests/fixtures/golden/
 fn load_golden(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1c::workspace_root()
         .join("tests/fixtures/golden")
         .join(name);
     std::fs::read_to_string(&path)

@@ -4,6 +4,7 @@
 //! and export pipeline without requiring interactive input.
 
 mod util;
+mod ws_paths_1c;
 
 use coding_agent_search::pages::summary::ExclusionSet;
 use coding_agent_search::pages::wizard::WizardState;
@@ -295,7 +296,7 @@ fn query_i64s(conn: &FrankenConnection, sql: &str) -> Vec<i64> {
 
 /// Returns the path to the fixture database
 fn fixture_db_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("search_demo_data")

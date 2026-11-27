@@ -425,10 +425,7 @@ fn plan_summary(
     )
 }
 
-/// The command that lists quarantined conversations. `cass diag --quarantine`
-/// inventories derived-asset quarantine (seed bundles, lexical generations)
-/// and never names a quarantined conversation.
-pub(crate) const QUARANTINE_LIST_COMMAND: &str = "cass quarantine list --json";
+pub(crate) use crate::search_defaults::QUARANTINE_LIST_COMMAND;
 
 /// The exact command that applies, or resumes, a pass under `config`. Plain
 /// `cass index` is not equivalent: it rescans the whole archive and retries

@@ -4,8 +4,13 @@ use anyhow::{Context, Result, bail};
 use frankensearch::quill::cass::CassDocument;
 
 use crate::franken_sync::compat::{ParamValue, RowExt};
-use crate::search::quill_bridge::QuillCassIndex;
 use crate::viewer_extensions::facts::FactsDb;
+
+/// Index writer sink receiving staged search-region Quill documents.
+pub trait RegionDocSink {
+    /// Upsert one batch of search-region documents under their stable identities.
+    fn upsert_cass_documents(&mut self, documents: &[CassDocument]) -> Result<()>;
+}
 
 use super::derive_helpers::bounded;
 use super::queries::regions_for_conversation;
@@ -303,7 +308,7 @@ pub struct RegionDocStamp {
 /// absent one — which the search lane treats as honest incomplete
 /// evidence.
 pub fn stage_region_docs(
-    index: &mut QuillCassIndex,
+    index: &mut impl RegionDocSink,
     db: &impl FactsDb,
     conversation_id: i64,
 ) -> Result<(usize, Option<RegionDocStamp>)> {

@@ -9,6 +9,13 @@ pub(crate) mod candidate_staging_core;
 pub(crate) mod config_exclusion_and_semantic;
 pub(crate) mod coverage_and_authority;
 pub(crate) mod diag_and_onboarding_helpers;
+pub(crate) mod doctor_contracts;
+pub(crate) mod doctor_forensics;
+pub(crate) mod doctor_inventory_types;
+pub(crate) mod doctor_policy;
+pub(crate) mod doctor_run;
+pub(crate) mod doctor_storage_pressure;
+pub(crate) mod doctor_taxonomy;
 pub(crate) mod fs_mutation_executor;
 pub(crate) mod fs_mutation_guards;
 pub(crate) mod locks_and_heartbeat;
@@ -28,7 +35,9 @@ pub(crate) use {
     archive_export::*, archive_scan_normalize::*, backups::*, baseline::*,
     candidate_promotion_apply::*, candidate_promotion_prep::*, candidate_reconstruct::*,
     candidate_staging_core::*, config_exclusion_and_semantic::*, coverage_and_authority::*,
-    diag_and_onboarding_helpers::*, fs_mutation_executor::*, fs_mutation_guards::*,
+    diag_and_onboarding_helpers::*, doctor_contracts::*, doctor_forensics::*,
+    doctor_inventory_types::*, doctor_policy::*, doctor_run::*, doctor_storage_pressure::*,
+    doctor_taxonomy::*, fs_mutation_executor::*, fs_mutation_guards::*,
     locks_and_heartbeat::*, plan_and_events::*, post_repair_probes::*, quarantine_and_cleanup::*,
     raw_mirror_amplification::*, raw_mirror_backfill::*, raw_mirror_verify::*,
     repair_plan_and_failure_markers::*, runs_and_subcommands::*, source_inventory::*,

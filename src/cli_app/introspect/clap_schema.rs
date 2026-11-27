@@ -393,9 +393,10 @@ pub(crate) fn run_config_based_export(
 
 /// Show API and contract versions (robot-friendly)
 pub(crate) fn run_api_version(output_format: Option<RobotFormat>) -> CliResult<()> {
+    let meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
     let payload = serde_json::json!({
         "crate_version": env!("CARGO_PKG_VERSION"),
-        "build_commit": option_env!("CASS_BUILD_COMMIT").unwrap_or("unknown"),
+        "build_commit": meta.build_commit.unwrap_or("unknown"),
         "api_version": 1,
         "contract_version": CONTRACT_VERSION,
     });

@@ -41,7 +41,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use super::{DoctorCheck, DoctorLexicalWorkspaceReport, DoctorRecoveryEvidence, DoctorRunState};
 
 #[allow(clippy::collapsible_if, clippy::collapsible_else_if)]
-pub(super) fn collect_doctor_recovery_evidence(
+pub(crate) fn collect_doctor_recovery_evidence(
     state: DoctorRunState,
     lexical_ws: DoctorLexicalWorkspaceReport,
 ) -> (

@@ -34,6 +34,7 @@ use util::e2e_log::PhaseTracker;
 // =============================================================================
 
 fn tracker_for(test_name: &str) -> PhaseTracker {
+    coding_agent_search::ensure_runtime_hooks_registered();
     PhaseTracker::new("e2e_error_recovery", test_name)
 }
 
@@ -251,6 +252,7 @@ fn test_corrupted_database_fresh_creation() {
 /// Test that corrupted tantivy index triggers rebuild.
 #[test]
 fn test_corrupted_index_triggers_rebuild() {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let tracker = tracker_for("test_corrupted_index_triggers_rebuild");
     let temp = TempDir::new().expect("create temp dir");
     let data_dir = temp.path().to_path_buf();

@@ -11,7 +11,7 @@ use crate::franken_sync::compat::RowExt;
 use crate::indexer::{
     LexicalPopulationStrategy, lexical_population_strategy_requires_inline_tantivy,
 };
-use crate::model::types::{Agent, AgentKind, Conversation, MessageRole};
+use crate::model::types::{Agent, AgentKind, Conversation};
 use crate::search::tantivy::TantivyIndex;
 use crate::storage::sqlite::{FrankenStorage, IndexingCache};
 
@@ -374,15 +374,8 @@ pub(super) fn persist_conversations_batched_whole(
     Ok(batch_outcome)
 }
 
-pub(super) fn map_role(role: &str) -> MessageRole {
-    match role {
-        "user" => MessageRole::User,
-        "assistant" | "agent" => MessageRole::Agent,
-        "tool" => MessageRole::Tool,
-        "system" => MessageRole::System,
-        other => MessageRole::Other(other.to_string()),
-    }
-}
+#[allow(unused_imports)]
+pub(super) use crate::source_onboarding::conv_map::map_role;
 
 /// Cap on writer contention retries (`writer_retry_limit`).
 /// Worst-case wall time = max_retries * (256 ms backoff + 256 ms jitter) ≈ ~16 s at 32 retries.
