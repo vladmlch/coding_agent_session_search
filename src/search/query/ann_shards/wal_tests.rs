@@ -234,8 +234,9 @@ fn latest_wal_replacement_supersedes_a_better_old_graph_vector() {
     let (actual, _, stats) = set
         .search_with_exact_fallback(&paired_ctx, &[1.0, 0.0], 2, None)
         .unwrap();
+    assert_eq!(actual.len(), 2);
     assert_eq!(actual[0].message_id, 2);
-    assert_eq!(signature(&actual), signature(&expected));
+    assert_eq!(signature(&actual), signature(&expected[..2]));
     assert_eq!(
         actual.iter().find(|hit| hit.message_id == 1).unwrap().score,
         0.0
@@ -498,7 +499,8 @@ fn wal_chunk_replacement_keeps_unmodified_chunks_of_the_same_message() {
     let (hits, _, stats) = set
         .search_with_exact_fallback(&paired_ctx, &[1.0, 0.0], 2, None)
         .unwrap();
-    assert_eq!(signature(&hits), signature(&expected));
+    assert_eq!(hits.len(), 2);
+    assert_eq!(signature(&hits), signature(&expected[..2]));
     assert_eq!(
         hits.iter().map(|hit| hit.message_id).collect::<Vec<_>>(),
         vec![1, 2]
