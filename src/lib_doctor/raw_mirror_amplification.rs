@@ -788,11 +788,7 @@ pub(crate) fn collect_doctor_raw_mirror_report_with_thresholds_and_mode(
 
     for (path, is_symlink) in manifest_entries {
         let report_entry = if is_symlink {
-            doctor_raw_mirror_invalid_manifest_report(
-                data_dir,
-                &path,
-                "manifest path is a symlink",
-            )
+            doctor_raw_mirror_invalid_manifest_report(data_dir, &path, "manifest path is a symlink")
         } else if std::fs::symlink_metadata(&path)
             .is_ok_and(|metadata| metadata.len() > DOCTOR_RAW_MIRROR_MANIFEST_MAX_BYTES)
         {

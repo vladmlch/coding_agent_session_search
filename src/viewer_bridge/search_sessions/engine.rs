@@ -407,7 +407,9 @@ pub fn search_sessions(
                 // reason, and this one names the violation.
                 if result.reasons.is_empty() {
                     *unknown_reasons
-                        .entry(Cow::Borrowed("internal:inconsistency:unknown_without_reason"))
+                        .entry(Cow::Borrowed(
+                            "internal:inconsistency:unknown_without_reason",
+                        ))
                         .or_default() += 1;
                 }
             }

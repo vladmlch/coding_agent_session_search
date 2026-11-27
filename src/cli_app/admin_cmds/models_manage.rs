@@ -696,7 +696,11 @@ pub(crate) fn run_models_verify(
                 Err(e) => (false, None, Some(std::borrow::Cow::Owned(e.to_string()))),
             }
         } else {
-            (false, None, Some(std::borrow::Cow::Borrowed("File not found")))
+            (
+                false,
+                None,
+                Some(std::borrow::Cow::Borrowed("File not found")),
+            )
         };
 
         if !valid {

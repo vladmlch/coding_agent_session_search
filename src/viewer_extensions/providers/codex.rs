@@ -231,10 +231,7 @@ fn prepared_events<'a>(
                 )
             })
             .unwrap_or_else(|| format!("source:{}", event.key));
-        groups
-            .entry((segment, key))
-            .or_default()
-            .push(event);
+        groups.entry((segment, key)).or_default().push(event);
     }
     let mut result = Vec::new();
     for ((epoch, _), candidates) in &groups {

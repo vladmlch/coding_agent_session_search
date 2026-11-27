@@ -89,7 +89,12 @@ impl CoverageBuilder {
         Self {
             states: CORE_FIELDS
                 .iter()
-                .map(|field| (field.to_string(), (Cow::Borrowed("complete"), BTreeSet::new())))
+                .map(|field| {
+                    (
+                        field.to_string(),
+                        (Cow::Borrowed("complete"), BTreeSet::new()),
+                    )
+                })
                 .collect(),
             known: BTreeSet::new(),
         }

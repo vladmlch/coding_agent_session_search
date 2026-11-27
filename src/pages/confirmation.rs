@@ -196,7 +196,8 @@ impl ConfirmationFlow {
     /// Validate input for the secret scan acknowledgment step.
     pub fn validate_secret_ack(&self, input: &str) -> StepValidation {
         let normalized = input.trim().to_lowercase();
-        if normalized == SECRET_ACK_PHRASE_NORMALIZED { // ubs:ignore[rust.security.constant-time-compare] — public UX confirmation phrase comparison, not a cryptographic secret
+        if normalized == SECRET_ACK_PHRASE_NORMALIZED {
+            // ubs:ignore[rust.security.constant-time-compare] — public UX confirmation phrase comparison, not a cryptographic secret
             StepValidation::Passed
         } else {
             StepValidation::Failed(format!("Please type exactly: \"{SECRET_ACK_PHRASE}\""))

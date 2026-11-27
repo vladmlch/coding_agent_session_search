@@ -414,7 +414,8 @@ fn scan_database_snapshot(
         let extra_bin_projection = if has_extra_bin { "m.extra_bin" } else { "NULL" };
         let has_attachment_refs = table_has_column(conn, "messages", "attachment_refs")?;
         let attachment_refs_projection =
-            if schema == SecretScanSchema::PagesExport && has_attachment_refs { // ubs:ignore[rust.security.constant-time-compare] — schema enum comparison, not a cryptographic secret
+            if schema == SecretScanSchema::PagesExport && has_attachment_refs {
+                // ubs:ignore[rust.security.constant-time-compare] — schema enum comparison, not a cryptographic secret
                 "m.attachment_refs"
             } else {
                 "NULL"

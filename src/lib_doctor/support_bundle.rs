@@ -817,10 +817,12 @@ pub(crate) fn doctor_support_bundle_include_sensitive_attachments(
                 "Retry after checking filesystem health.",
             ));
         }
-        sync_file(&target_path, "support bundle sensitive attachment")
-            .map_err(|msg| support_bundle_io_error(msg, "Retry after checking filesystem health."))?;
-        sync_directory(parent)
-            .map_err(|msg| support_bundle_io_error(msg, "Retry after checking filesystem health."))?;
+        sync_file(&target_path, "support bundle sensitive attachment").map_err(|msg| {
+            support_bundle_io_error(msg, "Retry after checking filesystem health.")
+        })?;
+        sync_directory(parent).map_err(|msg| {
+            support_bundle_io_error(msg, "Retry after checking filesystem health.")
+        })?;
         let source_path_text = source_path.display().to_string();
         const SENSITIVE_ATTACHMENT_RISK_COPY: &str = "explicit operator opt-in: this file may contain raw private session data, source snippets, credentials, or customer data";
         artifacts.push(
@@ -836,7 +838,9 @@ pub(crate) fn doctor_support_bundle_include_sensitive_attachments(
                     risk_copy: Some(SENSITIVE_ATTACHMENT_RISK_COPY),
                 },
             )
-            .map_err(|msg| support_bundle_io_error(msg, "Retry after checking filesystem health."))?,
+            .map_err(|msg| {
+                support_bundle_io_error(msg, "Retry after checking filesystem health.")
+            })?,
         );
         opt_ins.push(serde_json::json!({
             "attachment_index": idx,

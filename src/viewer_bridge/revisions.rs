@@ -162,9 +162,8 @@ fn canonical_trigger(
 ) -> String {
     let bump_where = guard.map_or_else(String::new, |g| format!(" AND ({g})"));
     let append = journal_append(kind, cid, CANONICAL_STAMP, guard);
-    let mut sql = format!(
-        "DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} {timing} ON {table} BEGIN "
-    );
+    let mut sql =
+        format!("DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} {timing} ON {table} BEGIN ");
     // ubs:ignore[rust.domain.sql-concat] — static SQL trigger DDL with closed column/table identifiers
     sql.push_str("UPDATE viewer_revisions SET canonical_revision = canonical_revision + 1 ");
     let _ = write!(sql, "WHERE id = 1{bump_where}; {append} END;");

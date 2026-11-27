@@ -65,7 +65,9 @@ fn failed_evidence_parent_receipt(
         planned_bytes: 0,
         affected_bytes: 0,
         status: DoctorActionStatus::Failed,
-        blocked_reasons: vec![format!("failed to create raw mirror evidence parent: {err}")],
+        blocked_reasons: vec![format!(
+            "failed to create raw mirror evidence parent: {err}"
+        )],
         precondition_checks: Vec::new(),
         forensic_bundle: doctor_forensic_bundle_uncaptured(
             "not_captured_for_failed_evidence_parent_creation",

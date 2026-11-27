@@ -193,10 +193,7 @@ pub(crate) fn pack_retry_command(
     match render_format {
         PackRenderFormat::Json => args.push(Cow::Borrowed("--json")),
         PackRenderFormat::CompactJson => {
-            args.extend([
-                Cow::Borrowed("--robot-format"),
-                Cow::Borrowed("compact"),
-            ]);
+            args.extend([Cow::Borrowed("--robot-format"), Cow::Borrowed("compact")]);
         }
         PackRenderFormat::Jsonl => {
             args.extend([Cow::Borrowed("--robot-format"), Cow::Borrowed("jsonl")]);
