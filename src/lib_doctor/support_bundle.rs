@@ -847,7 +847,7 @@ pub(crate) fn doctor_support_bundle_include_sensitive_attachments(
             ),
             "relative_path": relative_path,
             "size_bytes": metadata.len(),
-            "risk_copy": risk_copy,
+            "risk_copy": SENSITIVE_ATTACHMENT_RISK_COPY,
             "manifest_marking": "sensitive_opt_in",
         }));
     }
