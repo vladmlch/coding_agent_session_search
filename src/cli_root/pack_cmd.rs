@@ -119,92 +119,98 @@ pub(crate) fn pack_retry_command(
 ) -> String {
     use crate::search::pack_planner::{PackFreshnessPolicy, PackRenderFormat};
 
-    let mut args = vec!["pack".to_string(), shell_quote_arg(query)];
+    use std::borrow::Cow;
+
+    let mut args: Vec<Cow<'static, str>> =
+        vec![Cow::Borrowed("pack"), Cow::Owned(shell_quote_arg(query))];
     for agent in agents {
-        args.push("--agent".to_string());
-        args.push(shell_quote_arg(agent));
+        args.push(Cow::Borrowed("--agent"));
+        args.push(Cow::Owned(shell_quote_arg(agent)));
     }
     for workspace in workspaces {
-        args.push("--workspace".to_string());
-        args.push(shell_quote_arg(workspace));
+        args.push(Cow::Borrowed("--workspace"));
+        args.push(Cow::Owned(shell_quote_arg(workspace)));
     }
     args.extend([
-        "--limit".to_string(),
-        limit.to_string(),
-        "--max-tokens".to_string(),
-        max_tokens.to_string(),
-        "--max-sessions".to_string(),
-        max_sessions.to_string(),
-        "--max-evidence".to_string(),
-        max_evidence.to_string(),
-        "--context-lines".to_string(),
-        context_lines.to_string(),
-        "--max-excerpt-chars".to_string(),
-        max_excerpt_chars.to_string(),
+        Cow::Borrowed("--limit"),
+        Cow::Owned(limit.to_string()),
+        Cow::Borrowed("--max-tokens"),
+        Cow::Owned(max_tokens.to_string()),
+        Cow::Borrowed("--max-sessions"),
+        Cow::Owned(max_sessions.to_string()),
+        Cow::Borrowed("--max-evidence"),
+        Cow::Owned(max_evidence.to_string()),
+        Cow::Borrowed("--context-lines"),
+        Cow::Owned(context_lines.to_string()),
+        Cow::Borrowed("--max-excerpt-chars"),
+        Cow::Owned(max_excerpt_chars.to_string()),
     ]);
     if let Some(fields) = fields {
-        args.push("--fields".to_string());
-        args.push(shell_quote_arg(&fields.join(",")));
+        args.push(Cow::Borrowed("--fields"));
+        args.push(Cow::Owned(shell_quote_arg(&fields.join(","))));
     }
     if let Some(request_id) = request_id {
-        args.push("--request-id".to_string());
-        args.push(shell_quote_arg(request_id));
+        args.push(Cow::Borrowed("--request-id"));
+        args.push(Cow::Owned(shell_quote_arg(request_id)));
     }
     if let Some(since) = time_filter.since {
-        args.push("--since".to_string());
-        args.push(since.to_string());
+        args.push(Cow::Borrowed("--since"));
+        args.push(Cow::Owned(since.to_string()));
     }
     if let Some(until) = time_filter.until {
-        args.push("--until".to_string());
-        args.push(until.to_string());
+        args.push(Cow::Borrowed("--until"));
+        args.push(Cow::Owned(until.to_string()));
     }
     if let Some(source) = source {
-        args.push("--source".to_string());
-        args.push(shell_quote_arg(source));
+        args.push(Cow::Borrowed("--source"));
+        args.push(Cow::Owned(shell_quote_arg(source)));
     }
     if let Some(sessions_from) = sessions_from {
-        args.push("--sessions-from".to_string());
-        args.push(shell_quote_arg(sessions_from));
+        args.push(Cow::Borrowed("--sessions-from"));
+        args.push(Cow::Owned(shell_quote_arg(sessions_from)));
     }
     if let Some(mode) = mode {
-        args.push("--mode".to_string());
-        args.push(search_mode_label(mode).to_string());
+        args.push(Cow::Borrowed("--mode"));
+        args.push(Cow::Borrowed(search_mode_label(mode)));
     }
-    args.push("--freshness-policy".to_string());
-    args.push(
-        match freshness_policy {
-            PackFreshnessPolicy::PreferRecent => "prefer-recent",
-            PackFreshnessPolicy::Strict => "strict",
-            PackFreshnessPolicy::AllowStale => "allow-stale",
-        }
-        .to_string(),
-    );
-    args.push("--freshness-window-seconds".to_string());
-    args.push(freshness_window_seconds.to_string());
+    args.push(Cow::Borrowed("--freshness-policy"));
+    args.push(Cow::Borrowed(match freshness_policy {
+        PackFreshnessPolicy::PreferRecent => "prefer-recent",
+        PackFreshnessPolicy::Strict => "strict",
+        PackFreshnessPolicy::AllowStale => "allow-stale",
+    }));
+    args.push(Cow::Borrowed("--freshness-window-seconds"));
+    args.push(Cow::Owned(freshness_window_seconds.to_string()));
     if include_skill_content {
-        args.push("--include-skill-content".to_string());
+        args.push(Cow::Borrowed("--include-skill-content"));
     }
     if require_evidence {
-        args.push("--require-evidence".to_string());
+        args.push(Cow::Borrowed("--require-evidence"));
     }
     if explain_selection {
-        args.push("--explain-selection".to_string());
+        args.push(Cow::Borrowed("--explain-selection"));
     }
     match render_format {
-        PackRenderFormat::Json => args.push("--json".to_string()),
+        PackRenderFormat::Json => args.push(Cow::Borrowed("--json")),
         PackRenderFormat::CompactJson => {
-            args.extend(["--robot-format".to_string(), "compact".to_string()]);
+            args.extend([
+                Cow::Borrowed("--robot-format"),
+                Cow::Borrowed("compact"),
+            ]);
         }
         PackRenderFormat::Jsonl => {
-            args.extend(["--robot-format".to_string(), "jsonl".to_string()]);
+            args.extend([Cow::Borrowed("--robot-format"), Cow::Borrowed("jsonl")]);
         }
         PackRenderFormat::Toon => {
-            args.extend(["--robot-format".to_string(), "toon".to_string()]);
+            args.extend([Cow::Borrowed("--robot-format"), Cow::Borrowed("toon")]);
         }
         PackRenderFormat::Markdown => {}
     }
-    args.extend(["--timeout".to_string(), retry_budget_ms.to_string()]);
-    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    args.extend([
+        Cow::Borrowed("--timeout"),
+        Cow::Owned(retry_budget_ms.to_string()),
+    ]);
+    let arg_refs = args.iter().map(Cow::as_ref).collect::<Vec<_>>();
     cass_dataset_command(data_dir, db_path, &arg_refs)
 }
 

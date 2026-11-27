@@ -160,7 +160,7 @@ mod linux {
         }
         ensure!(
             size as usize == std::mem::size_of::<libc::ucred>()
-                && credentials.uid == effective_uid(),
+                && credentials.uid == effective_uid(), // ubs:ignore[rust.security.constant-time-compare] — compares numeric Unix peer UID (ucred), not a secret
             "socket peer is not the same user"
         );
         Ok(())

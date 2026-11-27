@@ -47,6 +47,7 @@ pub(crate) fn format_as_markdown(
     include_tools: bool,
 ) -> String {
     use chrono::{TimeZone, Utc};
+    use std::fmt::Write as _;
     let mut md = String::new();
     md.push_str("# ");
     md.push_str(title.as_deref().unwrap_or("Conversation Export"));
@@ -74,7 +75,9 @@ pub(crate) fn format_as_markdown(
         match role.as_str() {
             "user" => md.push_str("## 👤 User\n\n"),
             "assistant" => md.push_str("## 🤖 Assistant\n\n"),
-            _ => md.push_str(&format!("## {}\n\n", role)),
+            _ => {
+                let _ = write!(md, "## {role}\n\n");
+            }
         }
 
         let content = extract_text_content(msg);
@@ -96,7 +99,7 @@ pub(crate) fn format_as_markdown(
                             "tool_use" => {
                                 let name =
                                     block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                                md.push_str(&format!("**Tool: {}**\n", name));
+                                let _ = writeln!(md, "**Tool: {name}**");
                                 if let Some(input) = block.get("input") {
                                     md.push_str("```json\n");
                                     md.push_str(
@@ -129,6 +132,7 @@ pub(crate) fn format_as_markdown(
 }
 
 pub(crate) fn format_as_text(messages: &[serde_json::Value], include_tools: bool) -> String {
+    use std::fmt::Write as _;
     let mut text = String::new();
     for msg in messages {
         let role = extract_role(msg);
@@ -139,7 +143,7 @@ pub(crate) fn format_as_text(messages: &[serde_json::Value], include_tools: bool
         ) {
             continue;
         }
-        text.push_str(&format!("=== {} ===\n\n", role.to_uppercase()));
+        let _ = write!(text, "=== {} ===\n\n", role.to_uppercase());
 
         let content = extract_text_content(msg);
         if !content.is_empty() {
@@ -160,7 +164,7 @@ pub(crate) fn format_as_text(messages: &[serde_json::Value], include_tools: bool
                         && block_type == "tool_use"
                     {
                         let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                        text.push_str(&format!("[Tool: {}]\n", name));
+                        let _ = writeln!(text, "[Tool: {name}]");
                     } else if block.get("type").and_then(serde_json::Value::as_str)
                         == Some("tool_result")
                         && let Some(output) = block.get("content")
@@ -183,6 +187,7 @@ pub(crate) fn format_as_html(
     include_tools: bool,
 ) -> String {
     use chrono::{TimeZone, Utc};
+    use std::fmt::Write as _;
     let title_raw = title.as_deref().unwrap_or("Conversation Export");
     let title_str = html_escape(title_raw);
     let date_str = start_ts
@@ -242,11 +247,12 @@ pub(crate) fn format_as_html(
             _ => "💬 Message",
         };
 
-        html.push_str(&format!(
+        let _ = write!(
+            html,
             r#"    <div class="message {role_class}">
         <div class="role">{role_display}</div>
         <div class="content">"#
-        ));
+        );
 
         // Use extract_text_content for consistent content extraction
         let content = extract_text_content(msg);
@@ -887,12 +893,13 @@ pub(crate) fn run_timeline(
     let mut params: Vec<ParamValue> = vec![start_ts.into(), end_ts.into()];
 
     if !agents.is_empty() {
+        use std::fmt::Write as _;
         sql.push_str(" AND COALESCE(a.slug, 'unknown') IN (");
         for (i, agent) in agents.iter().enumerate() {
             if i > 0 {
                 sql.push_str(", ");
             }
-            sql.push_str(&format!("?{}", params.len() + 1));
+            let _ = write!(sql, "?{}", params.len() + 1);
             params.push(agent.clone().into());
         }
         sql.push(')');

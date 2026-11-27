@@ -355,6 +355,7 @@ pub(crate) fn append_band_completed(
 /// file-locking if larger records are needed.
 pub(crate) fn append_action(run_dir: &Path, rec: &ActionRecord) -> std::io::Result<()> {
     use std::io::Write;
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time constant filename ACTIONS_JSONL_NAME
     let path = run_dir.join(ACTIONS_JSONL_NAME);
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -377,6 +378,7 @@ pub(crate) fn read_actions(
     run_dir: &Path,
 ) -> std::io::Result<(Vec<ActionRecord>, Vec<ParseError>)> {
     use std::io::BufRead;
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time constant filename ACTIONS_JSONL_NAME
     let path = run_dir.join(ACTIONS_JSONL_NAME);
     let file = match fs::File::open(&path) {
         Ok(f) => f,

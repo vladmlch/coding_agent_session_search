@@ -80,25 +80,23 @@ pub(crate) fn format_missing_subcommand_error(args: &[String]) -> String {
         _ => (&[], &["cass --help"]),
     };
 
+    use std::fmt::Write as _;
     let mut msg = format!(
         "Missing required subcommand. Run `cass {} --help` for usage.",
         group
     );
 
     if !subcommands.is_empty() {
-        msg.push_str(&format!(
-            "\n\nAvailable subcommands for `cass {}`:\n",
-            group
-        ));
+        let _ = write!(msg, "\n\nAvailable subcommands for `cass {}`:\n", group);
         for sc in subcommands {
-            msg.push_str(&format!("  {}\n", sc));
+            let _ = writeln!(msg, "  {}", sc);
         }
     }
 
     if !examples.is_empty() {
         msg.push_str("\nExamples:\n");
         for ex in examples {
-            msg.push_str(&format!("  {}\n", ex));
+            let _ = writeln!(msg, "  {}", ex);
         }
     }
 

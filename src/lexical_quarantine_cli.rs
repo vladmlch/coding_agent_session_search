@@ -88,13 +88,13 @@ fn render(inventory: &Inventory, json: bool, output: &mut impl Write) -> io::Res
         )?;
         for artifact in &inventory.artifacts {
             let age = artifact.age_seconds.map_or_else(
-                || "unknown/future".to_owned(),
-                |seconds| format!("{seconds}s"),
+                || std::borrow::Cow::Borrowed("unknown/future"),
+                |seconds| std::borrow::Cow::Owned(format!("{seconds}s")),
             );
             let size = if artifact.size_complete {
-                format!("{} bytes", artifact.size_bytes)
+                std::borrow::Cow::Owned(format!("{} bytes", artifact.size_bytes))
             } else {
-                "unknown (scan incomplete)".to_owned()
+                std::borrow::Cow::Borrowed("unknown (scan incomplete)")
             };
             // Debug formatting escapes control characters in paths and reasons.
             writeln!(

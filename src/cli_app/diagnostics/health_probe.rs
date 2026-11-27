@@ -615,9 +615,9 @@ pub(crate) fn wait_with_progress<T>(
 
             let msg = if phase == 1 {
                 let scan_progress = if total > 0 {
-                    format!("{current}/{total} connectors")
+                    std::borrow::Cow::Owned(format!("{current}/{total} connectors"))
                 } else {
-                    "scanning connectors".to_string()
+                    std::borrow::Cow::Borrowed("scanning connectors")
                 };
                 if agents > 0 {
                     let names_preview = if agent_names.len() <= 3 {

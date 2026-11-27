@@ -1115,8 +1115,8 @@ pub(crate) fn run_dedup(
         println!();
         for row in mirror_result.rows.iter().take(20) {
             let action = match row.owner_conversation_id {
-                Some(owner) => format!("drop (copy id={owner})"),
-                None => "keep (no copy)".to_string(),
+                Some(owner) => std::borrow::Cow::Owned(format!("drop (copy id={owner})")),
+                None => std::borrow::Cow::Borrowed("keep (no copy)"),
             };
             println!(
                 "  id={:<8} {:<12} {:<22} {}",

@@ -693,10 +693,10 @@ pub(crate) fn run_models_verify(
                     let matches = hash == mfile.sha256;
                     (matches, Some(hash), None)
                 }
-                Err(e) => (false, None, Some(e.to_string())),
+                Err(e) => (false, None, Some(std::borrow::Cow::Owned(e.to_string()))),
             }
         } else {
-            (false, None, Some("File not found".to_string()))
+            (false, None, Some(std::borrow::Cow::Borrowed("File not found")))
         };
 
         if !valid {
