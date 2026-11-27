@@ -3218,15 +3218,15 @@ fn search_sessions_replaced_archive_inode_rebinds_converge_lane() -> Result<()> 
 #[cfg(unix)]
 #[test]
 fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let mut bridge = gold_harness_full(&gold_fixture(), &["--enable-viewer-writes"])?;
     let index_dir = expected_index_dir(&bridge.data_dir);
 
-    // Force the worker's converge pass to fail: the published Quill index
-    // stays readable (the fingerprint probe still reports it live) but its
-    // directory refuses writes, so the region-doc open/commit errors.
-    std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o555))?;
+    // Force the worker's converge pass to fail even under euid == 0: the
+    // published Quill index stays readable (the fingerprint probe still reads
+    // MANIFEST and reports it live), while holding the exclusive Quill writer
+    // LOCK in this test process makes the child bridge's writer open fail
+    // immediately with WriterBusy.
+    let held_writer = QuillCassIndex::open_or_create(&index_dir)?;
 
     let patch = bridge.exchange(json!({
         "op":"patch_annotations","conversation_id":1,"expected_revision":1,
@@ -3234,8 +3234,8 @@ fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()
     }))?;
     ensure!(patch["ok"] == true, "patch refused: {patch}");
 
-    // Flush join #1: the queued Converge runs before the ack — under the
-    // read-only index it fails, latching the debt. This op folds nothing.
+    // Flush join #1: the queued Converge runs before the ack — while LOCK is
+    // held it fails, latching the debt. This op folds nothing.
     let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
     ensure!(annotations["ok"] == true, "{annotations}");
     let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
@@ -3246,10 +3246,10 @@ fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()
         "the injected converge failure must leave marks pending: {marks:?}"
     );
 
-    // Restore writability, then flush join #2 with NO intervening command:
+    // Release the writer LOCK, then flush join #2 with NO intervening command:
     // the persistent latch must still report the owed work — the old
     // per-flush window reported success here and cleared the flag.
-    std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o755))?;
+    drop(held_writer);
     let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
     ensure!(annotations["ok"] == true, "{annotations}");
 
