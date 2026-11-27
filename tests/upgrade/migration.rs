@@ -440,6 +440,7 @@ fn test_fts_rebuild() {
                 extra_json TEXT,
                 extra_bin BLOB
             );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_conv_idx ON messages(conversation_id, idx);
             CREATE TABLE sources (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,

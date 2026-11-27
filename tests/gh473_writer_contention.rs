@@ -172,16 +172,30 @@ fn gh473_real_cli_write_and_noop_replays_preserve_pinned_reader_and_lexical_stat
         assert_eq!(checkpoint["completed"], true, "{checkpoint}");
         assert_eq!(checkpoint["db"]["total_conversations"], 1);
         assert_eq!(checkpoint["db"]["total_messages"], 2);
-        assert_eq!(checkpoint["indexed_docs"], 2);
+        let region_docs =
+            coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+                current.raw(),
+            )
+            .unwrap();
+        let expected_region_docs = 3_u64;
+        assert_eq!(region_docs, expected_region_docs);
+        assert_eq!(checkpoint["indexed_region_docs"], expected_region_docs);
+        let checkpoint_docs = checkpoint["indexed_docs"]
+            .as_u64()
+            .expect("checkpoint indexed_docs");
+        assert_eq!(checkpoint_docs - region_docs, 2, "{checkpoint}");
+        assert_eq!(checkpoint_docs, 2 + expected_region_docs, "{checkpoint}");
         let fingerprint = searchable_index_fingerprint(&index_path).unwrap().unwrap();
         assert_eq!(
             checkpoint["committed_meta_fingerprint"].as_str(),
             Some(fingerprint.as_str())
         );
-        assert_eq!(
-            searchable_index_summary(&index_path).unwrap().unwrap().docs,
-            2
-        );
+        let summary_docs = searchable_index_summary(&index_path)
+            .unwrap()
+            .unwrap()
+            .docs as u64;
+        assert_eq!(summary_docs - region_docs, 2);
+        assert_eq!(summary_docs, 2 + expected_region_docs);
         current.close_without_checkpoint().unwrap();
     }
     reader.raw().execute("ROLLBACK").unwrap();

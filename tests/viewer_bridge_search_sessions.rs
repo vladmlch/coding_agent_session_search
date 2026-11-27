@@ -2074,20 +2074,6 @@ fn search_sessions_non_ascii_verification_is_bounded() -> Result<()> {
     bridge.shutdown()
 }
 
-/// Toggle write permission recursively — the deterministic commit
-/// failure the crash-safe publication test induces.
-fn set_tree_readonly(path: &Path, readonly: bool) -> Result<()> {
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_readonly(readonly);
-    std::fs::set_permissions(path, perms)?;
-    if std::fs::metadata(path)?.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            set_tree_readonly(&entry?.path(), readonly)?;
-        }
-    }
-    Ok(())
-}
-
 /// Two-phase region-doc publication is crash-safe: staging never touches
 /// the marks row, a dropped writer or a FAILED COMMIT is the crash a
 /// pre-commit `published` stamp used to certify, the failed commit
@@ -2127,21 +2113,22 @@ fn region_doc_publication_is_crash_safe() -> Result<()> {
         "a crashed stage must stay pending, never certified: {state}"
     );
 
-    // Phase 2 — a FAILED commit: stage again, make the index directory
-    // read-only so the segment write cannot land, and the commit must
-    // fail while dropping its queued stamp. Once writable again a plain
-    // commit succeeds — and the marks row is STILL pending, proving the
-    // failed commit invalidated its stamp queue (otherwise this commit
-    // would certify documents the lost commit may have dropped).
+    // Phase 2 — a FAILED commit: stage again, temporarily move the index
+    // directory aside so publication deterministically fails even under root,
+    // and the commit must fail while dropping its queued stamp. Once moved
+    // back a plain commit succeeds — and the marks row is STILL pending,
+    // proving the failed commit invalidated its stamp queue (otherwise this
+    // commit would certify documents the lost commit may have dropped).
     {
         let mut index =
             coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
         let docs = index.stage_search_region_docs(&writer, 1)?;
         ensure!(docs > 0, "fixture session must produce region docs");
-        set_tree_readonly(&index_path, true)?;
+        let parked_index = temp.path().join("index-parked");
+        std::fs::rename(&index_path, &parked_index)?;
         let failed = index.commit();
-        set_tree_readonly(&index_path, false)?;
-        ensure!(failed.is_err(), "a read-only index dir must refuse commit");
+        std::fs::rename(&parked_index, &index_path)?;
+        ensure!(failed.is_err(), "missing index dir must refuse commit");
         let state = mark_state(pending_sql)?;
         ensure!(
             state == "pending",
@@ -3231,15 +3218,15 @@ fn search_sessions_replaced_archive_inode_rebinds_converge_lane() -> Result<()> 
 #[cfg(unix)]
 #[test]
 fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let mut bridge = gold_harness_full(&gold_fixture(), &["--enable-viewer-writes"])?;
     let index_dir = expected_index_dir(&bridge.data_dir);
 
-    // Force the worker's converge pass to fail: the published Quill index
-    // stays readable (the fingerprint probe still reports it live) but its
-    // directory refuses writes, so the region-doc open/commit errors.
-    std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o555))?;
+    // Force the worker's converge pass to fail even under euid == 0: the
+    // published Quill index stays readable (the fingerprint probe still reads
+    // MANIFEST and reports it live), while holding the exclusive Quill writer
+    // LOCK in this test process makes the child bridge's writer open fail
+    // immediately with WriterBusy.
+    let held_writer = QuillCassIndex::open_or_create(&index_dir)?;
 
     let patch = bridge.exchange(json!({
         "op":"patch_annotations","conversation_id":1,"expected_revision":1,
@@ -3247,8 +3234,8 @@ fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()
     }))?;
     ensure!(patch["ok"] == true, "patch refused: {patch}");
 
-    // Flush join #1: the queued Converge runs before the ack — under the
-    // read-only index it fails, latching the debt. This op folds nothing.
+    // Flush join #1: the queued Converge runs before the ack — while LOCK is
+    // held it fails, latching the debt. This op folds nothing.
     let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
     ensure!(annotations["ok"] == true, "{annotations}");
     let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
@@ -3259,10 +3246,10 @@ fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()
         "the injected converge failure must leave marks pending: {marks:?}"
     );
 
-    // Restore writability, then flush join #2 with NO intervening command:
+    // Release the writer LOCK, then flush join #2 with NO intervening command:
     // the persistent latch must still report the owed work — the old
     // per-flush window reported success here and cleared the flag.
-    std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o755))?;
+    drop(held_writer);
     let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
     ensure!(annotations["ok"] == true, "{annotations}");
 

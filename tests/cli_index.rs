@@ -2709,10 +2709,29 @@ fn plain_index_self_heals_when_entire_lexical_index_directory_is_missing() {
          got docs={}",
         tantivy_summary.docs
     );
+    let live_bound = {
+        let storage = SqliteStorage::open_readonly(&db_path).unwrap();
+        let bound = coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+            storage.raw(),
+        )
+        .unwrap();
+        storage.close_without_checkpoint().unwrap();
+        bound
+    };
+    let expected_region_docs = (reported_conversations * 3) as u64;
     assert_eq!(
-        tantivy_summary.docs as i64, reported_messages,
-        "Tantivy doc count must match the rebuild's reported message count \
-         (one lexical doc per canonical message)"
+        live_bound, expected_region_docs,
+        "live_region_doc_bound must match 3 region docs per titled conversation"
+    );
+    assert_eq!(
+        (tantivy_summary.docs as u64).saturating_sub(live_bound),
+        reported_messages as u64,
+        "Tantivy canonical doc count minus live_region_doc_bound must match the rebuild's reported message count"
+    );
+    assert_eq!(
+        tantivy_summary.docs as u64,
+        reported_messages as u64 + expected_region_docs,
+        "Tantivy doc count must match reported messages plus 3 region docs per conversation"
     );
 }
 
@@ -3826,6 +3845,31 @@ fn gh413_inline_fts_shadow_writes_past_their_budget_suspend_and_the_run_still_co
     );
 }
 
+fn seed_db_without_fts_shadow(data_dir: &std::path::Path) {
+    use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
+    use coding_agent_search::storage::sqlite::FrankenStorage;
+
+    let db_path = data_dir.join("agent_search.db");
+    let storage = FrankenStorage::open(&db_path).expect("precreate archive without FTS shadow");
+    storage
+        .raw()
+        .execute("DROP TABLE IF EXISTS fts_messages;")
+        .expect("drop schema-v1 fts_messages before full index");
+    let fts_count: i64 = storage
+        .raw()
+        .query_row_map(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fts_messages'",
+            &[],
+            |row| row.get_typed(0),
+        )
+        .expect("verify fts_messages absence");
+    assert_eq!(
+        fts_count, 0,
+        "fts_messages must be absent in sqlite_master before index --full"
+    );
+    storage.close().expect("close precreated archive");
+}
+
 /// GH #413 follow-up (iify0): the paged post-publish shadow repair stops at
 /// its per-page budget instead of wedging, the `index --full` run still exits
 /// 0, and the reason is persisted where `status` reads it. The #439 PAGE_SLEEP
@@ -3838,6 +3882,7 @@ fn gh413_paged_fts_shadow_repair_stops_at_its_page_budget_without_failing_the_ru
     let data_dir = home.join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
     seed_fts_liveness_sessions(home);
+    seed_db_without_fts_shadow(&data_dir);
 
     let started = std::time::Instant::now();
     // Not `fts_repair_liveness_index_cmd`: its 5 s / 20 s stall settings are
@@ -4176,6 +4221,7 @@ fn gh439_slow_post_publish_fts_repair_is_not_aborted_while_it_heartbeats() {
     let data_dir = home.join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
     seed_fts_liveness_sessions(home);
+    seed_db_without_fts_shadow(&data_dir);
 
     let started = std::time::Instant::now();
     // Discrimination: four pages at 12 s each = 48 s of repair work under a
@@ -4397,6 +4443,7 @@ fn gh439_parked_post_publish_fts_repair_still_aborts_with_the_index_stalled_enve
     let data_dir = home.join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
     seed_fts_liveness_sessions(home);
+    seed_db_without_fts_shadow(&data_dir);
 
     let output = fts_repair_liveness_index_cmd(home, &data_dir)
         .env("CASS_TEST_FTS_REPAIR_PARK_MS", "40000")
@@ -4509,9 +4556,35 @@ fn gh440_plain_index_resumes_a_force_rebuild_killed_between_commit_and_checkpoin
         .join(".lexical-rebuild-state.json");
     let initial_checkpoint: serde_json::Value =
         serde_json::from_slice(&fs::read(&checkpoint_path).unwrap()).unwrap();
+    let initial_indexed_docs = initial_checkpoint["indexed_docs"].as_u64().unwrap();
+    let initial_region_docs = initial_checkpoint["indexed_region_docs"].as_u64().unwrap();
+    let initial_live_bound = {
+        let storage = SqliteStorage::open_readonly(&data_dir.join("agent_search.db")).unwrap();
+        let bound = coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+            storage.raw(),
+        )
+        .unwrap();
+        storage.close_without_checkpoint().unwrap();
+        bound
+    };
+    let expected_indexed_messages = (sessions * 2) as u64;
+    assert_eq!(
+        initial_region_docs, initial_live_bound,
+        "checkpoint region docs must match live_region_doc_bound: {initial_checkpoint}"
+    );
+    assert_eq!(
+        initial_indexed_docs.saturating_sub(initial_live_bound),
+        expected_indexed_messages,
+        "canonical lexical share must match non-noise messages: {initial_checkpoint}"
+    );
+    assert_eq!(
+        initial_indexed_docs,
+        expected_indexed_messages + initial_region_docs,
+        "indexed_docs must equal indexed messages plus expected region docs: {initial_checkpoint}"
+    );
     assert!(
         initial_checkpoint["db"]["total_messages"].as_u64().unwrap()
-            > initial_checkpoint["indexed_docs"].as_u64().unwrap(),
+            > initial_indexed_docs.saturating_sub(initial_live_bound),
         "fixture must contain canonical messages excluded from lexical search: {initial_checkpoint}"
     );
 

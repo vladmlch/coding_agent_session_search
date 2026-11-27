@@ -315,6 +315,7 @@ function renderSearchUI() {
                     id="search-input"
                     class="search-input"
                     placeholder="Search conversations..."
+                    aria-label="Search conversations"
                     autocomplete="off"
                 >
                 <button type="button" id="search-btn" class="btn btn-primary search-btn">

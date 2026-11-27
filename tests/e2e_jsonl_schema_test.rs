@@ -957,16 +957,12 @@ fn e2e_subprocess_sources_cannot_mutate_the_parent_environment() -> SchemaTestRe
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let sources = [
         "tests/card_defaults_wallclock_ab.rs",
-        "tests/connector_aider.rs",
         "tests/connector_chatgpt.rs",
         "tests/connector_codex.rs",
-        "tests/connector_omp.rs",
-        "tests/connector_pi_agent.rs",
         "tests/cli_index.rs",
         "tests/e2e_cli_flows.rs",
         "tests/e2e_filters.rs",
         "tests/e2e_full_integration.rs",
-        "tests/e2e_index_tui.rs",
         "tests/e2e_jsonl_schema_test.rs",
         "tests/e2e_large_dataset.rs",
         "tests/e2e_multi_connector.rs",
@@ -974,7 +970,6 @@ fn e2e_subprocess_sources_cannot_mutate_the_parent_environment() -> SchemaTestRe
         "tests/e2e_search_index.rs",
         "tests/e2e_semantic_search.rs",
         "tests/e2e_sources.rs",
-        "tests/e2e_tui_smoke_flows.rs",
         "tests/golden_memo_trace.rs",
         "tests/metamorphic_stats.rs",
         "tests/pages_preview_integration.rs",
@@ -984,7 +979,6 @@ fn e2e_subprocess_sources_cannot_mutate_the_parent_environment() -> SchemaTestRe
         "tests/semantic_integration.rs",
         "tests/storage.rs",
         "tests/streaming_index.rs",
-        "tests/tui_smoke.rs",
         "tests/util/e2e_log.rs",
         "tests/util/mod.rs",
     ];

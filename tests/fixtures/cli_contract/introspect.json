@@ -4078,365 +4078,6 @@
     }
   ],
   "response_schemas": {
-    "analytics-incidents": {
-      "type": "object",
-      "description": "cass analytics incidents --json: bounded read-only incident mining over canonical archive conversations/messages.",
-      "properties": {
-        "command": {
-          "type": "string",
-          "const": "analytics/incidents"
-        },
-        "data": {
-          "type": "object",
-          "properties": {
-            "schema_version": {
-              "type": "integer",
-              "const": 2
-            },
-            "count_scope": {
-              "type": "string",
-              "enum": [
-                "all_matching_candidates",
-                "scanned_candidates_partial",
-                "no_verified_results_hard_timeout"
-              ]
-            },
-            "scan_units": {
-              "type": "object",
-              "properties": {
-                "files": {
-                  "type": "string"
-                },
-                "lines": {
-                  "type": "string"
-                },
-                "bytes": {
-                  "type": "string"
-                },
-                "candidate_order": {
-                  "type": "string"
-                },
-                "message_fragment_chars": {
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "files",
-                "lines",
-                "bytes",
-                "candidate_order",
-                "message_fragment_chars"
-              ]
-            },
-            "discovery": {
-              "type": "object",
-              "properties": {
-                "schema_version": {
-                  "type": "integer",
-                  "const": 1
-                },
-                "caps": {
-                  "type": "object",
-                  "properties": {
-                    "max_files": {
-                      "type": "integer"
-                    },
-                    "max_lines": {
-                      "type": "integer"
-                    },
-                    "max_bytes": {
-                      "type": "integer"
-                    },
-                    "budget_ms": {
-                      "type": "integer"
-                    },
-                    "max_evidence": {
-                      "type": "integer"
-                    }
-                  },
-                  "required": [
-                    "max_files",
-                    "max_lines",
-                    "max_bytes",
-                    "budget_ms",
-                    "max_evidence"
-                  ]
-                },
-                "files_considered": {
-                  "type": "integer"
-                },
-                "files_scanned": {
-                  "type": "integer"
-                },
-                "lines_scanned": {
-                  "type": "integer"
-                },
-                "bytes_scanned": {
-                  "type": "integer"
-                },
-                "elapsed_ms": {
-                  "type": "integer"
-                },
-                "stop_reason": {
-                  "type": "string",
-                  "enum": [
-                    "completed",
-                    "files-capped",
-                    "lines-capped",
-                    "bytes-capped",
-                    "message-fragment-capped",
-                    "timed-out"
-                  ]
-                },
-                "timed_out": {
-                  "type": "boolean"
-                },
-                "partial": {
-                  "type": "boolean"
-                },
-                "evidence_truncated": {
-                  "type": "boolean"
-                },
-                "evidence": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "file": {
-                        "type": "string"
-                      },
-                      "line": {
-                        "type": "integer"
-                      },
-                      "category": {
-                        "type": "string"
-                      },
-                      "reason": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "file",
-                      "line"
-                    ]
-                  }
-                }
-              },
-              "required": [
-                "caps",
-                "files_considered",
-                "files_scanned",
-                "lines_scanned",
-                "bytes_scanned",
-                "elapsed_ms",
-                "stop_reason",
-                "timed_out",
-                "partial",
-                "evidence_truncated",
-                "evidence"
-              ]
-            },
-            "top_sessions": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "conversation_id": {
-                    "type": "integer"
-                  },
-                  "session_id": {
-                    "type": "string"
-                  },
-                  "agent": {
-                    "type": "string"
-                  },
-                  "host": {
-                    "type": "string"
-                  },
-                  "source_id": {
-                    "type": "string"
-                  },
-                  "origin_host": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "source_path": {
-                    "type": "string"
-                  },
-                  "exists_state": {
-                    "type": "string",
-                    "enum": [
-                      "exists",
-                      "archive_only",
-                      "unknown"
-                    ]
-                  },
-                  "hit_count": {
-                    "type": "integer"
-                  },
-                  "category_breadth": {
-                    "type": "integer"
-                  },
-                  "dominant_categories": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  "evidence_summaries": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "category": {
-                          "type": "string"
-                        },
-                        "hit_count": {
-                          "type": "integer"
-                        },
-                        "content_fingerprints": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "evidence_paths": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        }
-                      },
-                      "required": [
-                        "category",
-                        "hit_count",
-                        "content_fingerprints",
-                        "evidence_paths"
-                      ]
-                    }
-                  },
-                  "redaction_status": {
-                    "type": "string",
-                    "enum": [
-                      "redacted",
-                      "not_applicable"
-                    ]
-                  },
-                  "suggested_command": {
-                    "type": "object",
-                    "properties": {
-                      "kind": {
-                        "type": "string",
-                        "const": "view"
-                      },
-                      "argv": {
-                        "type": "array",
-                        "description": "Executable argv preserving the effective --db and exact --conversation-id archive identity.",
-                        "items": {
-                          "type": "string"
-                        }
-                      },
-                      "display": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "argv",
-                      "display"
-                    ]
-                  }
-                },
-                "required": [
-                  "conversation_id",
-                  "session_id",
-                  "agent",
-                  "host",
-                  "source_id",
-                  "source_path",
-                  "exists_state",
-                  "hit_count",
-                  "category_breadth",
-                  "dominant_categories",
-                  "evidence_summaries",
-                  "redaction_status",
-                  "suggested_command"
-                ]
-              }
-            },
-            "total_sessions": {
-              "type": "integer"
-            },
-            "total_hits": {
-              "type": "integer"
-            },
-            "top_sessions_truncated": {
-              "type": "boolean"
-            },
-            "redaction": {
-              "type": "object",
-              "properties": {
-                "private_text_policy": {
-                  "type": "string",
-                  "const": "suppress_all"
-                },
-                "hash_strategy": {
-                  "type": "string",
-                  "const": "blake3_256_v1"
-                },
-                "fields_emitted": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "fields_suppressed": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "opt_in_flags": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "private_text_policy",
-                "hash_strategy",
-                "fields_emitted",
-                "fields_suppressed",
-                "opt_in_flags"
-              ]
-            }
-          },
-          "required": [
-            "schema_version",
-            "count_scope",
-            "scan_units",
-            "discovery",
-            "top_sessions",
-            "total_sessions",
-            "total_hits",
-            "top_sessions_truncated",
-            "redaction"
-          ]
-        },
-        "_meta": {
-          "type": "object",
-          "additionalProperties": true
-        }
-      },
-      "required": [
-        "command",
-        "data",
-        "_meta"
-      ]
-    },
     "api-version": {
       "type": "object",
       "properties": {
@@ -28152,6 +27793,48 @@
                       }
                     }
                   }
+                }
+              }
+            },
+            "memory": {
+              "type": "object",
+              "description": "Live resident-memory observation, absent before the sampler has run.",
+              "properties": {
+                "capacity_pct": {
+                  "type": "integer"
+                },
+                "inflight_byte_limit": {
+                  "type": "integer"
+                },
+                "target_resident_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "resident_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "available_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "effective_total_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "healthy_streak": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
                 }
               }
             }

@@ -628,7 +628,7 @@ pub(in crate::indexer) fn reindex_paths_with_semantic_delta(
             // Establish recovery debt BEFORE any canonical transaction. It
             // covers the whole selected source, including earlier successful
             // additions lost when a later addition discards this writer.
-            source_ledger.begin_publication(&storage, &current_debt, opts.progress.as_deref())?;
+            source_ledger.begin_publication(&storage, &current_debt, None)?;
             if replay_canonical {
                 // A prior failed callback may still own uncommitted additions.
                 // Reconciliation must start from the published generation.
@@ -638,8 +638,15 @@ pub(in crate::indexer) fn reindex_paths_with_semantic_delta(
         let capture_semantic_delta = semantic_delta.is_some();
         let mut convs = convs.into_sorted_batches()?;
         let mut connector_name = None;
+        let mut first_admitted_chunk = true;
         loop {
-            let mut chunk = convs.next_batch(opts.progress.as_deref())?;
+            let chunk_progress = if first_admitted_chunk {
+                first_admitted_chunk = false;
+                None
+            } else {
+                opts.progress.as_deref()
+            };
+            let mut chunk = convs.next_batch(chunk_progress)?;
             if chunk.is_empty() {
                 break;
             }
@@ -648,12 +655,8 @@ pub(in crate::indexer) fn reindex_paths_with_semantic_delta(
                 connector_name = chunk.first().map(|conv| conv.agent_slug.clone());
             }
             for conv in &mut chunk {
-                if let Some(progress) = &opts.progress {
-                    progress.check_stop()?;
-                }
                 capture_prepared_conversation(&opts.data_dir, conv, &raw_source_exclusions);
                 if let Some(progress) = &opts.progress {
-                    progress.check_stop()?;
                     progress.tick_activity();
                 }
             }

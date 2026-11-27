@@ -5,6 +5,19 @@ use super::{
 };
 use serial_test::serial;
 
+fn pending_region_mark_count(handles: &Handles) -> Result<i64> {
+    use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
+
+    let storage = handles.storage.lock().unwrap();
+    Ok(storage.raw().query_row_map(
+        "SELECT COUNT(*) FROM viewer_search_region_marks WHERE docs_state = ?1",
+        &[ParamValue::from(
+            crate::viewer_extensions::search_regions::DOCS_PENDING,
+        )],
+        |row| row.get_typed(0),
+    )?)
+}
+
 fn active_retry_and_restart(kind: ConnectorKind) -> Result<()> {
     const OLD_SOURCES: usize = 128;
 
@@ -396,7 +409,10 @@ fn gh538_watch_recovery_reuses_locked_published_sibling_without_stranding_debt()
         let committed = canonical_rows(&handles)?;
         assert_eq!(committed.len(), 3);
         assert_eq!(&committed[..old_rows.len()], old_rows.as_slice());
-        assert_eq!(published_state(&fixture, &handles)?, published);
+        // Region-slot prelude commits to MANIFEST before the canonical batch
+        // commit; preserve last_indexed_at and pending region marks here.
+        assert_eq!(published_state(&fixture, &handles)?.0, published.0);
+        assert!(pending_region_mark_count(&handles)? >= 1);
         assert!(search_ids(&fixture, "changedrecoveredneedle")?.is_empty());
         assert_publication_receipts(&handles, 1)?;
         assert!(
@@ -496,7 +512,10 @@ fn gh538_watch_source_receipts_require_publication_before_reuse() -> Result<()> 
                 assert_ne!(failed_state.1, published.1);
                 assert_eq!(search_ids(&fixture, "publicationdeferredneedle")?.len(), 1);
             } else {
-                assert_eq!(failed_state.1, published.1);
+                // Region-slot prelude may have updated MANIFEST before the
+                // canonical/publication failure; keep pending region marks and
+                // ensure the deferred needle is absent from search.
+                assert!(pending_region_mark_count(&handles)? >= 1);
                 assert!(search_ids(&fixture, "publicationdeferredneedle")?.is_empty());
             }
             assert_eq!(search_ids(&fixture, "publishedbaselineneedle")?, old_ids);

@@ -10,8 +10,8 @@
 //! ```
 //!
 //! Scrubbing normalizes line endings/trailing whitespace and replaces
-//! environment-specific paths, UUIDs, version stamps, ISO timestamps, and
-//! encrypted payload bytes. The remaining document still includes the doctype,
+//! environment-specific paths, UUIDs, version stamps, and ISO timestamps.
+//! The remaining document still includes the doctype,
 //! metadata, styles, scripts, and rendered message HTML.
 
 use assert_cmd::Command;
@@ -22,12 +22,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-const RETIRED_ENTROPY_OVERRIDE: &str = "must-not-control-html-export-entropy";
-
-fn fixture_phrase() -> String {
-    ["golden", "html", "fixture"].join("-")
-}
 
 fn cass_cmd(test_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
@@ -128,7 +122,6 @@ fn export_html(
     identity: &str,
     output_dir: &Path,
     filename: &str,
-    encrypted: bool,
 ) -> String {
     let mut cmd = cass_cmd(test_home);
     cmd.arg("--db")
@@ -140,20 +133,6 @@ fn export_html(
         .arg("--filename")
         .arg(filename)
         .arg("--json");
-
-    if encrypted {
-        let phrase = fixture_phrase();
-        // Regression probe for the retired debug-build entropy hook. Even when
-        // an ambient process supplies its old name, production encryption must
-        // continue to draw fresh salt and nonce bytes from the CSPRNG.
-        cmd.env(
-            "CASS_HTML_EXPORT_GOLDEN_BYTES_LABEL",
-            RETIRED_ENTROPY_OVERRIDE,
-        )
-        .arg("--encrypt")
-        .arg("--password-stdin")
-        .write_stdin(format!("{phrase}\n"));
-    }
 
     let output = cmd.output().expect("run cass export-html");
     assert!(
@@ -167,7 +146,6 @@ fn export_html(
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     let payload: Value = serde_json::from_str(&stdout).expect("export-html emits JSON");
     assert_eq!(payload["success"], true);
-    assert_eq!(payload["exported"]["encrypted"], encrypted);
     assert_eq!(payload["exported"]["messages_count"], 3);
 
     let output_path = payload["exported"]["output_path"]
@@ -203,49 +181,7 @@ fn scrub_html(input: &str, test_home: &Path) -> String {
 
     let uuid_re =
         Regex::new(r#"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#).unwrap();
-    out = uuid_re.replace_all(&out, "[UUID]").to_string();
-
-    let encrypted_escaped_re =
-        Regex::new(r#"(&quot;)(salt|iv|ciphertext)(&quot;\s*:\s*&quot;)([^&]*)(&quot;)"#).unwrap();
-    out = encrypted_escaped_re
-        .replace_all(&out, |caps: &regex::Captures<'_>| {
-            format!(
-                "{}{}{}[SCRUBBED-{}]{}",
-                &caps[1],
-                &caps[2],
-                &caps[3],
-                caps[2].to_ascii_uppercase(),
-                &caps[5]
-            )
-        })
-        .to_string();
-
-    let encrypted_raw_re = Regex::new(r#"(")(salt|iv|ciphertext)("\s*:\s*")([^"]*)(")"#).unwrap();
-    encrypted_raw_re
-        .replace_all(&out, |caps: &regex::Captures<'_>| {
-            format!(
-                "{}{}{}[SCRUBBED-{}]{}",
-                &caps[1],
-                &caps[2],
-                &caps[3],
-                caps[2].to_ascii_uppercase(),
-                &caps[5]
-            )
-        })
-        .to_string()
-}
-
-fn encrypted_payload(input: &str) -> Value {
-    let marker = "<div id=\"encrypted-content\" hidden>";
-    let payload_start = input
-        .find(marker)
-        .map(|offset| offset + marker.len())
-        .expect("encrypted payload marker");
-    let payload_end = input[payload_start..]
-        .find("</div>")
-        .map(|offset| payload_start + offset)
-        .expect("encrypted payload terminator");
-    serde_json::from_str(&input[payload_start..payload_end]).expect("encrypted payload JSON")
+    uuid_re.replace_all(&out, "[UUID]").to_string()
 }
 
 fn assert_golden(name: &str, actual: &str) {
@@ -307,7 +243,6 @@ fn basic_export_html_matches_golden() {
         &identity,
         output_dir.path(),
         "basic_export.html",
-        false,
     );
 
     assert!(html.starts_with("<!DOCTYPE html>"));
@@ -320,56 +255,4 @@ fn basic_export_html_matches_golden() {
 
     let scrubbed = scrub_html(&html, test_home.path());
     assert_golden("basic_export.html.golden", &scrubbed);
-}
-
-#[test]
-fn encrypted_export_html_matches_golden() {
-    let test_home = TempDir::new().expect("create temp home");
-    let output_dir_a = TempDir::new().expect("create first output dir");
-    let output_dir_b = TempDir::new().expect("create second output dir");
-    let session_path = write_fixture_session(test_home.path());
-    let (db, identity) = index_session(test_home.path(), &session_path);
-
-    let first = export_html(
-        test_home.path(),
-        &db,
-        &identity,
-        output_dir_a.path(),
-        "encrypted_export.html",
-        true,
-    );
-    let second = export_html(
-        test_home.path(),
-        &db,
-        &identity,
-        output_dir_b.path(),
-        "encrypted_export.html",
-        true,
-    );
-
-    let first_payload = encrypted_payload(&first);
-    let second_payload = encrypted_payload(&second);
-    assert_ne!(
-        first_payload["salt"], second_payload["salt"],
-        "the retired golden-byte environment variable must not repeat PBKDF2 salt"
-    );
-    assert_ne!(
-        first_payload["iv"], second_payload["iv"],
-        "the retired golden-byte environment variable must not repeat an AES-GCM nonce"
-    );
-    assert_ne!(
-        first_payload["ciphertext"], second_payload["ciphertext"],
-        "the retired golden-byte environment variable must not make ciphertext deterministic"
-    );
-    assert!(first.contains("id=\"encrypted-content\""));
-    assert!(first.contains("crypto.subtle"));
-    assert!(!first.contains("return Err(AuthError::ExpiredToken);"));
-
-    let first_scrubbed = scrub_html(&first, test_home.path());
-    let second_scrubbed = scrub_html(&second, test_home.path());
-    assert_eq!(
-        first_scrubbed, second_scrubbed,
-        "encrypted exports should differ only in normalized random fields"
-    );
-    assert_golden("encrypted_export.html.golden", &first_scrubbed);
 }

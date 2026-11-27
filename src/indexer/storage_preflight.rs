@@ -287,6 +287,138 @@ pub(in crate::indexer) fn incompatible_legacy_fts_shadow_problem(
     Ok(None)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FtsMessagesShadowKind {
+    Absent,
+    CanonicalContentless,
+    LegacyNonCanonical,
+}
+
+fn classify_fts_messages_shadow_kind(storage: &FrankenStorage) -> Result<FtsMessagesShadowKind> {
+    let fts_ddl_rows = storage
+        .raw()
+        .query_map_collect(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'fts_messages'",
+            &[] as &[ParamValue],
+            |row| row.get_typed::<Option<String>>(0),
+        )
+        .context("checking for canonical FTS before segment integrity preflight")?;
+    if fts_ddl_rows.is_empty() {
+        return Ok(FtsMessagesShadowKind::Absent);
+    }
+    // GH #495: non-canonical legacy `fts_messages` registrations (such as
+    // internal-content 7-column or `content=''`-without-`contentless_delete=1`)
+    // are disposable residue that `rebuild_fts_native` drops and recreates.
+    let is_canonical_contentless = fts_ddl_rows.iter().all(|sql| {
+        let normalized: String = sql
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .split_whitespace()
+            .collect();
+        (normalized.contains("content=''") || normalized.contains("content=\"\""))
+            && normalized.contains("contentless_delete=1")
+    });
+    Ok(if is_canonical_contentless {
+        FtsMessagesShadowKind::CanonicalContentless
+    } else {
+        FtsMessagesShadowKind::LegacyNonCanonical
+    })
+}
+
+fn canonical_fts_segment_integrity_problem_for_kind(
+    storage: &FrankenStorage,
+    shadow_kind: FtsMessagesShadowKind,
+) -> Result<Option<String>> {
+    if shadow_kind != FtsMessagesShadowKind::CanonicalContentless {
+        return Ok(None);
+    }
+
+    match storage.raw().query_map_collect(
+        "PRAGMA integrity_check(fts_messages)",
+        &[] as &[ParamValue],
+        |row| row.get_typed::<String>(0),
+    ) {
+        Ok(rows) if rows.len() == 1 && rows[0].trim().eq_ignore_ascii_case("ok") => Ok(None),
+        Ok(rows) => Ok(Some(format!(
+            "FTS5 segment integrity-check failed: {}",
+            rows.join("; ")
+        ))),
+        Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => Err(anyhow::anyhow!(
+            "full rebuild FTS segment integrity preflight hit transient storage contention: {err}"
+        )),
+        Err(err) => Ok(Some(format!("FTS5 segment integrity-check failed: {err}"))),
+    }
+}
+
+fn run_single_quick_check(storage: &FrankenStorage, pragma_sql: &str) -> Result<Option<String>> {
+    let rows = match storage.raw().query_map_collect(
+        pragma_sql,
+        &[] as &[ParamValue],
+        |row| row.get_typed::<String>(0),
+    ) {
+        Ok(rows) => rows,
+        Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => {
+            return Err(anyhow::anyhow!(
+                "full rebuild archive integrity preflight hit transient storage contention: {err}"
+            ));
+        }
+        Err(err) => return Ok(Some(format!("quick_check failed: {err}"))),
+    };
+
+    if rows.len() == 1 && rows[0].trim().eq_ignore_ascii_case("ok") {
+        Ok(None)
+    } else {
+        Ok(Some(format!("quick_check reported {:?}", rows.join("; "))))
+    }
+}
+
+fn full_rebuild_quick_check_problem(
+    storage: &FrankenStorage,
+    shadow_kind: FtsMessagesShadowKind,
+) -> Result<Option<String>> {
+    if shadow_kind != FtsMessagesShadowKind::LegacyNonCanonical {
+        return run_single_quick_check(storage, "PRAGMA quick_check(1)");
+    }
+
+    // In C SQLite, `PRAGMA quick_check(1)` triggers `OP_VCheck` on every
+    // virtual table and ignores `isQuick`, whereas `PRAGMA quick_check("<table>")`
+    // skips virtual tables other than `<table>`. Check `sqlite_schema` first so
+    // page 1 and the freelist are verified, then check every non-vtab table.
+    if let Some(problem) = run_single_quick_check(storage, "PRAGMA quick_check(\"sqlite_schema\")")?
+    {
+        return Ok(Some(problem));
+    }
+
+    let table_names = match storage.raw().query_map_collect(
+        "SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name != 'fts_messages'
+         ORDER BY name",
+        &[] as &[ParamValue],
+        |row| row.get_typed::<String>(0),
+    ) {
+        Ok(names) => names,
+        Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => {
+            return Err(anyhow::anyhow!(
+                "full rebuild archive integrity preflight hit transient storage contention: {err}"
+            ));
+        }
+        Err(err) => return Ok(Some(format!("quick_check failed: {err}"))),
+    };
+
+    for table in table_names {
+        let escaped = table.replace('"', "\"\"");
+        if let Some(problem) =
+            run_single_quick_check(storage, &format!("PRAGMA quick_check(\"{escaped}\")"))?
+        {
+            return Ok(Some(problem));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Ask SQLite's FTS5 reader to decode the persisted structure,
 /// averages, and every segment leaf. `PRAGMA quick_check` validates SQLite's
 /// b-trees, but it does not understand the payload stored inside `%_data`, so
@@ -295,29 +427,8 @@ pub(in crate::indexer) fn incompatible_legacy_fts_shadow_problem(
 pub(in crate::indexer) fn canonical_fts_segment_integrity_problem(
     storage: &FrankenStorage,
 ) -> Result<Option<String>> {
-    let fts_exists = storage
-        .raw()
-        .query_row_map(
-            "SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'table' AND name = 'fts_messages'",
-            &[] as &[ParamValue],
-            |row| row.get_typed::<i64>(0),
-        )
-        .context("checking for canonical FTS before segment integrity preflight")?;
-    if fts_exists == 0 {
-        return Ok(None);
-    }
-
-    match storage
-        .raw()
-        .execute("INSERT INTO fts_messages(fts_messages) VALUES('integrity-check')")
-    {
-        Ok(_) => Ok(None),
-        Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => Err(anyhow::anyhow!(
-            "full rebuild FTS segment integrity preflight hit transient storage contention: {err}"
-        )),
-        Err(err) => Ok(Some(format!("FTS5 segment integrity-check failed: {err}"))),
-    }
+    let shadow_kind = classify_fts_messages_shadow_kind(storage)?;
+    canonical_fts_segment_integrity_problem_for_kind(storage, shadow_kind)
 }
 
 pub(in crate::indexer) fn full_rebuild_existing_storage_integrity_problem(
@@ -347,28 +458,15 @@ pub(in crate::indexer) fn full_rebuild_existing_storage_integrity_problem(
         }
     }
 
-    match canonical_fts_segment_integrity_problem(storage) {
+    let shadow_kind = classify_fts_messages_shadow_kind(storage)?;
+    match canonical_fts_segment_integrity_problem_for_kind(storage, shadow_kind) {
         Ok(Some(problem)) => return Ok(Some(problem)),
         Ok(None) => {}
         Err(err) => return Err(err),
     }
 
-    let quick_check = match storage.raw().query_row_map(
-        "PRAGMA quick_check(1)",
-        &[] as &[ParamValue],
-        |row| row.get_typed::<String>(0),
-    ) {
-        Ok(status) => status,
-        Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => {
-            return Err(anyhow::anyhow!(
-                "full rebuild archive integrity preflight hit transient storage contention: {err}"
-            ));
-        }
-        Err(err) => return Ok(Some(format!("quick_check failed: {err}"))),
-    };
-
-    if !quick_check.trim().eq_ignore_ascii_case("ok") {
-        return Ok(Some(format!("quick_check reported {quick_check:?}")));
+    if let Some(problem) = full_rebuild_quick_check_problem(storage, shadow_kind)? {
+        return Ok(Some(problem));
     }
 
     // A first index can be killed after SQLite creates the file, or after
@@ -477,6 +575,38 @@ pub(in crate::indexer) fn full_rebuild_existing_archive_integrity_preflight_with
         Duration::from_secs(10),
     ) {
         Ok(storage) => storage,
+        Err(err)
+            if err.chain().any(|cause| {
+                matches!(
+                    cause.downcast_ref::<crate::franken_sync::FrankenError>(),
+                    Some(crate::franken_sync::FrankenError::BusyRecovery)
+                )
+            }) =>
+        {
+            tracing::debug!(
+                db_path = %db_path.display(),
+                error = %err,
+                "strict read-only full-rebuild preflight encountered unrecovered WAL/SHM; falling back to private read-only snapshot"
+            );
+            match FrankenStorage::open_readonly_with_doctor_lock_timeout(
+                db_path,
+                Duration::from_secs(10),
+            ) {
+                Ok(storage) => storage,
+                Err(snapshot_err)
+                    if anyhow_chain_indicates_retryable_storage_contention(&snapshot_err) =>
+                {
+                    return Err(anyhow::anyhow!(
+                        "full rebuild read-only archive preflight hit transient storage contention: {snapshot_err:#}"
+                    ));
+                }
+                Err(snapshot_err) => {
+                    return Ok(Some(format!(
+                        "read-only full-rebuild integrity preflight could not open the canonical archive: {snapshot_err:#}"
+                    )));
+                }
+            }
+        }
         Err(err) if anyhow_chain_indicates_retryable_storage_contention(&err) => {
             return Err(anyhow::anyhow!(
                 "full rebuild read-only archive preflight hit transient storage contention: {err:#}"

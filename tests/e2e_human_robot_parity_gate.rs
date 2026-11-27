@@ -768,17 +768,16 @@ fn human_surfaces_never_surface_destructive_guidance() -> Result<(), String> {
     }
 }
 
-/// Recovery-surface parity for `cass sources doctor` (bead 76tvn). Unlike the
-/// readiness journeys, sources doctor is a *per-source* report — there is no
-/// single top-level readiness verdict — so it gets a dedicated parity check
-/// rather than a `ParitySurface` entry. For a configured-but-unreachable source
-/// (RFC 6761 `.invalid` host → a deterministic DNS failure, no network needed):
-///   * the robot `--json` form is pure JSON, a per-source report (`sources[]` +
-///     `summary` + `mutation_free=true`) that marks the source not-reached and
-///     offers an allow-listed `safe_next_command`;
-///   * the human form names the same source and the same failing host, stays
-///     escape-free, and carries no destructive guidance; and
-///   * classifying the source never rewrites `sources.toml`.
+/// Recovery-surface parity for `cass sources doctor` (bead 76tvn, local-only
+/// contract after 7a87ffeda):
+///   1. Legacy `type = "ssh"` entries are inert archive provenance records:
+///      `sources doctor` emits a `warn` diagnostic (never probes the network)
+///      and exits 0, surfacing safe configuration guidance (`command_is_safe`).
+///   2. A local source with a nonexistent directory emits a `fail` check,
+///      exits 1, and preserves remediation parity between `--json` and human
+///      output.
+///   3. Neither surface emits ANSI escapes under `NO_COLOR` or destructive
+///      guidance, and neither rewrites `sources.toml`.
 #[test]
 fn sources_doctor_recovery_surface_is_in_parity() -> Result<(), String> {
     let home = tempfile::tempdir().map_err(|e| format!("create tempdir: {e}"))?;
@@ -786,148 +785,273 @@ fn sources_doctor_recovery_surface_is_in_parity() -> Result<(), String> {
     let config_dir = home_path.join("xdg-config").join("cass");
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("create config dir: {e}"))?;
     let sources_toml = config_dir.join("sources.toml");
-    let toml = concat!(
+    let robot_drift = DriftKind::RobotState.as_str();
+    let human_drift = DriftKind::HumanProjection.as_str();
+
+    // --- Scenario 1: legacy `type = "ssh"` warns cleanly with exit 0 ---
+    let ssh_toml = concat!(
         "[[sources]]\n",
         "name = \"parity-host\"\n",
         "type = \"ssh\"\n",
         "host = \"nobody@parity.invalid\"\n",
         "paths = [\"~/.claude/projects\"]\n",
     );
-    std::fs::write(&sources_toml, toml).map_err(|e| format!("write sources.toml: {e}"))?;
-    let before = std::fs::read(&sources_toml).map_err(|e| format!("read sources.toml: {e}"))?;
-    let robot_drift = DriftKind::RobotState.as_str();
-    let human_drift = DriftKind::HumanProjection.as_str();
+    std::fs::write(&sources_toml, ssh_toml).map_err(|e| format!("write sources.toml: {e}"))?;
+    let ssh_before = std::fs::read(&sources_toml).map_err(|e| format!("read sources.toml: {e}"))?;
 
-    // --- robot form ---
-    let robot_out = run_sources_doctor_form(
+    let ssh_robot_out = run_sources_doctor_form(
         &home_path,
         &["sources", "doctor", "--json"],
-        "sources_doctor_robot",
+        "sources_doctor_ssh_robot",
     );
-    if robot_out.status.code() != Some(1) {
+    if ssh_robot_out.status.code() != Some(0) {
         return Err(format!(
-            "[drift={robot_drift}] sources doctor --json should exit 1 with an unreachable source, got {:?}",
-            robot_out.status.code(),
+            "[drift={robot_drift}] sources doctor --json should exit 0 for legacy ssh warning, got {:?}",
+            ssh_robot_out.status.code(),
         ));
     }
-    let robot_stdout = std::str::from_utf8(&robot_out.stdout)
+    let ssh_robot_stdout = std::str::from_utf8(&ssh_robot_out.stdout)
         .map_err(|e| format!("[drift={robot_drift}] sources doctor robot stdout not UTF-8: {e}"))?;
-    let robot: Value = serde_json::from_str(robot_stdout.trim()).map_err(|e| {
+    let ssh_robot: Value = serde_json::from_str(ssh_robot_stdout.trim()).map_err(|e| {
         format!(
             "[drift={robot_drift}] sources doctor robot stdout is not pure JSON: {e}; head: {}",
-            head(robot_stdout)
+            head(ssh_robot_stdout)
         )
     })?;
-    if robot.get("mutation_free").and_then(Value::as_bool) != Some(true) {
-        return Err(format!(
-            "[drift={robot_drift}] sources doctor robot payload must mark mutation_free=true"
-        ));
-    }
-    let sources = robot.get("sources").and_then(Value::as_array).ok_or_else(|| {
-        format!(
-            "[drift={robot_drift}] sources doctor robot payload missing sources[] array; present: {:?}",
-            present_keys(&robot)
-        )
-    })?;
-    let source = sources
-        .iter()
-        .find(|s| s.get("source_id").and_then(Value::as_str) == Some("parity-host"))
+    let ssh_diags = ssh_robot
+        .get("diagnostics")
+        .and_then(Value::as_array)
         .ok_or_else(|| {
             format!(
-                "[drift={robot_drift}] sources doctor robot did not report the configured source"
+                "[drift={robot_drift}] sources doctor robot payload missing diagnostics[]; present: {:?}",
+                present_keys(&ssh_robot)
             )
         })?;
-    if source.get("host_reached").and_then(Value::as_bool) != Some(false) {
-        return Err(format!(
-            "[drift={robot_drift}] sources doctor should report the .invalid host as not reached"
-        ));
-    }
-    let safe_cmd = source
-        .get("safe_next_command")
-        .and_then(Value::as_str)
+    let ssh_diag = ssh_diags
+        .iter()
+        .find(|d| d.get("source_id").and_then(Value::as_str) == Some("parity-host"))
         .ok_or_else(|| {
-            format!("[drift={robot_drift}] sources doctor source missing safe_next_command")
+            format!("[drift={robot_drift}] sources doctor robot omitted 'parity-host'")
         })?;
-    if !command_is_safe(safe_cmd) {
+    if ssh_diag.get("failed").and_then(Value::as_u64) != Some(0)
+        || ssh_diag
+            .get("warnings")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == 0
+    {
         return Err(format!(
-            "[drift={robot_drift}] sources doctor safe_next_command is not on the safe allow-list: {safe_cmd}"
+            "[drift={robot_drift}] legacy ssh source should report failed=0 and warnings>=1, got {ssh_diag}"
         ));
     }
+    let ssh_warn_check = ssh_diag
+        .get("checks")
+        .and_then(Value::as_array)
+        .and_then(|checks| {
+            checks.iter().find(|c| {
+                c.get("name").and_then(Value::as_str) == Some("Remote Host")
+                    && c.get("status").and_then(Value::as_str) == Some("warn")
+            })
+        })
+        .ok_or_else(|| {
+            format!("[drift={robot_drift}] legacy ssh source missing warn 'Remote Host' check")
+        })?;
+    let ssh_rem = ssh_warn_check
+        .get("remediation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("[drift={robot_drift}] legacy ssh warn missing remediation"))?;
+    if !text_is_clean(ssh_rem) {
+        return Err(format!(
+            "[drift={robot_drift}] legacy ssh remediation carries unsafe text: {ssh_rem}"
+        ));
+    }
+    let issues = ssh_robot
+        .pointer("/config_validation/issues")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            format!("[drift={robot_drift}] sources doctor robot missing config_validation.issues")
+        })?;
+    let has_legacy_warn = issues.iter().any(|issue| {
+        issue.get("kind").and_then(Value::as_str) == Some("legacy_remote_source")
+            && issue.get("severity").and_then(Value::as_str) == Some("warning")
+            && issue.get("source_name").and_then(Value::as_str) == Some("parity-host")
+    });
+    if !has_legacy_warn {
+        return Err(format!(
+            "[drift={robot_drift}] config_validation missing legacy_remote_source warning: {issues:?}"
+        ));
+    }
+    let safe_cmd = issues
+        .iter()
+        .filter_map(|issue| issue.get("safe_next_command").and_then(Value::as_str))
+        .find(|cmd| command_is_safe(cmd));
+    if let Some(unsafe_cmd) = issues
+        .iter()
+        .filter_map(|issue| issue.get("safe_next_command").and_then(Value::as_str))
+        .find(|cmd| !command_is_safe(cmd))
+    {
+        return Err(format!(
+            "[drift={robot_drift}] sources doctor safe_next_command is not on the safe allow-list: {unsafe_cmd}"
+        ));
+    }
+    let safe_cmd = safe_cmd.ok_or_else(|| {
+        format!("[drift={robot_drift}] expected safe_next_command in config_validation.issues")
+    })?;
 
-    // --- human form ---
-    let human_out =
-        run_sources_doctor_form(&home_path, &["sources", "doctor"], "sources_doctor_human");
-    if has_escape(&human_out.stdout) {
+    let ssh_human_out = run_sources_doctor_form(
+        &home_path,
+        &["sources", "doctor"],
+        "sources_doctor_ssh_human",
+    );
+    if ssh_human_out.status.code() != Some(0) {
+        return Err(format!(
+            "[drift={human_drift}] sources doctor human should exit 0 for legacy ssh warning, got {:?}",
+            ssh_human_out.status.code(),
+        ));
+    }
+    if has_escape(&ssh_human_out.stdout) {
         return Err(format!(
             "[drift={human_drift}] sources doctor human stdout carries an ANSI escape despite NO_COLOR"
         ));
     }
-    let human = std::str::from_utf8(&human_out.stdout)
+    let ssh_human = std::str::from_utf8(&ssh_human_out.stdout)
         .map_err(|e| format!("[drift={human_drift}] sources doctor human stdout not UTF-8: {e}"))?;
-    if human.trim().is_empty() {
-        return Err(format!(
-            "[drift={human_drift}] sources doctor human surface produced no output"
-        ));
-    }
-    // Parity — the human projection names the same source the robot reports.
-    if !human.contains("parity-host") {
-        return Err(format!(
-            "[drift={human_drift}] sources doctor human output does not name the source 'parity-host'; head: {}",
-            head(human)
-        ));
-    }
-    // Parity — both surfaces diagnose the same failing host (the shared evidence
-    // the robot `state`/`connection_error` and the human checks both reference).
-    if !human.contains("parity.invalid") {
-        return Err(format!(
-            "[drift={human_drift}] sources doctor human output does not reflect the failing host 'parity.invalid'; head: {}",
-            head(human)
-        ));
-    }
-    let source_state = source
-        .get("state")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("[drift={robot_drift}] source missing native state code"))?;
-    let host_state = robot
-        .pointer("/diagnostics/0/host_report/status")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("[drift={robot_drift}] host report missing status code"))?;
-    let state_codes = format!("State codes: source={source_state} host={host_state}");
-    if !human.contains(&state_codes) {
-        return Err(format!(
-            "[drift={human_drift}] sources doctor human output diverged from robot state codes {state_codes:?}; head: {}",
-            head(human)
-        ));
-    }
-    let safe_line = format!("Next safe command: {safe_cmd}");
-    if !human.contains(&safe_line) {
-        return Err(format!(
-            "[drift={human_drift}] sources doctor human output did not preserve the robot safe command; head: {}",
-            head(human)
-        ));
-    }
-    if !human.contains("Readiness: attention-required")
-        || !human.contains("Host reached: no")
-        || !human.contains("Why: the host could not be contacted; deeper state is unknown")
+    if !ssh_human.contains("parity-host")
+        || !ssh_human.contains("nobody@parity.invalid")
+        || !ssh_human.contains("0 failed")
+        || !ssh_human.contains(safe_cmd)
     {
         return Err(format!(
-            "[drift={human_drift}] sources doctor human output omitted the bounded native-state explanation; head: {}",
-            head(human)
+            "[drift={human_drift}] sources doctor human output diverged on legacy ssh summary/guidance; head: {}",
+            head(ssh_human)
         ));
     }
-    // Refusal — the human surface never carries destructive guidance.
-    if !text_is_clean(human) {
+    if !text_is_clean(ssh_human) {
         return Err(format!(
             "[drift={human_drift}] sources doctor human output carries a destructive command fragment"
         ));
     }
-
-    // Mutation-free — classifying the source did not rewrite sources.toml.
-    let after =
+    let ssh_after =
         std::fs::read(&sources_toml).map_err(|e| format!("read sources.toml after: {e}"))?;
-    if before != after {
+    if ssh_before != ssh_after {
         return Err(format!(
-            "[drift={}] sources doctor rewrote sources.toml (must be mutation-free)",
+            "[drift={}] sources doctor rewrote sources.toml on ssh scenario",
+            DriftKind::Fixture.as_str()
+        ));
+    }
+
+    // --- Scenario 2: broken local path fails with exit 1 on both surfaces ---
+    let missing_path = home_path.join("nonexistent-cass-source-dir");
+    let missing_path_str = missing_path.to_string_lossy();
+    let local_toml = format!(
+        "[[sources]]\nname = \"local-broken\"\ntype = \"local\"\npaths = [\"{missing_path_str}\"]\n"
+    );
+    std::fs::write(&sources_toml, local_toml).map_err(|e| format!("write local sources.toml: {e}"))?;
+    let local_before =
+        std::fs::read(&sources_toml).map_err(|e| format!("read local sources.toml: {e}"))?;
+
+    let local_robot_out = run_sources_doctor_form(
+        &home_path,
+        &["sources", "doctor", "--json"],
+        "sources_doctor_local_robot",
+    );
+    if local_robot_out.status.code() != Some(1) {
+        return Err(format!(
+            "[drift={robot_drift}] sources doctor --json should exit 1 for broken local path, got {:?}",
+            local_robot_out.status.code(),
+        ));
+    }
+    let local_robot_stdout = std::str::from_utf8(&local_robot_out.stdout)
+        .map_err(|e| format!("[drift={robot_drift}] local robot stdout not UTF-8: {e}"))?;
+    let local_robot: Value = serde_json::from_str(local_robot_stdout.trim()).map_err(|e| {
+        format!(
+            "[drift={robot_drift}] local robot stdout is not pure JSON: {e}; head: {}",
+            head(local_robot_stdout)
+        )
+    })?;
+    let local_diag = local_robot
+        .get("diagnostics")
+        .and_then(Value::as_array)
+        .and_then(|diags| {
+            diags
+                .iter()
+                .find(|d| d.get("source_id").and_then(Value::as_str) == Some("local-broken"))
+        })
+        .ok_or_else(|| {
+            format!("[drift={robot_drift}] local robot output omitted 'local-broken'")
+        })?;
+    if local_diag.get("failed").and_then(Value::as_u64).unwrap_or(0) == 0 {
+        return Err(format!(
+            "[drift={robot_drift}] broken local source must report failed >= 1: {local_diag}"
+        ));
+    }
+    let local_fail_check = local_diag
+        .get("checks")
+        .and_then(Value::as_array)
+        .and_then(|checks| {
+            checks.iter().find(|c| {
+                c.get("status").and_then(Value::as_str) == Some("fail")
+                    && c.get("name")
+                        .and_then(Value::as_str)
+                        .is_some_and(|n| n.contains(missing_path_str.as_ref()))
+            })
+        })
+        .ok_or_else(|| {
+            format!("[drift={robot_drift}] broken local source missing fail check for {missing_path_str}")
+        })?;
+    let local_msg = local_fail_check
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let local_rem = local_fail_check
+        .get("remediation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("[drift={robot_drift}] broken local check missing remediation"))?;
+    if local_msg.is_empty() || local_rem.is_empty() || !text_is_clean(local_rem) {
+        return Err(format!(
+            "[drift={robot_drift}] invalid broken-local check message={local_msg:?} remediation={local_rem:?}"
+        ));
+    }
+
+    let local_human_out = run_sources_doctor_form(
+        &home_path,
+        &["sources", "doctor"],
+        "sources_doctor_local_human",
+    );
+    if local_human_out.status.code() != Some(1) {
+        return Err(format!(
+            "[drift={human_drift}] sources doctor human should exit 1 for broken local path, got {:?}",
+            local_human_out.status.code(),
+        ));
+    }
+    if has_escape(&local_human_out.stdout) {
+        return Err(format!(
+            "[drift={human_drift}] local human stdout carries an ANSI escape despite NO_COLOR"
+        ));
+    }
+    let local_human = std::str::from_utf8(&local_human_out.stdout)
+        .map_err(|e| format!("[drift={human_drift}] local human stdout not UTF-8: {e}"))?;
+    if !local_human.contains("local-broken")
+        || !local_human.contains(missing_path_str.as_ref())
+        || !local_human.contains(local_msg)
+        || !local_human.contains(local_rem)
+        || !local_human.contains("1 failed")
+    {
+        return Err(format!(
+            "[drift={human_drift}] local human output diverged from robot diagnostics; head: {}",
+            head(local_human)
+        ));
+    }
+    if !text_is_clean(local_human) {
+        return Err(format!(
+            "[drift={human_drift}] local human output carries a destructive command fragment"
+        ));
+    }
+    let local_after =
+        std::fs::read(&sources_toml).map_err(|e| format!("read local sources.toml after: {e}"))?;
+    if local_before != local_after {
+        return Err(format!(
+            "[drift={}] sources doctor rewrote sources.toml on local scenario",
             DriftKind::Fixture.as_str()
         ));
     }

@@ -96,13 +96,58 @@ pub struct SemanticBackfillBatchOutcome {
 pub(in crate::indexer::semantic::engine) struct BackfillFileStamp {
     len: u64,
     modified: (u64, u32),
-    changed: (i64, i64),
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    changed: Option<(i64, i64)>,
     identity: (u64, u64),
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edge_digest: Option<[u8; 32]>,
 }
 
 #[cfg(unix)]
-pub(in crate::indexer::semantic::engine) fn backfill_file_stamp(
+fn is_sqlite_wal_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("-wal"))
+}
+
+#[cfg(unix)]
+fn read_wal_edge_digest(
     path: &Path,
+    expected_len: u64,
+    expected_identity: (u64, u64),
+) -> Option<[u8; 32]> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::MetadataExt;
+    const EDGE_SAMPLE_BYTES: u64 = 4096;
+
+    let mut file = fs::File::open(path).ok()?;
+    let opened = file.metadata().ok()?;
+    if opened.len() != expected_len || (opened.dev(), opened.ino()) != expected_identity {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&expected_len.to_le_bytes());
+    let head_len = usize::try_from(expected_len.min(EDGE_SAMPLE_BYTES)).ok()?;
+    let mut head = vec![0_u8; head_len];
+    file.read_exact(&mut head).ok()?;
+    hasher.update(&head);
+    if expected_len > EDGE_SAMPLE_BYTES {
+        let tail_start = expected_len
+            .saturating_sub(EDGE_SAMPLE_BYTES)
+            .max(head_len as u64);
+        let tail_len = usize::try_from(expected_len - tail_start).ok()?;
+        file.seek(SeekFrom::Start(tail_start)).ok()?;
+        let mut tail = vec![0_u8; tail_len];
+        file.read_exact(&mut tail).ok()?;
+        hasher.update(&tail);
+    }
+    Some(*hasher.finalize().as_bytes())
+}
+
+#[cfg(unix)]
+fn backfill_file_stamp_with_ctime(
+    path: &Path,
+    include_ctime: bool,
 ) -> Option<Option<BackfillFileStamp>> {
     use std::os::unix::fs::MetadataExt;
     let metadata = match fs::metadata(path) {
@@ -111,12 +156,30 @@ pub(in crate::indexer::semantic::engine) fn backfill_file_stamp(
         _ => return None,
     };
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    if !include_ctime && metadata.len() == 0 {
+        // An empty 0-byte SQLite -wal carries zero frames, equivalent to absent.
+        return Some(None);
+    }
+    let identity = (metadata.dev(), metadata.ino());
+    let edge_digest = if include_ctime {
+        None
+    } else {
+        Some(read_wal_edge_digest(path, metadata.len(), identity)?)
+    };
     Some(Some(BackfillFileStamp {
         len: metadata.len(),
         modified: (modified.as_secs(), modified.subsec_nanos()),
-        changed: (metadata.ctime(), metadata.ctime_nsec()),
-        identity: (metadata.dev(), metadata.ino()),
+        changed: include_ctime.then(|| (metadata.ctime(), metadata.ctime_nsec())),
+        identity,
+        edge_digest,
     }))
+}
+
+#[cfg(unix)]
+pub(in crate::indexer::semantic::engine) fn backfill_file_stamp(
+    path: &Path,
+) -> Option<Option<BackfillFileStamp>> {
+    backfill_file_stamp_with_ctime(path, !is_sqlite_wal_path(path))
 }
 
 #[cfg(not(unix))]
@@ -151,14 +214,23 @@ impl BackfillFilePair {
         // to the actual open main-file descriptor as well: a pathname can
         // have been replaced since the storage handle was opened.
         let path = storage.database_path().ok()?.canonicalize().ok()?;
-        let descriptor = storage.raw().file_identity().ok()??;
+        let descriptor = storage
+            .raw()
+            .file_identity()
+            .ok()
+            .flatten()
+            .or_else(|| storage.raw().snapshot_source_identity())?;
         if crate::franken_sync::FileIdentity::from_path(&path).ok()? != Some(descriptor) {
             return None;
         }
-        let pair = Self::capture(
-            &path,
-            &crate::storage::sqlite::database_sidecar_path(&path, "-wal"),
-        )?;
+        let wal_path = crate::storage::sqlite::database_sidecar_path(&path, "-wal");
+        // Exclude -wal ctime because C SQLite's unixOpen calls robustFchown
+        // under euid==0 even on read-only opens, shifting ctime without content writes.
+        let pair = Self {
+            path: path.clone(),
+            main: backfill_file_stamp_with_ctime(&path, true)??,
+            wal: backfill_file_stamp_with_ctime(&wal_path, false)?,
+        };
         (crate::franken_sync::FileIdentity::from_path(&path).ok()? == Some(descriptor))
             .then_some(pair)
     }

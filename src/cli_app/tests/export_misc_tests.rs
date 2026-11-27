@@ -821,40 +821,26 @@ mod legacy_source_filter_tests {
         let conn = open_franken_cli_read_db(path, "stats parity", Duration::from_secs(5))
             .expect("same reader as stats");
         assert_fold_matches_sql(&conn);
-        for (label, sql, expected_route) in [
+        for (label, sql, expect_order_by_temp_btree) in [
             (
                 "old",
                 format!("{} ORDER BY COUNT(*) DESC", stats_agent_count_sql("", "")),
-                "group_by_fallback",
+                true,
             ),
-            (
-                "new",
-                stats_agent_count_sql("", ""),
-                "group_by_storage_substrate",
-            ),
+            ("new", stats_agent_count_sql("", ""), false),
         ] {
-            let trace_path = tmp.path().join(format!("{label}.log"));
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::DEBUG)
-                .with_ansi(false)
-                .with_writer(std::sync::Mutex::new(
-                    std::fs::File::create(&trace_path).expect("trace file"),
-                ))
-                .finish();
-            tracing::subscriber::with_default(subscriber, || {
-                conn.query(&sql).expect("trace actual grouped execution");
-            });
-            let trace = std::fs::read_to_string(trace_path).expect("read engine trace");
-            assert!(
-                trace.contains(expected_route),
-                "expected {expected_route}: {trace}"
+            let plan_details = conn
+                .query_map_collect(&format!("EXPLAIN QUERY PLAN {sql}"), &[], |row| {
+                    row.get_typed::<String>(3)
+                })
+                .expect("explain grouped execution");
+            let uses_order_by_temp_btree = plan_details
+                .iter()
+                .any(|detail| detail.contains("USE TEMP B-TREE FOR ORDER BY"));
+            assert_eq!(
+                uses_order_by_temp_btree, expect_order_by_temp_btree,
+                "{label} plan details: {plan_details:?}"
             );
-            if label == "new" {
-                assert!(
-                    !trace.contains("group_by_fallback"),
-                    "new query must stay on storage grouping: {trace}"
-                );
-            }
         }
         for filter in [
             None,
@@ -1087,15 +1073,22 @@ mod legacy_source_filter_tests {
             vec![index_root],
             "candidate scan must open only the covering index"
         );
-        // Negative control: the same projection without the hint reads the
-        // conversation table, so narrow column names alone are not proof.
-        let unhinted = conn
-            .query("EXPLAIN SELECT id, workspace_id, agent_id, started_at FROM conversations")
-            .unwrap();
-        assert!(unhinted.iter().any(|row| {
-            row.get_typed::<String>(1).unwrap() == "OpenRead"
-                && row.get_typed::<i64>(3).unwrap() != index_root
-        }));
+        // Negative control: projecting the unindexed `metadata_bin` column (or
+        // disabling the index) reads the conversation table, so the EXPLAIN
+        // check genuinely detects non-covering table scans.
+        for negative_sql in [
+            "EXPLAIN SELECT id, workspace_id, agent_id, started_at, metadata_bin FROM conversations",
+            "EXPLAIN SELECT id, workspace_id, agent_id, started_at FROM conversations NOT INDEXED",
+        ] {
+            let unhinted = conn.query(negative_sql).unwrap();
+            assert!(
+                unhinted.iter().any(|row| {
+                    row.get_typed::<String>(1).unwrap() == "OpenRead"
+                        && row.get_typed::<i64>(3).unwrap() != index_root
+                }),
+                "negative control did not open conversations table: {negative_sql}"
+            );
+        }
     }
 
     #[test]

@@ -568,7 +568,9 @@ mod state_db_integrity_probe_tests {
         let conn = crate::franken_sync::Connection::open(db_path.display().to_string())
             .expect("create probe fixture db");
         conn.execute_batch(
-            "CREATE TABLE conversations (
+            "PRAGMA application_id = 0x43415353;
+             PRAGMA user_version = 1;
+             CREATE TABLE conversations (
                  id INTEGER PRIMARY KEY,
                  title TEXT,
                  source_path TEXT NOT NULL

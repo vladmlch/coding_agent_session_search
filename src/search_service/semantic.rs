@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -159,11 +160,30 @@ struct FileStamp {
     bytes: u64,
     modified: SystemTime,
     #[cfg(unix)]
-    changed: (i64, i64),
+    changed: Option<(i64, i64)>,
+    sidecar_edges: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+fn read_edge_bytes(file: &mut File, bytes: u64) -> Result<(Vec<u8>, Vec<u8>)> {
+    const EDGE_SAMPLE_BYTES: u64 = 4096;
+    let head_len = usize::try_from(bytes.min(EDGE_SAMPLE_BYTES)).unwrap_or(usize::MAX);
+    let mut head = vec![0_u8; head_len];
+    file.read_exact(&mut head)?;
+    if bytes <= EDGE_SAMPLE_BYTES {
+        return Ok((head, Vec::new()));
+    }
+    let tail_start = bytes
+        .saturating_sub(EDGE_SAMPLE_BYTES)
+        .max(head_len as u64);
+    let tail_len = usize::try_from(bytes - tail_start).unwrap_or(usize::MAX);
+    file.seek(SeekFrom::Start(tail_start))?;
+    let mut tail = vec![0_u8; tail_len];
+    file.read_exact(&mut tail)?;
+    Ok((head, tail))
 }
 
 impl FileStamp {
-    fn read(path: &Path) -> Result<Option<Self>> {
+    fn read(path: &Path, is_sqlite_sidecar: bool) -> Result<Option<Self>> {
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -174,36 +194,44 @@ impl FileStamp {
             "semantic service requires regular, non-symlink asset files: {}",
             path.display()
         );
-        let file = File::open(path)?;
+        let mut file = File::open(path)?;
         let opened = file.metadata()?;
         ensure!(
-            same_metadata(&metadata, &opened),
+            same_metadata(&metadata, &opened, !is_sqlite_sidecar),
             "semantic asset changed while opening its witness"
         );
+        let sidecar_edges = if is_sqlite_sidecar {
+            Some(read_edge_bytes(&mut file, opened.len())?)
+        } else {
+            None
+        };
         Ok(Some(Self {
             handle: same_file::Handle::from_file(file)?,
             bytes: opened.len(),
             modified: opened.modified()?,
             #[cfg(unix)]
-            changed: {
+            changed: (!is_sqlite_sidecar).then(|| {
                 use std::os::unix::fs::MetadataExt;
                 (opened.ctime(), opened.ctime_nsec())
-            },
+            }),
+            sidecar_edges,
         }))
     }
 }
 
-fn same_metadata(left: &Metadata, right: &Metadata) -> bool {
+fn same_metadata(left: &Metadata, right: &Metadata, check_ctime: bool) -> bool {
     let same_contents = left.len() == right.len() && left.modified().ok() == right.modified().ok();
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         same_contents
-            && (left.dev(), left.ino(), left.ctime(), left.ctime_nsec())
-                == (right.dev(), right.ino(), right.ctime(), right.ctime_nsec())
+            && (left.dev(), left.ino()) == (right.dev(), right.ino())
+            && (!check_ctime
+                || (left.ctime(), left.ctime_nsec()) == (right.ctime(), right.ctime_nsec()))
     }
     #[cfg(not(unix))]
     {
+        let _ = check_ctime;
         same_contents
     }
 }
@@ -214,17 +242,32 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+struct WatchedAsset {
+    is_sqlite_sidecar: bool,
+    stamp: Option<FileStamp>,
+}
+
 #[derive(Default)]
-struct AssetGuard(BTreeMap<PathBuf, Option<FileStamp>>);
+struct AssetGuard(BTreeMap<PathBuf, WatchedAsset>);
 
 impl AssetGuard {
     fn add(&mut self, path: PathBuf) -> Result<()> {
+        self.add_asset(path, false)
+    }
+
+    fn add_asset(&mut self, path: PathBuf, is_sqlite_sidecar: bool) -> Result<()> {
         ensure!(
             self.0.len() < MAX_GUARDED_FILES,
             "semantic service asset witness limit exceeded"
         );
-        let stamp = FileStamp::read(&path)?;
-        self.0.insert(path, stamp);
+        let stamp = FileStamp::read(&path, is_sqlite_sidecar)?;
+        self.0.insert(
+            path,
+            WatchedAsset {
+                is_sqlite_sidecar,
+                stamp,
+            },
+        );
         Ok(())
     }
 
@@ -235,10 +278,12 @@ impl AssetGuard {
 
     fn capture(data_dir: &Path, db: &Path, embedder_id: &str) -> Result<Self> {
         let mut guard = Self::default();
+        // Exclude ctime on SQLite -wal/-journal because C SQLite calls
+        // robustFchown under euid==0 on O_RDONLY opens without modifying content.
+        guard.add(db.to_path_buf())?;
+        guard.add_asset(suffixed(db, "-wal"), true)?;
+        guard.add_asset(suffixed(db, "-journal"), true)?;
         for path in [
-            db.to_path_buf(),
-            suffixed(db, "-wal"),
-            suffixed(db, "-journal"),
             SemanticManifest::path(data_dir),
             SemanticShardManifest::path(data_dir),
             SemanticCurrentPointerV1::path(data_dir),
@@ -247,7 +292,11 @@ impl AssetGuard {
         }
         guard.vector(vector_index_path(data_dir, embedder_id))?;
         let shard_path = SemanticShardManifest::path(data_dir);
-        if let Some(Some(stamp)) = guard.0.get(&shard_path) {
+        if let Some(stamp) = guard
+            .0
+            .get(&shard_path)
+            .and_then(|asset| asset.stamp.as_ref())
+        {
             ensure!(
                 stamp.bytes <= MAX_SHARD_MANIFEST_BYTES,
                 "semantic shard manifest exceeds 1 MiB"
@@ -279,7 +328,11 @@ impl AssetGuard {
 
     fn check(&self) -> Result<()> {
         for (path, expected) in &self.0 {
-            if FileStamp::read(path).ok().as_ref() != Some(expected) {
+            if FileStamp::read(path, expected.is_sqlite_sidecar)
+                .ok()
+                .as_ref()
+                != Some(&expected.stamp)
+            {
                 return Err(Refusal::Changed.into());
             }
         }
@@ -438,7 +491,7 @@ impl Semantic {
                 guard
                     .0
                     .get(artifact.fsvi_path())
-                    .is_some_and(Option::is_some),
+                    .is_some_and(|asset| asset.stamp.is_some()),
                 "semantic artifact lacks a pre-admission file witness"
             );
         }

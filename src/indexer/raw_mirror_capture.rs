@@ -526,6 +526,32 @@ pub(in crate::indexer) fn capture_discovered_source_file_before_parse(
     }
 }
 
+fn is_allowed_file_scan_root_sidecar(source: &crate::connectors::DiscoveredSourceFile) -> bool {
+    if source.role != crate::connectors::DiscoveredSourceRole::MetadataSidecar
+        || source.scan_root.is_dir()
+    {
+        return false;
+    }
+    let Some(scan_parent) = source.scan_root.parent() else {
+        return false;
+    };
+    if source.source_path.parent() != Some(scan_parent) {
+        return false;
+    }
+    let (Some(scan_name), Some(source_name)) =
+        (source.scan_root.file_name(), source.source_path.file_name())
+    else {
+        return false;
+    };
+    let Some(suffix) = source_name
+        .as_encoded_bytes()
+        .strip_prefix(scan_name.as_encoded_bytes())
+    else {
+        return false;
+    };
+    matches!(suffix, b"-wal" | b"-shm" | b"-journal")
+}
+
 pub(in crate::indexer) fn validate_discovered_source_path(
     source: &crate::connectors::DiscoveredSourceFile,
 ) -> Result<(), &'static str> {
@@ -546,6 +572,14 @@ pub(in crate::indexer) fn validate_discovered_source_path(
     }
     if source.source_path == source.scan_root || source.source_path.starts_with(&source.scan_root) {
         if discovered_source_path_has_symlink_component(&source.scan_root, &source.source_path) {
+            return Err("source path contains symlink component");
+        }
+        return Ok(());
+    }
+    if is_allowed_file_scan_root_sidecar(source) {
+        if path_component_is_symlink(&source.scan_root)
+            || path_component_is_symlink(&source.source_path)
+        {
             return Err("source path contains symlink component");
         }
         return Ok(());

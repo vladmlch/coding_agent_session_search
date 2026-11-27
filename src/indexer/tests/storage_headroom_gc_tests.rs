@@ -1233,7 +1233,128 @@ fn full_rebuild_integrity_preflight_rejects_corrupt_fts_structure_record() {
         problem.contains("FTS5 segment integrity-check failed"),
         "diagnostic must identify the FTS segment preflight: {problem}"
     );
+    assert!(
+        !problem.contains("readonly database"),
+        "preflight must inspect FTS5 integrity without triggering readonly error: {problem}"
+    );
     storage.close_best_effort_in_place();
+}
+
+#[test]
+fn full_rebuild_integrity_preflight_allows_legacy_fts_residue_with_missing_docsize_but_rejects_canonical_docsize_loss()
+ {
+    let tmp = TempDir::new().unwrap();
+    let legacy_db = tmp.path().join("legacy-fts-missing-docsize.db");
+    {
+        let storage = FrankenStorage::open(&legacy_db).unwrap();
+        storage
+            .raw()
+            .execute(
+                "DROP TABLE fts_messages;
+                 CREATE VIRTUAL TABLE fts_messages USING fts5(
+                     content, title, agent, workspace, source_path,
+                     created_at UNINDEXED, message_id UNINDEXED, tokenize='porter'
+                 );
+                 INSERT INTO fts_messages(
+                     rowid, content, title, agent, workspace, source_path, created_at, message_id
+                 ) VALUES(1, 'legacy residue text', 'title', 'codex', '/tmp', '/tmp/legacy', 0, 1);
+                 DELETE FROM fts_messages_docsize WHERE id = 1;",
+            )
+            .expect("seed legacy FTS residue with missing _docsize row");
+    }
+
+    assert_eq!(
+        full_rebuild_existing_archive_integrity_preflight(&legacy_db).unwrap(),
+        None,
+        "non-canonical legacy FTS5 residue with missing _docsize must be left for full-index drop/recreate"
+    );
+
+    // D28 + D32: even when legacy `fts_messages` residue is present, real B-tree
+    // damage in a canonical table (here `messages`) must still be rejected by
+    // per-table `PRAGMA quick_check`.
+    {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let storage = FrankenStorage::open(&legacy_db).unwrap();
+        let page_size: i64 = storage
+            .raw()
+            .query_row_map("PRAGMA page_size", &[] as &[ParamValue], |row| {
+                row.get_typed(0)
+            })
+            .unwrap();
+        let rootpage: i64 = storage
+            .raw()
+            .query_row_map(
+                "SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+                &[] as &[ParamValue],
+                |row| row.get_typed(0),
+            )
+            .unwrap();
+        assert!(rootpage >= 2 && page_size >= 512);
+        storage
+            .raw()
+            .execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        storage.close().unwrap();
+
+        let offset = u64::try_from((rootpage - 1) * page_size).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&legacy_db)
+            .unwrap();
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.write_all(&[0xFF; 16]).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    let legacy_btree_problem = full_rebuild_existing_archive_integrity_preflight(&legacy_db)
+        .unwrap()
+        .expect("corrupt canonical B-tree on legacy-FTS archive must be rejected by quick_check");
+    assert!(
+        legacy_btree_problem.contains("quick_check"),
+        "D28 per-table quick_check must catch canonical B-tree corruption: {legacy_btree_problem}"
+    );
+
+    let canonical_db = tmp.path().join("canonical-fts-corrupt-data.db");
+    {
+        let storage = FrankenStorage::open(&canonical_db).unwrap();
+        storage
+            .ensure_search_fallback_fts_consistency()
+            .expect("materialize canonical FTS shadow");
+        storage
+            .raw()
+            .execute(
+                "INSERT INTO fts_messages(rowid, content, title)
+                 VALUES(1, 'canonical data sentinel', 'title')",
+            )
+            .expect("persist canonical FTS row");
+        storage.close().unwrap();
+    }
+    {
+        let conn = crate::franken_sync::Connection::open(
+            canonical_db.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE fts_messages_data
+             SET block = X'FFFFFFFFFFFFFFFFFFFFFFFF'
+             WHERE id = (SELECT MAX(id) FROM fts_messages_data)",
+        )
+        .expect("corrupt canonical _data segment record");
+    }
+
+    let problem = full_rebuild_existing_archive_integrity_preflight(&canonical_db)
+        .unwrap()
+        .expect("canonical FTS shadow with corrupt _data must still be rejected");
+    assert!(
+        problem.contains("FTS5 segment integrity-check failed"),
+        "diagnostic must identify the FTS segment preflight: {problem}"
+    );
+    assert!(
+        !problem.contains("readonly database"),
+        "preflight must inspect FTS5 integrity without triggering readonly error: {problem}"
+    );
 }
 
 #[test]

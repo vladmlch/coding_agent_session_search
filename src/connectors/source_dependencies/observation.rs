@@ -41,6 +41,14 @@ impl DependencyObservations {
     }
 }
 
+#[cfg(unix)]
+fn is_sqlite_sidecar_path(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        let bytes = name.as_encoded_bytes();
+        bytes.ends_with(b"-wal") || bytes.ends_with(b"-shm") || bytes.ends_with(b"-journal")
+    })
+}
+
 pub(crate) fn file_observation(path: &Path) -> Option<Value> {
     // The ledger stores paths as JSON strings. Path's serializer rejects
     // non-Unicode names, and json! would panic on that error. Such an input
@@ -65,7 +73,14 @@ pub(crate) fn file_observation(path: &Path) -> Option<Value> {
                 let mut observation = observation;
                 // No st_dev: see LEGACY_DEVICE_FIELD.
                 observation["inode"] = serde_json::json!(metadata.ino());
-                observation["ctime"] = serde_json::json!([metadata.ctime(), metadata.ctime_nsec()]);
+                // Under euid == 0, C SQLite's `robustFchown` updates `st_ctime`
+                // on `-wal`, `-shm`, and `-journal` even on strict read-only
+                // opens (`mode=ro&readonly_shm=1`), without touching bytes,
+                // size, inode, or mtime. Keep `ctime` for primaries and logs.
+                if !is_sqlite_sidecar_path(path) {
+                    observation["ctime"] =
+                        serde_json::json!([metadata.ctime(), metadata.ctime_nsec()]);
+                }
                 observation
             };
             Some(observation)
@@ -616,5 +631,25 @@ mod path_encoding_tests {
             assert!(!ledger_matches(&saved, &path, observes_parent, CONTRACT));
         }
         assert_eq!(fs::read(&path).unwrap(), b"unchanged source");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_sidecar_observations_omit_ctime_while_primaries_keep_it() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("sessions.db");
+        fs::write(&db, b"db").unwrap();
+        let db_obs = file_observation(&db).unwrap();
+        assert!(db_obs["inode"].is_u64() && db_obs["ctime"].is_array());
+
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = temp.path().join(format!("sessions.db{suffix}"));
+            fs::write(&sidecar, b"sidecar").unwrap();
+            let obs = file_observation(&sidecar).unwrap();
+            assert!(obs["inode"].is_u64(), "{suffix}: inode kept");
+            assert!(obs["size"].is_u64(), "{suffix}: size kept");
+            assert!(obs["mtime_ns"].is_string(), "{suffix}: mtime_ns kept");
+            assert!(obs.get("ctime").is_none(), "{suffix}: ctime omitted");
+        }
     }
 }

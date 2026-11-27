@@ -804,8 +804,13 @@ mod deferred_watch_sources {
         // "acknowledged" assistant message. They remain canonical evidence
         // but are intentionally excluded from lexical search as hard noise.
         assert_eq!(status["database"]["messages"], 23, "{status}");
-        assert_eq!(status["index"]["documents"], 18, "{status}");
-        assert_eq!(status["index"]["live_documents"], 18, "{status}");
+        let status_docs = status["index"]["documents"]
+            .as_u64()
+            .expect("index.documents");
+        let status_live_docs = status["index"]["live_documents"]
+            .as_u64()
+            .expect("index.live_documents");
+        assert_eq!(status_live_docs, status_docs, "{status}");
         assert_eq!(
             content_hit_count(&search(home.path(), &data, "ready"), "ready"),
             2,
@@ -837,6 +842,19 @@ mod deferred_watch_sources {
 
         let storage = SqliteStorage::open_readonly(&data.join("agent_search.db"))
             .expect("inspect canonical archive after watcher exit");
+        let region_docs = coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+            storage.raw(),
+        )
+        .expect("read live region doc bound") as u64;
+        // REGION_VERSION=7 emits 3 region/session-scope docs per conversation
+        // plus 1 noise_chat doc for each of the 5 Codex conversations whose
+        // assistant "acknowledged" message was excluded from canonical search.
+        let expected_region_docs = 7 * 3 + 5;
+        assert_eq!(region_docs, expected_region_docs);
+        assert_eq!(status_docs - region_docs, 18);
+        assert_eq!(status_live_docs - region_docs, 18);
+        assert_eq!(status_docs, 18 + expected_region_docs);
+        assert_eq!(status_live_docs, 18 + expected_region_docs);
         let source_paths: Vec<String> = storage
             .raw()
             .query_map_collect("SELECT source_path FROM conversations", &[], |row| {

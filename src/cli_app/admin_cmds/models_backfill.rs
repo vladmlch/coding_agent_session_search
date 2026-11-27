@@ -135,16 +135,10 @@ pub(crate) fn run_models_backfill(
             .lock()
             .map_or(Some(130), |mut signals| signals.poll_exit_code())
     };
-    let cancelled: crate::indexer::semantic::CancelCheck = {
-        let shutdown = std::sync::Arc::clone(&shutdown);
-        std::sync::Arc::new(move || {
-            shutdown
-                .lock()
-                .map_or(true, |mut signals| signals.poll_exit_code().is_some())
-        })
-    };
+    // Complete each admitted bounded batch and persist its checkpoint before
+    // checking shutdown signals between batches at the loop boundary.
     let mut retained = RetainedBackfillModel {
-        cancelled: Some(cancelled),
+        cancelled: None,
         ..RetainedBackfillModel::default()
     };
     let mut attempted = 0u32;

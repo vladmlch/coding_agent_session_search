@@ -125,6 +125,15 @@ fn doctor_checks(home: &Path, data_dir: &Path) -> Vec<Value> {
         .unwrap_or_else(|| panic!("doctor payload has no checks array: {json}"))
 }
 
+fn region_doc_bound(data_dir: &Path) -> u64 {
+    let storage = coding_agent_search::storage::sqlite::SqliteStorage::open_readonly(
+        &data_dir.join("agent_search.db"),
+    )
+    .expect("open archive readonly");
+    coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
+        .expect("read live region doc bound") as u64
+}
+
 fn checkpoint_completed(index_path: &Path) -> bool {
     let bytes = std::fs::read(index_path.join(".lexical-rebuild-state.json"))
         .expect("read lexical rebuild checkpoint");
@@ -188,16 +197,23 @@ fn gh457_hollow_generation_fails_readiness_and_the_next_index_run_rebuilds_it() 
     let ready = status_json(home, &data_dir);
     assert_eq!(ready["index"]["status"].as_str(), Some("ready"), "{ready}");
     assert_eq!(ready["index"]["hollow"].as_bool(), Some(false), "{ready}");
+    let expected_region_docs = (SESSIONS * 3) as u64;
+    let ready_bound = region_doc_bound(&data_dir);
+    assert_eq!(ready_bound, expected_region_docs, "{ready}");
+    let ready_live_docs = ready["index"]["live_documents"]
+        .as_u64()
+        .expect("ready live_documents");
+    let ready_docs = ready["index"]["documents"]
+        .as_u64()
+        .expect("ready documents");
+    assert_eq!(ready_live_docs - ready_bound, expected_docs, "{ready}");
     assert_eq!(
-        ready["index"]["live_documents"].as_u64(),
-        Some(expected_docs),
+        ready_live_docs,
+        expected_docs + expected_region_docs,
         "{ready}"
     );
-    assert_eq!(
-        ready["index"]["documents"].as_u64(),
-        Some(expected_docs),
-        "{ready}"
-    );
+    assert_eq!(ready_docs - ready_bound, expected_docs, "{ready}");
+    assert_eq!(ready_docs, expected_docs + expected_region_docs, "{ready}");
 
     // Hollow it: the engine publishes successor generations that serve one
     // stray document, while every cass-side certificate stays exactly as the
@@ -248,8 +264,9 @@ fn gh457_hollow_generation_fails_readiness_and_the_next_index_run_rebuilds_it() 
     let reason = hollow["index"]["reason"].as_str().unwrap_or_default();
     assert!(reason.contains("HOLLOW"), "{hollow}");
     assert!(reason.contains("1 live document"), "{hollow}");
+    let certified_total_docs = expected_docs + expected_region_docs;
     assert!(
-        reason.contains(&format!("{expected_docs} indexed document")),
+        reason.contains(&format!("{certified_total_docs} indexed document")),
         "{hollow}"
     );
     assert!(reason.contains("Run `cass index`"), "{hollow}");
@@ -353,9 +370,20 @@ fn gh457_hollow_generation_fails_readiness_and_the_next_index_run_rebuilds_it() 
             .contains("HOLLOW"),
         "{repaired}"
     );
+    let repaired_region_docs = ((SESSIONS + 1) * 3) as u64;
+    let repaired_bound = region_doc_bound(&data_dir);
+    assert_eq!(repaired_bound, repaired_region_docs, "{repaired}");
+    let repaired_live_docs = repaired["index"]["live_documents"]
+        .as_u64()
+        .expect("repaired live_documents");
     assert_eq!(
-        repaired["index"]["live_documents"].as_u64(),
-        Some(repaired_docs),
+        repaired_live_docs - repaired_bound,
+        repaired_docs,
+        "{repaired}"
+    );
+    assert_eq!(
+        repaired_live_docs,
+        repaired_docs + repaired_region_docs,
         "{repaired}"
     );
     assert!(checkpoint_completed(&index_path));

@@ -3,7 +3,7 @@
 //! These exercise the connector through cass's re-export
 //! (`coding_agent_search::connectors::antigravity`) against a checked-in fixture
 //! that mirrors agy's on-disk layout
-//! (`<base>/brain/<uuid>/.system_generated/logs/transcript.jsonl` plus the
+//! (`<base>/brain/<uuid>/.system_generated/logs/transcript*.jsonl` plus the
 //! sibling `<base>/conversations/<uuid>.db`). The normalized conversations these
 //! produce are exactly what cass's indexer + FTS search consume, so verifying the
 //! scan here proves the index/search path covers agy. A companion check confirms
@@ -51,8 +51,11 @@ fn antigravity_scans_fixture_into_one_conversation() {
     assert_eq!(c.agent_slug, "antigravity");
     assert_eq!(c.external_id.as_deref(), Some(FIXTURE_UUID));
     assert!(
-        c.source_path.to_string_lossy().contains("transcript.jsonl"),
-        "source_path should be the transcript we parse"
+        c.source_path
+            .to_string_lossy()
+            .contains("transcript_full.jsonl"),
+        "source_path should be the prioritized transcript_full.jsonl we parse: {}",
+        c.source_path.display()
     );
 }
 
@@ -172,9 +175,18 @@ fn antigravity_discovers_transcript_and_db_sources() {
     assert!(
         discovered
             .iter()
+            .any(|d| d.source_path.ends_with("transcript_full.jsonl")
+                && d.role == DiscoveredSourceRole::PrimarySessionLog
+                && d.required_for_reconstruction),
+        "transcript_full.jsonl must be the required PrimarySessionLog: {discovered:?}"
+    );
+    assert!(
+        discovered
+            .iter()
             .any(|d| d.source_path.ends_with("transcript.jsonl")
                 && d.role == DiscoveredSourceRole::PrimarySessionLog
-                && d.required_for_reconstruction)
+                && !d.required_for_reconstruction),
+        "transcript.jsonl must remain an optional PrimarySessionLog fallback: {discovered:?}"
     );
     assert!(
         discovered

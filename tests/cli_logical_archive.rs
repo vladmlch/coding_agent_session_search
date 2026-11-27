@@ -13,7 +13,7 @@ use base64::engine::general_purpose::STANDARD;
 use coding_agent_search::franken_sync::compat::{
     ConnectionExt, OpenFlags, RowExt, open_with_flags,
 };
-use coding_agent_search::franken_sync::{Connection, SqliteValue};
+use coding_agent_search::franken_sync::{Connection, FileIdentity, SqliteValue};
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::storage::sqlite::SqliteStorage;
 use serde_json::Value;
@@ -1856,10 +1856,70 @@ fn indexed_empty_archive_produces_a_readable_empty_lexical_generation() {
     assert!(!root.path().join("unused-default").exists());
 }
 
+fn assert_no_residual_sqlite_sidecars(db_path: &Path) {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = db_path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        assert!(
+            !Path::new(&sidecar).exists(),
+            "unexpected residual sidecar {:?} after archive rebuild",
+            sidecar
+        );
+    }
+}
+
+fn assert_identical_rebuild_preserves_canonical_and_stabilizes(
+    root: &Path,
+    input: &Path,
+    input_before: &[u8],
+    target: &Path,
+    exported_sha256: &Value,
+    identity_before: FileIdentity,
+    export_label: &str,
+) {
+    assert_eq!(
+        FileIdentity::from_path(target)
+            .unwrap()
+            .expect("target identity after first rebuild"),
+        identity_before,
+        "lexical rebuild must update target in place without replacing its inode"
+    );
+    assert_no_residual_sqlite_sidecars(target);
+    assert_eq!(fs::read(input).unwrap(), input_before);
+    assert_eq!(
+        export(root, target, &root.join(export_label))["content_sha256"],
+        *exported_sha256
+    );
+    let after_first_rebuild = fs::read(target).unwrap();
+    assert_eq!(
+        &after_first_rebuild[18..20],
+        &[2, 2],
+        "rebuilt archive must settle in clean WAL [2, 2] mode"
+    );
+
+    let second_retry = receipt(import_with_lexical_rebuild(root, input, target, true));
+    assert_eq!(second_retry["destination_status"], "unchanged");
+    assert_eq!(second_retry["lexical_rebuild"]["indexed_documents"], 4);
+    assert_eq!(
+        FileIdentity::from_path(target)
+            .unwrap()
+            .expect("target identity after repeat identical rebuild"),
+        identity_before
+    );
+    assert_no_residual_sqlite_sidecars(target);
+    assert_eq!(
+        fs::read(target).unwrap(),
+        after_first_rebuild,
+        "repeat --if-identical --rebuild-index after WAL transition must be byte-identical"
+    );
+    assert_eq!(fs::read(input).unwrap(), input_before);
+}
+
 #[test]
 fn failed_index_rebuild_retains_the_complete_restore_and_identical_retry_can_finish() {
     let root = tempfile::tempdir().unwrap();
     let (input, exported, _) = portable_search_fixture(root.path());
+    let input_before = fs::read(&input).unwrap();
     let data = root.path().join("retry-profile");
     fs::create_dir(&data).unwrap();
     // Actual filesystem refusal at index-run admission, after canonical import.
@@ -1884,7 +1944,9 @@ fn failed_index_rebuild_retains_the_complete_restore_and_identical_retry_can_fin
         )["content_sha256"],
         exported["content_sha256"]
     );
-    let before = fs::read(&target).unwrap();
+    let identity_before = FileIdentity::from_path(&target)
+        .unwrap()
+        .expect("retained target identity");
     fs::rename(&obstruction, data.join("retained-lock-obstruction")).unwrap();
     let retried = receipt(import_with_lexical_rebuild(
         root.path(),
@@ -1894,7 +1956,15 @@ fn failed_index_rebuild_retains_the_complete_restore_and_identical_retry_can_fin
     ));
     assert_eq!(retried["destination_status"], "unchanged");
     assert_eq!(retried["lexical_rebuild"]["indexed_documents"], 4);
-    assert_eq!(fs::read(&target).unwrap(), before);
+    assert_identical_rebuild_preserves_canonical_and_stabilizes(
+        root.path(),
+        &input,
+        &input_before,
+        &target,
+        &exported["content_sha256"],
+        identity_before,
+        "after-identical-rebuild-retry.jsonl",
+    );
     assert_eq!(
         search_recovered(root.path(), &data, "PORTABLENEEDLE")["hits"]
             .as_array()
@@ -1931,7 +2001,9 @@ fn busy_index_rebuild_retains_a_verified_database_and_identical_retry_finishes()
     assert!(target.is_file());
     assert!(!data.join("index").exists());
     assert_eq!(fs::read(&input).unwrap(), input_before);
-    let database_before = fs::read(&target).unwrap();
+    let identity_before = FileIdentity::from_path(&target)
+        .unwrap()
+        .expect("retained target identity");
     assert_eq!(
         export(
             root.path(),
@@ -1950,8 +2022,15 @@ fn busy_index_rebuild_retains_a_verified_database_and_identical_retry_finishes()
     ));
     assert_eq!(retried["destination_status"], "unchanged");
     assert_eq!(retried["lexical_rebuild"]["indexed_documents"], 4);
-    assert_eq!(fs::read(&target).unwrap(), database_before);
-    assert_eq!(fs::read(&input).unwrap(), input_before);
+    assert_identical_rebuild_preserves_canonical_and_stabilizes(
+        root.path(),
+        &input,
+        &input_before,
+        &target,
+        &exported["content_sha256"],
+        identity_before,
+        "after-busy-rebuild-retry.jsonl",
+    );
     assert_eq!(
         search_recovered(root.path(), &data, "PORTABLENEEDLE")["hits"]
             .as_array()

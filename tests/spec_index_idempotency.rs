@@ -36,21 +36,21 @@
 //!    empty-archive path (it is repaired from the database before its
 //!    scan), and its rebuilt index finds the fixture's text.
 //!
-//! Verified by copying the `tests/fixtures/aider/.aider.chat.history.md`
-//! file into an isolated HOME, pointing cwd into that directory so the
-//! aider connector discovers the single fixture session, and indexing
-//! against a fresh data-dir twice in a row.
+//! Verified by staging a single isolated `claude_code` session under a
+//! temporary HOME (`CLAUDE_CONFIG_DIR`) and indexing against a fresh
+//! data-dir twice in a row.
 
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use coding_agent_search::franken_sync::compat::{
     ConnectionExt, OpenFlags, RowExt, open_with_flags,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -67,37 +67,72 @@ fn ensure(condition: bool, message: impl Into<String>) -> TestResult {
     }
 }
 
-/// Install the aider fixture under a fresh project subdirectory so the
-/// aider connector running from cwd discovers exactly one session. Returns
-/// `(project_dir, data_dir)`. The temp dir's lifetime is tied to the
-/// caller, so this returns a `TempDir` guard separately.
-fn install_aider_fixture_project() -> Result<(TempDir, PathBuf, PathBuf), Box<dyn Error>> {
+/// Install a single-session `claude_code` fixture under an isolated HOME so
+/// `cass index --json` discovers exactly one conversation containing the
+/// searchable token `"refactor"`. Returns `(tmp, project_dir, data_dir)`.
+fn install_claude_fixture_project() -> Result<(TempDir, PathBuf, PathBuf), Box<dyn Error>> {
     let tmp = TempDir::new()?;
-    let project_dir = tmp.path().join("aider_project");
+    let project_dir = tmp.path().join("claude_project");
+    let session_dir = tmp
+        .path()
+        .join(".claude")
+        .join("projects")
+        .join("idempotency-fixture");
     let data_dir = tmp.path().join("cass_data");
     fs::create_dir_all(&project_dir)?;
+    fs::create_dir_all(&session_dir)?;
     fs::create_dir_all(&data_dir)?;
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("aider")
-        .join(".aider.chat.history.md");
-    let dst = project_dir.join(".aider.chat.history.md");
-    fs::copy(&src, &dst)?;
+    let dst = session_dir.join("session-idempotency.jsonl");
+    let mut file = fs::File::create(&dst)?;
+    for line in [
+        json!({
+            "type": "user",
+            "timestamp": 1_705_334_400_000i64,
+            "message": {
+                "role": "user",
+                "content": "Please refactor the retry handler so repeated runs stay idempotent."
+            }
+        }),
+        json!({
+            "type": "assistant",
+            "timestamp": 1_705_334_460_000i64,
+            "message": {
+                "role": "assistant",
+                "content": "I completed the refactor and verified the incremental index path."
+            }
+        }),
+    ] {
+        writeln!(file, "{}", serde_json::to_string(&line)?)?;
+    }
     Ok((tmp, project_dir, data_dir))
 }
 
-/// Run `cass index --json --no-progress-events --data-dir <data_dir>`
-/// from `current_dir = <project_dir>` so the aider connector picks up
-/// the fixture as the only session source. Returns the parsed JSON
-/// envelope and asserts exit 0.
-fn run_index_in(project_dir: &Path, data_dir: &Path, home: &Path) -> Result<Value, Box<dyn Error>> {
-    let output = Command::cargo_bin("cass")?
-        .env("HOME", home)
+fn isolate_cass_env(cmd: &mut Command, home: &Path) {
+    cmd.env("HOME", home)
+        .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+        .env("CODEX_HOME", home.join("missing-codex"))
+        .env("GEMINI_HOME", home.join("missing-gemini"))
+        .env("CASS_QWEN_HOME", home.join("missing-qwen"))
+        .env("CASS_ANTIGRAVITY_DATA_ROOT", home.join("missing-agy"))
+        .env("CASS_DEVIN_DATA_ROOT", home.join("missing-devin"))
+        .env("OPENCODE_STORAGE_ROOT", home.join("missing-opencode"))
+        .env("OPENCODE_SQLITE_DB", home.join("missing-opencode.db"))
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_DATA_HOME", home.join("data"))
         .env("XDG_CACHE_HOME", home.join("cache"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+        .env("CASS_AUTO_REFRESH", "0")
+        .env("NO_COLOR", "1")
+        .env_remove("CASS_DB_PATH")
+        .env_remove("CASS_DATA_DIR");
+}
+
+/// Run `cass index --json --no-progress-events --data-dir <data_dir>`
+/// against the isolated `home`. Returns the parsed JSON envelope and asserts exit 0.
+fn run_index_in(project_dir: &Path, data_dir: &Path, home: &Path) -> Result<Value, Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("cass")?;
+    isolate_cass_env(&mut cmd, home);
+    let output = cmd
         .current_dir(project_dir)
         .args(["--color=never", "index", "--json", "--no-progress-events"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
@@ -164,12 +199,9 @@ fn lexical_strategy_reason(envelope: &Value) -> Result<&str, Box<dyn Error>> {
 
 /// Lexical hits for `query` in `data_dir`, from a fresh `cass search`.
 fn lexical_hit_count(data_dir: &Path, home: &Path, query: &str) -> Result<usize, Box<dyn Error>> {
-    let output = Command::cargo_bin("cass")?
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("XDG_DATA_HOME", home.join("data"))
-        .env("XDG_CACHE_HOME", home.join("cache"))
-        .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+    let mut cmd = Command::cargo_bin("cass")?;
+    isolate_cass_env(&mut cmd, home);
+    let output = cmd
         .args(["--color=never", "search", query, "--json"])
         .args(["--mode", "lexical"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
@@ -191,7 +223,7 @@ fn lexical_hit_count(data_dir: &Path, home: &Path, query: &str) -> Result<usize,
 
 #[test]
 fn first_index_against_a_fresh_data_dir_rebuilds_lexical_from_the_database() -> TestResult {
-    let (tmp, project, data) = install_aider_fixture_project()?;
+    let (tmp, project, data) = install_claude_fixture_project()?;
     let envelope = run_index_in(&project, &data, tmp.path())?;
     let strategy = lexical_strategy(&envelope)?;
     let reason = lexical_strategy_reason(&envelope)?;
@@ -205,12 +237,12 @@ fn first_index_against_a_fresh_data_dir_rebuilds_lexical_from_the_database() -> 
             envelope.pointer("/indexing_stats").unwrap_or(&Value::Null)
         ),
     )?;
-    // Also sanity: the aider fixture should produce at least one conversation,
+    // Also sanity: the fixture should produce at least one conversation,
     // otherwise the rest of the test setup is silently broken.
     let n_conv = conversation_count(&envelope)?;
     ensure(
         !matches!(n_conv.cmp(&0), Ordering::Less | Ordering::Equal),
-        format!("first index should find >=1 aider conversation; got {n_conv}"),
+        format!("first index should find >=1 conversation; got {n_conv}"),
     )?;
     // The deferred strategy skips inline lexical writes during the scan, so
     // only the post-scan rebuild makes the text searchable. A run that took
@@ -225,7 +257,7 @@ fn first_index_against_a_fresh_data_dir_rebuilds_lexical_from_the_database() -> 
 
 #[test]
 fn populated_archive_lexical_rebuild_never_takes_the_empty_archive_path() -> TestResult {
-    let (tmp, project, data) = install_aider_fixture_project()?;
+    let (tmp, project, data) = install_claude_fixture_project()?;
     run_index_in(&project, &data, tmp.path())?;
     // Lose the lexical index of the now-populated archive.
     fs::remove_dir_all(data.join("index"))?;
@@ -245,7 +277,7 @@ fn populated_archive_lexical_rebuild_never_takes_the_empty_archive_path() -> Tes
 
 #[test]
 fn second_index_uses_incremental_inline_strategy_proving_idempotency() -> TestResult {
-    let (tmp, project, data) = install_aider_fixture_project()?;
+    let (tmp, project, data) = install_claude_fixture_project()?;
     // First run primes the corpus.
     let _envelope1 = run_index_in(&project, &data, tmp.path())?;
     // Second run is the assertion target.
@@ -268,7 +300,7 @@ fn second_index_uses_incremental_inline_strategy_proving_idempotency() -> TestRe
 
 #[test]
 fn consecutive_indexes_produce_stable_conversation_and_message_totals() -> TestResult {
-    let (tmp, project, data) = install_aider_fixture_project()?;
+    let (tmp, project, data) = install_claude_fixture_project()?;
     run_index_in(&project, &data, tmp.path())?;
     // Index envelopes may report only the work observed during that run
     // (#192). Idempotency concerns the archive, including unchanged rows.

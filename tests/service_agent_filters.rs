@@ -136,7 +136,7 @@ fn stdio_aliases_union_and_known_absent_agents_preserve_actual_hit_sets() -> Res
             search(4, &["Claude_Code"]),
             search(5, &[" CLAUDE-CODE "]),
             search(6, &["claude", "claude-code", "CODEX"]),
-            search(7, &["aider"]),
+            search(7, &["qoder"]),
             json!({"id": 8, "op": "status"}),
         ],
     )?;

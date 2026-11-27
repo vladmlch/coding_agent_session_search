@@ -221,7 +221,8 @@ struct FileStamp {
     identity: (u64, u64),
     len: u64,
     modified: (i64, i64),
-    changed: (i64, i64),
+    changed: Option<(i64, i64)>,
+    edge_digest: Option<[u8; 32]>,
 }
 
 fn stamp(path: &Path) -> Result<Option<FileStamp>> {
@@ -235,7 +236,69 @@ fn stamp(path: &Path) -> Result<Option<FileStamp>> {
         identity: (metadata.dev(), metadata.ino()),
         len: metadata.len(),
         modified: (metadata.mtime(), metadata.mtime_nsec()),
-        changed: (metadata.ctime(), metadata.ctime_nsec()),
+        changed: Some((metadata.ctime(), metadata.ctime_nsec())),
+        edge_digest: None,
+    }))
+}
+
+fn read_wal_edge_digest(path: &Path, expected: &fs::Metadata) -> Result<[u8; 32]> {
+    use std::io::{Read, Seek, SeekFrom};
+    const EDGE_SAMPLE_BYTES: u64 = 4096;
+
+    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let opened = file.metadata()?;
+    ensure!(
+        opened.len() == expected.len()
+            && (opened.dev(), opened.ino()) == (expected.dev(), expected.ino()),
+        "SQLite WAL changed while opening its witness: {}",
+        path.display()
+    );
+    let len = expected.len();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&len.to_le_bytes());
+    let head_len = usize::try_from(len.min(EDGE_SAMPLE_BYTES))?;
+    let mut head = vec![0_u8; head_len];
+    file.read_exact(&mut head)?;
+    hasher.update(&head);
+    if len > EDGE_SAMPLE_BYTES {
+        let tail_start = len.saturating_sub(EDGE_SAMPLE_BYTES).max(head_len as u64);
+        let tail_len = usize::try_from(len - tail_start)?;
+        file.seek(SeekFrom::Start(tail_start))?;
+        let mut tail = vec![0_u8; tail_len];
+        file.read_exact(&mut tail)?;
+        hasher.update(&tail);
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+fn wal_stamp(path: &Path) -> Result<Option<FileStamp>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("inspect {}", path.display())),
+    };
+    if !metadata.is_file() {
+        return Ok(Some(FileStamp {
+            regular: false,
+            identity: (metadata.dev(), metadata.ino()),
+            len: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: None,
+            edge_digest: None,
+        }));
+    }
+    if metadata.len() == 0 {
+        // An empty 0-byte SQLite -wal carries zero frames, equivalent to absent.
+        return Ok(None);
+    }
+    let edge_digest = read_wal_edge_digest(path, &metadata)?;
+    Ok(Some(FileStamp {
+        regular: true,
+        identity: (metadata.dev(), metadata.ino()),
+        len: metadata.len(),
+        modified: (metadata.mtime(), metadata.mtime_nsec()),
+        changed: None,
+        edge_digest: Some(edge_digest),
     }))
 }
 
@@ -252,7 +315,11 @@ impl ArchiveStamp {
             return Ok(None);
         }
         let path = storage.database_path()?.canonicalize()?;
-        let Some(identity) = storage.raw().file_identity()? else {
+        let Some(identity) = storage
+            .raw()
+            .file_identity()?
+            .or_else(|| storage.raw().snapshot_source_identity())
+        else {
             return Ok(None);
         };
         if crate::franken_sync::FileIdentity::from_path(&path)? != Some(identity) {
@@ -261,7 +328,7 @@ impl ArchiveStamp {
         let Some(main) = stamp(&path)? else {
             return Ok(None);
         };
-        let wal = stamp(&crate::storage::sqlite::database_sidecar_path(
+        let wal = wal_stamp(&crate::storage::sqlite::database_sidecar_path(
             &path, "-wal",
         ))?;
         if !main.regular || wal.as_ref().is_some_and(|wal| !wal.regular) {

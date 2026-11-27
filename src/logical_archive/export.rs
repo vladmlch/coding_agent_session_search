@@ -1129,7 +1129,7 @@ mod ordering_tests {
                 .iter()
                 .map(|&offset| {
                     Ok(format!(
-                        "{} COLLATE BINARY ASC",
+                        "{} COLLATE NOCASE ASC",
                         quoted(&table.columns[offset])?
                     ))
                 })

@@ -377,7 +377,7 @@ fn assert_sqlite_null_workspace_overrides_shadow(contentless: bool) -> Result<()
     assert_eq!(
         stored_workspace.as_deref(),
         if contentless {
-            Some("")
+            None
         } else {
             Some("/old-guessed-workspace")
         },

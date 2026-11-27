@@ -65,9 +65,16 @@ fn gh423_codebuff_indexer_revisions_replace_search_preserving_canonical_identity
                 term,
                 &frankensearch::quill::query::CassQueryFilters::default(),
             );
-            let page =
-                crate::search::quill_bridge::search_paginated(&reader, &query.query, 32, 0, true)
-                    .unwrap();
+            let canonical_query =
+                crate::search::quill_bridge::canonical_message_query(query.query);
+            let page = crate::search::quill_bridge::search_paginated(
+                &reader,
+                &canonical_query,
+                32,
+                0,
+                true,
+            )
+            .unwrap();
             let ids: HashSet<_> = page
                 .hits
                 .iter()

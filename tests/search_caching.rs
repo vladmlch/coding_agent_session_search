@@ -80,18 +80,32 @@ fn search_client_prefix_cache_works() {
         .unwrap();
     assert_eq!(hits_app.len(), 1);
 
-    // Search "appl": should hit cache for "app" via prefix matching logic.
-    // Use limit 1 to be satisfied by the single cached hit.
+    // Search "appl": dispatch reuses only exact NFC query keys, using prefixes
+    // strictly for adaptive posting-list prewarming.
     let hits_appl = client
         .search("appl", filters.clone(), 1, 0, FieldMask::FULL)
         .unwrap();
     assert_eq!(hits_appl.len(), 1);
 
+    let stats_after_prefix = client.cache_stats();
+    assert_eq!(
+        stats_after_prefix.cache_hits, 0,
+        "Prefix extension 'appl' must not reuse 'app' top-k results (stats: {stats_after_prefix:?})"
+    );
+    assert!(
+        stats_after_prefix.prewarm_scheduled > 0,
+        "Prefix lookup for 'appl' after 'app' must schedule adaptive prewarm (stats: {stats_after_prefix:?})"
+    );
+
+    // Repeating exact query "appl" must hit the cache.
+    let hits_appl_repeat = client
+        .search("appl", filters, 1, 0, FieldMask::FULL)
+        .unwrap();
+    assert_eq!(hits_appl_repeat.len(), 1);
+
     let stats = client.cache_stats();
-    // Depending on implementation details, this might be a hit or a shortfall if the cache logic
-    // is strictly checking >= limit.
     assert!(
         stats.cache_hits > 0,
-        "Should hit cache for 'appl' using 'app' entry (stats: {stats:?})"
+        "Repeated exact query 'appl' must hit the cache (stats: {stats:?})"
     );
 }

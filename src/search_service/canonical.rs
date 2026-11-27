@@ -8,9 +8,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
-use coding_agent_search::franken_sync::compat::{
-    ConnectionExt, OpenFlags, RowExt, open_with_flags,
-};
+use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
 use coding_agent_search::franken_sync::{Connection, params};
 use serde_json::{Value, json};
 
@@ -156,7 +154,7 @@ fn open_archive(db: &Path) -> Result<Connection> {
     let path = db
         .to_str()
         .context("canonical archive path must be valid UTF-8")?;
-    let connection = open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let connection = Connection::open_schema_only_with_wal_index_recovery(path)
         .context("open configured archive strictly read-only")?;
     connection.execute("PRAGMA query_only = ON")?;
     Ok(connection)
