@@ -1574,7 +1574,6 @@ pre:hover .copy-code-btn { opacity: 1; }
 }
 
 
-
 .print-only {
     display: none !important;
 }
@@ -1767,7 +1766,6 @@ canvas {
 </div>
 
         </main>
-
     </div>
     <!-- Floating navigation -->
     <nav class="floating-nav" id="floating-nav" aria-label="Quick navigation">

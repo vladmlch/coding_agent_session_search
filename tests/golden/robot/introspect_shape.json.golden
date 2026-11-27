@@ -143,770 +143,6 @@
     "response_schemas": {
       "type": "object",
       "properties": {
-        "analytics-incidents": {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string"
-            },
-            "description": {
-              "type": "string"
-            },
-            "properties": {
-              "type": "object",
-              "properties": {
-                "command": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string"
-                    },
-                    "const": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "data": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string"
-                    },
-                    "properties": {
-                      "type": "object",
-                      "properties": {
-                        "schema_version": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            },
-                            "const": {
-                              "type": "integer"
-                            }
-                          }
-                        },
-                        "count_scope": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            },
-                            "enum": {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        },
-                        "scan_units": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            },
-                            "properties": {
-                              "type": "object",
-                              "properties": {
-                                "files": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "lines": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "bytes": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "candidate_order": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "message_fragment_chars": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                }
-                              }
-                            },
-                            "required": {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        },
-                        "discovery": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            },
-                            "properties": {
-                              "type": "object",
-                              "properties": {
-                                "schema_version": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "const": {
-                                      "type": "integer"
-                                    }
-                                  }
-                                },
-                                "caps": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "properties": {
-                                      "type": "object",
-                                      "properties": {
-                                        "max_files": {
-                                          "type": "object",
-                                          "properties": {
-                                            "type": {
-                                              "type": "string"
-                                            }
-                                          }
-                                        },
-                                        "max_lines": {
-                                          "type": "object",
-                                          "properties": {
-                                            "type": {
-                                              "type": "string"
-                                            }
-                                          }
-                                        },
-                                        "max_bytes": {
-                                          "type": "object",
-                                          "properties": {
-                                            "type": {
-                                              "type": "string"
-                                            }
-                                          }
-                                        },
-                                        "budget_ms": {
-                                          "type": "object",
-                                          "properties": {
-                                            "type": {
-                                              "type": "string"
-                                            }
-                                          }
-                                        },
-                                        "max_evidence": {
-                                          "type": "object",
-                                          "properties": {
-                                            "type": {
-                                              "type": "string"
-                                            }
-                                          }
-                                        }
-                                      }
-                                    },
-                                    "required": {
-                                      "type": "array",
-                                      "items": {
-                                        "type": "string"
-                                      }
-                                    }
-                                  }
-                                },
-                                "files_considered": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "files_scanned": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "lines_scanned": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "bytes_scanned": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "elapsed_ms": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "stop_reason": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "enum": {
-                                      "type": "array",
-                                      "items": {
-                                        "type": "string"
-                                      }
-                                    }
-                                  }
-                                },
-                                "timed_out": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "partial": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "evidence_truncated": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "evidence": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "items": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        },
-                                        "properties": {
-                                          "type": "object",
-                                          "properties": {
-                                            "file": {
-                                              "type": "object",
-                                              "properties": {
-                                                "type": {
-                                                  "type": "string"
-                                                }
-                                              }
-                                            },
-                                            "line": {
-                                              "type": "object",
-                                              "properties": {
-                                                "type": {
-                                                  "type": "string"
-                                                }
-                                              }
-                                            },
-                                            "category": {
-                                              "type": "object",
-                                              "properties": {
-                                                "type": {
-                                                  "type": "string"
-                                                }
-                                              }
-                                            },
-                                            "reason": {
-                                              "type": "object",
-                                              "properties": {
-                                                "type": {
-                                                  "type": "string"
-                                                }
-                                              }
-                                            }
-                                          }
-                                        },
-                                        "required": {
-                                          "type": "array",
-                                          "items": {
-                                            "type": "string"
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            },
-                            "required": {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        },
-                        "top_sessions": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            },
-                            "items": {
-                              "type": "object",
-                              "properties": {
-                                "type": {
-                                  "type": "string"
-                                },
-                                "properties": {
-                                  "type": "object",
-                                  "properties": {
-                                    "conversation_id": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "session_id": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "agent": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "host": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "source_id": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "origin_host": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "array",
-                                          "items": {
-                                            "type": "string"
-                                          }
-                                        }
-                                      }
-                                    },
-                                    "source_path": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "exists_state": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        },
-                                        "enum": {
-                                          "type": "array",
-                                          "items": {
-                                            "type": "string"
-                                          }
-                                        }
-                                      }
-                                    },
-                                    "hit_count": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "category_breadth": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    },
-                                    "dominant_categories": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        },
-                                        "items": {
-                                          "type": "object",
-                                          "properties": {
-                                            "type": {
-                                              "type": "string"
-                                            }
-                                          }
-                                        }
-                                      }
-                                    },
-                                    "evidence_summaries": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        },
-                                        "items": {
-                                          "type": "object",
-                                          "properties": {
-                                            "type": {
-                                              "type": "string"
-                                            },
-                                            "properties": {
-                                              "type": "object",
-                                              "properties": {
-                                                "category": {
-                                                  "type": "object",
-                                                  "properties": {
-                                                    "type": {
-                                                      "type": "string"
-                                                    }
-                                                  }
-                                                },
-                                                "hit_count": {
-                                                  "type": "object",
-                                                  "properties": {
-                                                    "type": {
-                                                      "type": "string"
-                                                    }
-                                                  }
-                                                },
-                                                "content_fingerprints": {
-                                                  "type": "object",
-                                                  "properties": {
-                                                    "type": {
-                                                      "type": "string"
-                                                    },
-                                                    "items": {
-                                                      "type": "object",
-                                                      "properties": {
-                                                        "type": {
-                                                          "type": "string"
-                                                        }
-                                                      }
-                                                    }
-                                                  }
-                                                },
-                                                "evidence_paths": {
-                                                  "type": "object",
-                                                  "properties": {
-                                                    "type": {
-                                                      "type": "string"
-                                                    },
-                                                    "items": {
-                                                      "type": "object",
-                                                      "properties": {
-                                                        "type": {
-                                                          "type": "string"
-                                                        }
-                                                      }
-                                                    }
-                                                  }
-                                                }
-                                              }
-                                            },
-                                            "required": {
-                                              "type": "array",
-                                              "items": {
-                                                "type": "string"
-                                              }
-                                            }
-                                          }
-                                        }
-                                      }
-                                    },
-                                    "redaction_status": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        },
-                                        "enum": {
-                                          "type": "array",
-                                          "items": {
-                                            "type": "string"
-                                          }
-                                        }
-                                      }
-                                    },
-                                    "suggested_command": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        },
-                                        "properties": {
-                                          "type": "object",
-                                          "properties": {
-                                            "kind": {
-                                              "type": "object",
-                                              "properties": {
-                                                "type": {
-                                                  "type": "string"
-                                                },
-                                                "const": {
-                                                  "type": "string"
-                                                }
-                                              }
-                                            },
-                                            "argv": {
-                                              "type": "object",
-                                              "properties": {
-                                                "type": {
-                                                  "type": "string"
-                                                },
-                                                "description": {
-                                                  "type": "string"
-                                                },
-                                                "items": {
-                                                  "type": "object",
-                                                  "properties": {
-                                                    "type": {
-                                                      "type": "string"
-                                                    }
-                                                  }
-                                                }
-                                              }
-                                            },
-                                            "display": {
-                                              "type": "object",
-                                              "properties": {
-                                                "type": {
-                                                  "type": "string"
-                                                }
-                                              }
-                                            }
-                                          }
-                                        },
-                                        "required": {
-                                          "type": "array",
-                                          "items": {
-                                            "type": "string"
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
-                                },
-                                "required": {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string"
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        },
-                        "total_sessions": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            }
-                          }
-                        },
-                        "total_hits": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            }
-                          }
-                        },
-                        "top_sessions_truncated": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            }
-                          }
-                        },
-                        "redaction": {
-                          "type": "object",
-                          "properties": {
-                            "type": {
-                              "type": "string"
-                            },
-                            "properties": {
-                              "type": "object",
-                              "properties": {
-                                "private_text_policy": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "const": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "hash_strategy": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "const": {
-                                      "type": "string"
-                                    }
-                                  }
-                                },
-                                "fields_emitted": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "items": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    }
-                                  }
-                                },
-                                "fields_suppressed": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "items": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    }
-                                  }
-                                },
-                                "opt_in_flags": {
-                                  "type": "object",
-                                  "properties": {
-                                    "type": {
-                                      "type": "string"
-                                    },
-                                    "items": {
-                                      "type": "object",
-                                      "properties": {
-                                        "type": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            },
-                            "required": {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    },
-                    "required": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  }
-                },
-                "_meta": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string"
-                    },
-                    "additionalProperties": {
-                      "type": "boolean"
-                    }
-                  }
-                }
-              }
-            },
-            "required": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
-        },
         "api-version": {
           "type": "object",
           "properties": {
@@ -51154,6 +50390,98 @@
                                           }
                                         }
                                       }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "memory": {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "properties": {
+                              "type": "object",
+                              "properties": {
+                                "capacity_pct": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "inflight_byte_limit": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "target_resident_bytes": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  }
+                                },
+                                "resident_bytes": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  }
+                                },
+                                "available_bytes": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  }
+                                },
+                                "effective_total_bytes": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  }
+                                },
+                                "healthy_streak": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "reason": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
                                     }
                                   }
                                 }

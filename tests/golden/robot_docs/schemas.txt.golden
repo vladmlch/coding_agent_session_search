@@ -1,39 +1,4 @@
 schemas: (auto-generated from contract)
-  analytics-incidents:
-    - _meta: object
-    - command: string
-    - data: object
-      - count_scope: string
-      - discovery: object
-        - bytes_scanned: integer
-        - caps: object
-        - elapsed_ms: integer
-        - evidence: array
-        - evidence_truncated: boolean
-        - files_considered: integer
-        - files_scanned: integer
-        - lines_scanned: integer
-        - partial: boolean
-        - schema_version: integer
-        - stop_reason: string
-        - timed_out: boolean
-      - redaction: object
-        - fields_emitted: array
-        - fields_suppressed: array
-        - hash_strategy: string
-        - opt_in_flags: array
-        - private_text_policy: string
-      - scan_units: object
-        - bytes: string
-        - candidate_order: string
-        - files: string
-        - lines: string
-        - message_fragment_chars: integer
-      - schema_version: integer
-      - top_sessions: array
-      - top_sessions_truncated: boolean
-      - total_hits: integer
-      - total_sessions: integer
   api-version:
     - api_version: integer
     - build_commit: string
@@ -2740,6 +2705,15 @@ schemas: (auto-generated from contract)
       - last_snapshot: ?
         - load_per_core: ?
         - psi_cpu_some_avg10: ?
+      - memory: object
+        - available_bytes: ?
+        - capacity_pct: integer
+        - effective_total_bytes: ?
+        - healthy_streak: integer
+        - inflight_byte_limit: integer
+        - reason: string
+        - resident_bytes: ?
+        - target_resident_bytes: ?
       - recent_decisions: array
       - resource_policy: object
       - shrink_count: integer
