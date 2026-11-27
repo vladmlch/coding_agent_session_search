@@ -196,7 +196,7 @@ pub(in crate::indexer) fn classify_final_wal_checkpoint(
 /// canonical DB file and runs
 /// `wal_checkpoint(TRUNCATE)` so the post-abort DB is recoverable by stock
 /// SQLite. The fresh checkpoint stays on this calling thread and gets only
-/// [`ABORT_WAL_CHECKPOINT_TIMEOUT`]: the still-live wedged writer
+/// `ABORT_WAL_CHECKPOINT_TIMEOUT`: the still-live wedged writer
 /// can otherwise block the fresh open/checkpoint indefinitely and turn the
 /// watchdog's promised exit into another hang. Ordinary errors remain
 /// best-effort; timeout terminates the whole process rather than returning

@@ -180,7 +180,7 @@ pub struct HealthStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbedResponse {
-    /// Embeddings as Vec<Vec<f32>>.
+    /// Embeddings as `Vec<Vec<f32>>`.
     pub embeddings: Vec<Vec<f32>>,
     /// Model ID used.
     pub model: String,

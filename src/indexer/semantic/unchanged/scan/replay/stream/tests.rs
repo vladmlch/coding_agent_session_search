@@ -4,7 +4,7 @@ use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 use std::io;
 
 fn database(path: &std::path::Path, indexed: bool) -> Result<Connection> {
-    let connection = Connection::open(path.to_string_lossy().into_owned())?;
+    let connection = Connection::open(path.to_string_lossy())?;
     connection.execute(
         "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER,
          idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT)",

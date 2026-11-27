@@ -419,18 +419,6 @@ fn full_rebuild_quick_check_problem(
     Ok(None)
 }
 
-/// Ask SQLite's FTS5 reader to decode the persisted structure,
-/// averages, and every segment leaf. `PRAGMA quick_check` validates SQLite's
-/// b-trees, but it does not understand the payload stored inside `%_data`, so
-/// it can report `ok` for the exact corrupt-segment shape seen in GH #374.
-/// The special command is read-only despite its INSERT syntax.
-pub(in crate::indexer) fn canonical_fts_segment_integrity_problem(
-    storage: &FrankenStorage,
-) -> Result<Option<String>> {
-    let shadow_kind = classify_fts_messages_shadow_kind(storage)?;
-    canonical_fts_segment_integrity_problem_for_kind(storage, shadow_kind)
-}
-
 pub(in crate::indexer) fn full_rebuild_existing_storage_integrity_problem(
     storage: &FrankenStorage,
 ) -> Result<Option<String>> {

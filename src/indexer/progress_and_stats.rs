@@ -294,7 +294,7 @@ pub struct SemanticWatchOnceStats {
 }
 
 /// Incremental extension-version re-projection accounting, reported under
-/// `indexing_stats.region_reproject` (see [`run_region_reprojection_lane`]).
+/// `indexing_stats.region_reproject` (see `run_region_reprojection_lane`).
 ///
 /// * `stale_sessions` — sessions detected below the current
 ///   extractor/region/projection versions this run.

@@ -4,7 +4,7 @@ use std::io;
 use std::path::Path;
 
 fn database(path: &Path, indexed: bool) -> Result<Connection> {
-    let connection = Connection::open(path.to_string_lossy().into_owned())?;
+    let connection = Connection::open(path.to_string_lossy())?;
     connection.execute(
         "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER,
          idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT)",
@@ -349,12 +349,7 @@ fn gh534_replay_page_queries_seek_the_conversation_key() -> Result<()> {
     let unindexed = database(&temp.path().join("unindexed.db"), false)?;
     assert!(!unique_conversation_index(&unindexed));
     unindexed.close_without_checkpoint()?;
-    let reversed = Connection::open(
-        temp.path()
-            .join("reversed.db")
-            .to_string_lossy()
-            .into_owned(),
-    )?;
+    let reversed = Connection::open(temp.path().join("reversed.db").to_string_lossy())?;
     reversed.execute(
         "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER,
          idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT)",

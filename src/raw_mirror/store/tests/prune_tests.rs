@@ -842,7 +842,7 @@ fn prune_apply_keep_tag_pins_linked_manifest_and_blob() {
     })
     .expect("capture source");
     let db_path = data_dir.join("agent_search.db");
-    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())
         .expect("open keep-tag db");
     conn.execute_batch(
         "PRAGMA application_id = 1128354643;
