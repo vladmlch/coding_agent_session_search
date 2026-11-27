@@ -561,7 +561,7 @@ impl TantivyIndex {
     /// every session of the archive, so this sweep re-stages them all at
     /// once onto a committed snapshot that already holds their (prior
     /// version's) documents. The upserts ride
-    /// [`Self::stage_region_doc_sessions_batched`] — one bounded upsert per
+    /// `Self::stage_region_doc_sessions_batched` — one bounded upsert per
     /// batch of sessions, not one per session: every upsert that replaces a
     /// live identity publishes a successor and validates every segment, so
     /// one upsert per session made the sweep quadratic in the session count

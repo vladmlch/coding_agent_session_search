@@ -27,11 +27,11 @@
 //!
 //! # Relationship to other modules
 //!
-//! - **[`policy`]**: Provides the contract (versions, budgets, tier names) that
+//! - **[`policy`](super::policy)**: Provides the contract (versions, budgets, tier names) that
 //!   this manifest fingerprints against.
-//! - **[`asset_state`]**: Evaluates coarse readiness from this manifest plus
+//! - **[`asset_state`](super::asset_state)**: Evaluates coarse readiness from this manifest plus
 //!   live file probes.
-//! - **[`model_manager`]**: Detects model availability; this module records
+//! - **[`model_manager`](super::model_manager)**: Detects model availability; this module records
 //!   which model was used to build each artifact.
 
 mod atomic_io;

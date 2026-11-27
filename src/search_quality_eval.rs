@@ -25,7 +25,7 @@
 //! so a caller cannot accidentally preserve raw paths, whitespace, or injection
 //! punctuation in a report. The real-binary gate additionally plants private
 //! body text in its corpus and proves that exact text is absent from both
-//! artifacts; [`tests::report_holds_no_session_body`] exercises the boundary
+//! artifacts; `tests::report_holds_no_session_body` exercises the boundary
 //! sanitizer directly.
 //! Distributions use [`BTreeMap`] so the serialized key order is deterministic.
 //!
@@ -427,7 +427,7 @@ pub fn build_report_labeled(runs: &[QueryRun], label: Option<String>) -> Quality
 
 /// Compute the regression/drift diff of `current` against `baseline`, joined by
 /// query id. A query regresses when any of recall/precision/MRR drops below its
-/// baseline (beyond [`METRIC_EPS`]) or a previously-retrieved ref goes missing.
+/// baseline (beyond `METRIC_EPS`) or a previously-retrieved ref goes missing.
 pub fn diff_reports(baseline: &QualityReport, current: &QualityReport) -> RegressionDiff {
     let base_by_id: BTreeMap<&str, &QueryEvaluation> = baseline
         .queries

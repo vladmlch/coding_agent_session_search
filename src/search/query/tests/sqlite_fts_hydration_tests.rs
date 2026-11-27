@@ -467,7 +467,7 @@ fn sqlite_guard_does_not_repair_fts_when_generation_key_stale() -> Result<()> {
     // This is the condition ensure_fts_consistency
     // detects to trigger a full FTS rebuild.
     {
-        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())?;
+        let conn = FrankenConnection::open(db_path.to_string_lossy())?;
         conn.execute_compat(
             "DELETE FROM meta WHERE key = ?1",
             &[ParamValue::from("fts_frankensqlite_rebuild_generation")],
@@ -515,7 +515,7 @@ fn sqlite_guard_does_not_repair_fts_when_generation_key_stale() -> Result<()> {
     drop(guard);
 
     // The read-only open must not rewrite the rebuild-generation marker.
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())?;
+    let conn = FrankenConnection::open(db_path.to_string_lossy())?;
     let generation_after: Option<String> = conn
         .query_row_map(
             "SELECT value FROM meta WHERE key = ?1",
@@ -549,7 +549,7 @@ fn gh395_browse_by_date_hydrates_one_lazy_connection_from_multiple_workers() -> 
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("cross-worker-hydration.db");
     {
-        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())?;
+        let conn = FrankenConnection::open(db_path.to_string_lossy())?;
         conn.execute_batch(
             "PRAGMA application_id = 0x43415353;
              PRAGMA user_version = 1;

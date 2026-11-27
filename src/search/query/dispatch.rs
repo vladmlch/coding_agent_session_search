@@ -21,9 +21,7 @@ use super::fusion::{
     should_skip_automatic_wildcard_fallback_for_long_zero_hit_query, should_try_wildcard_fallback,
 };
 use super::parsing::{QuerySuggestion, ensure_query_nesting_depth};
-use super::sqlite_hydration::{
-    SearchSqliteConnectionExt, nfc_sanitize_query, open_search_hydration_sqlite,
-};
+use super::sqlite_hydration::{nfc_sanitize_query, open_search_hydration_sqlite};
 use super::types::{
     FieldMask, MatchType, SearchFilters, SearchHit, SearchResult, SemanticTierMode,
     automatic_wildcard_fallback_max_docs, effective_field_mask, hybrid_candidate_budget,

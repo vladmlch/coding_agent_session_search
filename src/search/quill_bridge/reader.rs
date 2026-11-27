@@ -170,7 +170,7 @@ pub fn canonical_message_query(
 ///
 /// Stage 1 publishes one aggregated document per (conversation, scope)
 /// chunk into the same synthetic `msg_idx` space, at slots ≥
-/// [`SESSION_DOC_BASE`] — strictly above every region-document slot. The
+/// [`SESSION_DOC_BASE`](crate::viewer_extensions::search_regions::SESSION_DOC_BASE) — strictly above every region-document slot. The
 /// legacy per-region enumeration lane must never see them: they carry no
 /// region coordinates, so they would surface as phantom hits that inflate
 /// `total_count` toward the enumeration cap and crowd real region hits

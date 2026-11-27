@@ -26,8 +26,8 @@ use super::sqlite_hydration::SQLITE_MAX_VARIABLE_NUMBER;
 // Uses LRU eviction to bound memory, Arc<str> for cheap cloning.
 
 /// Thread-safe string interner with bounded memory via LRU eviction.
-/// Uses LruCache<Arc<str>, Arc<str>> where key and value are the same Arc,
-/// enabling O(1) lookup via Borrow<str> trait while preserving LRU semantics.
+/// Uses `LruCache<Arc<str>, Arc<str>>` where key and value are the same `Arc`,
+/// enabling O(1) lookup via `Borrow<str>` trait while preserving LRU semantics.
 pub struct StringInterner {
     cache: RwLock<LruCache<Arc<str>, Arc<str>>>,
 }
@@ -42,7 +42,7 @@ impl StringInterner {
         }
     }
 
-    /// Intern a string, returning a shared Arc<str>.
+    /// Intern a string, returning a shared `Arc<str>`.
     /// If the string is already interned, returns the existing Arc.
     /// Otherwise, creates a new Arc and caches it.
     ///

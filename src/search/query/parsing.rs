@@ -96,7 +96,7 @@ pub(in crate::search::query) fn cass_bool_tokens(raw: &str) -> Vec<CassBoolToken
     tokens
 }
 
-/// The deepest group nesting a query may carry, as [`cass_bool_tokens`]
+/// The deepest group nesting a query may carry, as `cass_bool_tokens`
 /// reads it (a `(` at the start of a word opens one group).
 ///
 /// The bound exists for stack, not semantics: the recursive-descent
@@ -158,9 +158,9 @@ impl std::fmt::Display for QueryDepthExceeded {
 impl std::error::Error for QueryDepthExceeded {}
 
 /// Refuse a query nested deeper than [`MAX_QUERY_NESTING_DEPTH`] before
-/// any search lane runs. [`CassBoolParser::parse`] refuses the same
+/// any search lane runs. `CassBoolParser::parse` refuses the same
 /// input at its own entry; this is the user-facing gate the
-/// [`SearchClient`] entries, the CLI handlers and the viewer bridge
+/// [`SearchClient`](super::SearchClient) entries, the CLI handlers and the viewer bridge
 /// share, so a too-deep query surfaces as one typed error instead of a
 /// lane-specific degradation.
 pub fn ensure_query_nesting_depth(query: &str) -> Result<(), QueryDepthExceeded> {

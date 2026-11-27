@@ -359,7 +359,7 @@ impl TantivyIndex {
     }
 
     /// Task 8: capture this writer's coverage floor — the committed
-    /// `viewer_revisions` snapshot the next [`certify_lexical_publication`]
+    /// `viewer_revisions` snapshot the next [`certify_lexical_publication`](crate::viewer_extensions::changes::certify_lexical_publication)
     /// receipt will bind as the revisions this generation covers. First
     /// capture wins: staging more work later does NOT move the floor
     /// forward, so a certification never claims revisions committed after
@@ -701,7 +701,7 @@ impl TantivyIndex {
     }
 
     /// At most one bounded segment merge; see
-    /// [`QuillCassIndex::fold_largest_small_run`].
+    /// [`QuillCassIndex::fold_largest_small_run`](crate::search::quill_bridge::QuillCassIndex::fold_largest_small_run).
     pub fn fold_largest_small_run(&mut self) -> Result<bool> {
         self.inner.fold_largest_small_run(now_unix_millis())
     }
