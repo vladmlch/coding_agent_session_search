@@ -1476,7 +1476,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "franken-agent-detection"
 version = "0.3.11"
-source = "git+https://github.com/vladmlch/franken_agent_detection?rev=b44f0b5d3085002c0bae406d33569e7864606e84#b44f0b5d3085002c0bae406d33569e7864606e84"
+source = "git+https://github.com/vladmlch/franken_agent_detection?rev=0821edad49b474efa92eaa30c0a2293578c3d042#0821edad49b474efa92eaa30c0a2293578c3d042"
 dependencies = [
  "aes-gcm",
  "anyhow",

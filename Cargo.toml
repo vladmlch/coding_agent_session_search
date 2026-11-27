@@ -142,12 +142,12 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # crush, goose, hermes and openclaw declare their live -wal/-shm in source
 # boundaries (as shelley does), so cass's durable-source ledger never skips
 # a WAL-only commit — upstream 27a5429 turned boundaries on without them.
-# Fork rev b44f0b5d (main) migrates the SQLite-backed connectors and
+# Fork rev 0821edad (agent/FAD-R29/2.3b, on top of main b44f0b5d) migrates the SQLite-backed connectors and
 # fixtures off fsqlite onto the same bundled rusqlite =0.40.2 engine cass
 # pins above; the enabled 7-feature set is unchanged.
 # Source: the owner's pushed FAD fork https://github.com/vladmlch/franken_agent_detection
-# (branch main at b44f0b5d; the cb408552 pin stays as rollback).
-franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "b44f0b5d3085002c0bae406d33569e7864606e84", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
+# (branch agent/FAD-R29/2.3b at 0821edad; the b44f0b5d main pin stays as rollback).
+franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "0821edad49b474efa92eaa30c0a2293578c3d042", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache

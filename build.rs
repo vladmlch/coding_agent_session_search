@@ -72,8 +72,8 @@ const CONTRACTS: &[DependencyContract] = &[
         dep_key: "franken-agent-detection",
         crate_package_name: "franken-agent-detection",
         manifest_package_field: None,
-        // Fork pin on vladmlch/franken_agent_detection (branch main at
-        // b44f0b5d): Phase-0 pruned to the 10 active connectors and migrated
+        // Fork pin on vladmlch/franken_agent_detection (branch agent/FAD-R29/2.3b at
+        // 0821edad, on top of main b44f0b5d): Phase-0 pruned to the 10 active connectors and migrated
         // off fsqlite onto the same bundled rusqlite =0.40.2 engine cass pins
         // directly, reimplementing the strict never-write read-only policy on
         // rusqlite (`open_external_strict_in_place` /
@@ -82,7 +82,7 @@ const CONTRACTS: &[DependencyContract] = &[
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev once
         // upstream carries every row there.
         expected_git: "https://github.com/vladmlch/franken_agent_detection",
-        expected_rev: "b44f0b5d3085002c0bae406d33569e7864606e84",
+        expected_rev: "0821edad49b474efa92eaa30c0a2293578c3d042",
         expected_version: "0.3.11",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
