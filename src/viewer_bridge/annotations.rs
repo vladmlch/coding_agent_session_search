@@ -9,6 +9,8 @@
 //! a raw `"My Tag!"` and the stored `"my-tag"` agree.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::rc::Rc;
 
 use anyhow::Result;
 use coding_agent_search::franken_sync::{Connection, FrankenError, SqliteValue};
@@ -48,15 +50,20 @@ pub fn sanitize_tag(raw: &str) -> String {
 
 /// `sanitize_tags`: sanitize + deduplicate preserving insertion order.
 pub fn sanitize_tags(raw: &[String]) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
+    let mut seen: std::collections::BTreeSet<Rc<String>> = std::collections::BTreeSet::new();
+    let mut out: Vec<Rc<String>> = Vec::new();
     for tag in raw {
         let clean = sanitize_tag(tag);
-        if !clean.is_empty() && seen.insert(clean.clone()) {
-            out.push(clean);
+        if !clean.is_empty() && !seen.contains(&clean) {
+            let shared = Rc::new(clean);
+            seen.insert(Rc::clone(&shared));
+            out.push(shared);
         }
     }
-    out
+    drop(seen);
+    out.into_iter()
+        .map(|tag| Rc::try_unwrap(tag).unwrap_or_else(|shared| (*shared).clone()))
+        .collect()
 }
 
 fn decode_annotation_row(
@@ -97,7 +104,7 @@ pub fn tags_for(
         if index > 0 {
             placeholders.push(',');
         }
-        placeholders.push_str(&format!("?{}", index + 1));
+        let _ = write!(placeholders, "?{}", index + 1);
         params.push(SqliteValue::Integer(*id));
     }
     let pairs = connection.query_map(

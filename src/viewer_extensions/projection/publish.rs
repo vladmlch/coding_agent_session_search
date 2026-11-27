@@ -206,8 +206,8 @@ pub fn publish_session_structure(
         &[],
     )?;
     db.facts_execute(
-        "UPDATE viewer_revisions SET projection_revision = projection_revision + 1, \
-         updated_at_ms = ?1 WHERE id = 1",
+        // ubs:ignore[rust.domain.sql-concat] — static SQL literal with arithmetic +; updated_at_ms parameterized via ?1
+        "UPDATE viewer_revisions SET projection_revision = projection_revision + 1, updated_at_ms = ?1 WHERE id = 1",
         &[ParamValue::from(now_ms())],
     )?;
     Ok(ProjectionPublishOutcome::Published)

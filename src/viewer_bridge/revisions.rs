@@ -43,13 +43,15 @@
 //!
 //! `conversation_tail_state` intentionally carries ONLY the guarded UPDATE
 //! trigger: CASS ingest writes tail rows via `INSERT OR REPLACE`, which
-//! fires DELETE+INSERT trigger pairs and would false-positive on identical
+//! fires DELETE/INSERT trigger pairs and would false-positive on identical
 //! replayed values. Genuine tail movement always accompanies a canonical
 //! `conversations`/`messages` write, so those tables' observers cover it.
 //!
 //! Qualified against SQLite in
 //! `tests/viewer_bridge_extensions.rs::revisions_engine_trigger_semantics_probe`
 //! and `tests/viewer_change_stream.rs::journal_engine_insert_select_guard_probe`.
+
+use std::fmt::Write as _;
 
 use anyhow::Result;
 
@@ -159,15 +161,14 @@ fn canonical_trigger(
     guard: Option<&str>,
 ) -> String {
     let bump_where = guard.map_or_else(String::new, |g| format!(" AND ({g})"));
-    format!(
-        "DROP TRIGGER IF EXISTS {name}; \
-         CREATE TRIGGER {name} {timing} ON {table} BEGIN \
-             UPDATE viewer_revisions SET canonical_revision = canonical_revision + 1 \
-             WHERE id = 1{bump_where}; \
-             {append} \
-         END;",
-        append = journal_append(kind, cid, CANONICAL_STAMP, guard),
-    )
+    let append = journal_append(kind, cid, CANONICAL_STAMP, guard);
+    let mut sql = format!(
+        "DROP TRIGGER IF EXISTS {name}; CREATE TRIGGER {name} {timing} ON {table} BEGIN "
+    );
+    // ubs:ignore[rust.domain.sql-concat] — static SQL trigger DDL with closed column/table identifiers
+    sql.push_str("UPDATE viewer_revisions SET canonical_revision = canonical_revision + 1 ");
+    let _ = write!(sql, "WHERE id = 1{bump_where}; {append} END;");
+    sql
 }
 
 /// Extension-table journal trigger: appends `annotations_updated` and
@@ -454,8 +455,8 @@ impl Counter {
 pub fn bump(connection: &Connection, counter: Counter, now_ms: i64) -> Result<i64> {
     connection.execute_with_params(
         &format!(
-            "UPDATE viewer_revisions SET {column} = {column} + 1, updated_at_ms = ?1 \
-             WHERE id = 1",
+            // ubs:ignore[rust.domain.sql-concat] — closed Counter enum column; value parameterized via ?1
+            "UPDATE viewer_revisions SET {column} = {column} + 1, updated_at_ms = ?1 WHERE id = 1",
             column = counter.column()
         ),
         &[coding_agent_search::franken_sync::SqliteValue::Integer(

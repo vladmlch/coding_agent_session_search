@@ -6,6 +6,7 @@
 //! dispatch arm below — junie/qoder are stubs returning
 //! `extractor_unavailable` until their wave ships.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
@@ -64,9 +65,19 @@ fn severity(state: &str) -> u8 {
     }
 }
 
+fn canonical_state(state: &str) -> Cow<'static, str> {
+    match state {
+        "complete" => Cow::Borrowed("complete"),
+        "partial" => Cow::Borrowed("partial"),
+        "unavailable" => Cow::Borrowed("unavailable"),
+        "pending" => Cow::Borrowed("pending"),
+        other => Cow::Owned(other.to_owned()),
+    }
+}
+
 /// Accumulates per-scope coverage marks; only raises severity.
 pub(crate) struct CoverageBuilder {
-    states: BTreeMap<String, (String, BTreeSet<String>)>,
+    states: BTreeMap<String, (Cow<'static, str>, BTreeSet<String>)>,
     /// Scopes with at least one recorded piece of evidence; an `unavailable`
     /// field that still produced data degrades to `partial`, mirroring the
     /// oracle's `finish()`.
@@ -78,7 +89,7 @@ impl CoverageBuilder {
         Self {
             states: CORE_FIELDS
                 .iter()
-                .map(|field| (field.to_string(), ("complete".to_string(), BTreeSet::new())))
+                .map(|field| (field.to_string(), (Cow::Borrowed("complete"), BTreeSet::new())))
                 .collect(),
             known: BTreeSet::new(),
         }
@@ -97,9 +108,9 @@ impl CoverageBuilder {
             let entry = self
                 .states
                 .entry((*field).to_string())
-                .or_insert_with(|| ("complete".to_string(), BTreeSet::new()));
+                .or_insert_with(|| (Cow::Borrowed("complete"), BTreeSet::new()));
             if severity(state) > severity(&entry.0) {
-                entry.0 = state.to_string();
+                entry.0 = canonical_state(state);
             }
             entry.1.insert(reason.to_string());
         }
@@ -139,14 +150,12 @@ impl CoverageBuilder {
     ) -> Vec<CoverageEntry> {
         // Overlay-bound scopes are never produced by the extractor itself.
         for field in ["title", "artifacts", "subagents"] {
-            self.states
+            let entry = self
+                .states
                 .entry(field.to_string())
-                .or_insert_with(|| ("unavailable".to_string(), BTreeSet::new()))
-                .1
-                .insert("overlay_not_supplied".to_string());
-            if let Some(entry) = self.states.get_mut(field) {
-                entry.0 = "unavailable".to_string();
-            }
+                .or_insert_with(|| (Cow::Borrowed("unavailable"), BTreeSet::new()));
+            entry.0 = Cow::Borrowed("unavailable");
+            entry.1.insert("overlay_not_supplied".to_string());
         }
         let (is_subagent, parent_external_id) = relation;
         let relation_known = parent_external_id.is_some() || is_subagent == Some(false);
@@ -160,7 +169,7 @@ impl CoverageBuilder {
         self.states.insert(
             "parent_relation".to_string(),
             (
-                relation_state.to_string(),
+                Cow::Borrowed(relation_state),
                 if relation_known {
                     BTreeSet::new()
                 } else {
@@ -171,11 +180,11 @@ impl CoverageBuilder {
         self.states.insert(
             "is_subagent".to_string(),
             (
-                if is_subagent.is_some() {
-                    "complete".to_string()
+                Cow::Borrowed(if is_subagent.is_some() {
+                    "complete"
                 } else {
-                    "unavailable".to_string()
-                },
+                    "unavailable"
+                }),
                 if is_subagent.is_some() {
                     BTreeSet::new()
                 } else {
@@ -188,7 +197,7 @@ impl CoverageBuilder {
         self.states.insert(
             "metrics".to_string(),
             (
-                "partial".to_string(),
+                Cow::Borrowed("partial"),
                 BTreeSet::from(["native_metrics_partial".to_string()]),
             ),
         );
@@ -202,11 +211,11 @@ impl CoverageBuilder {
                 _ => self.known.contains(&field),
             };
             if state == "unavailable" && known {
-                state = "partial".to_string();
+                state = Cow::Borrowed("partial");
             }
             coverage.push(CoverageEntry {
                 field,
-                state,
+                state: state.into_owned(),
                 reasons: reasons.into_iter().collect(),
             });
         }
@@ -565,7 +574,7 @@ impl ToolCollector {
                 "[{},{}]",
                 json_text(&Value::String(item.name.clone())),
                 json_text(&item.arguments.clone().unwrap_or(Value::Null))
-            ) == signature
+            ) == signature // ubs:ignore[rust.security.constant-time-compare] — non-secret tool-call correlation key
         }) {
             candidates.push(call);
         }
@@ -587,7 +596,7 @@ impl ToolCollector {
                 item.text.clone().map(Value::String).unwrap_or(Value::Null),
                 item.exit_code.map(Value::from).unwrap_or(Value::Null),
                 item.is_error.map(Value::Bool).unwrap_or(Value::Null),
-            ])) == signature
+            ])) == signature // ubs:ignore[rust.security.constant-time-compare] — non-secret tool-call correlation key
         }) {
             candidates.push(result);
         }

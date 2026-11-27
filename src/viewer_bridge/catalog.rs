@@ -165,6 +165,7 @@ impl SessionLookup {
             }
         }
         for row in conn.query(
+            // ubs:ignore[rust.domain.sql-concat] — static SQL literal with arithmetic +
             "SELECT id, kind, host_label, COALESCE(length(CAST(kind AS BLOB)),0)+COALESCE(length(CAST(host_label AS BLOB)),0) FROM sources",
         )? {
             let id: String = row.get_typed(0)?;

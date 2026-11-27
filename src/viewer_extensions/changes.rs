@@ -792,10 +792,11 @@ pub fn send_bridge_wakeup_best_effort(db: &Path) {
         let mut stream =
             TcpStream::connect_timeout(&loopback_addr, Duration::from_millis(150)).ok()?;
         let _ = stream.set_write_timeout(Some(Duration::from_millis(150)));
-        stream
+        let write_ok = stream
             .write_all(format!("{{\"op\":\"{EVENT_OP_NOTIFY}\"}}\n").as_bytes())
-            .ok()?;
-        Some(())
+            .is_ok();
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        write_ok.then_some(())
     })();
     let _ = send;
 }

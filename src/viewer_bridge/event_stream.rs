@@ -183,7 +183,9 @@ impl EventStreamHandle {
             Err(error) => {
                 shutdown.store(true, Ordering::Release);
                 // Wake any acceptor already running so it exits on the flag.
-                let _ = TcpStream::connect(&loopback_endpoint);
+                if let Ok(stream) = TcpStream::connect(&loopback_endpoint) {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
                 let _ = std::fs::remove_file(&sidecar);
                 return Err(error);
             }
@@ -207,7 +209,9 @@ impl Drop for EventStreamHandle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
         // Wake the blocking accept() so the acceptor sees the flag.
-        let _ = TcpStream::connect(&self.loopback_endpoint);
+        if let Ok(stream) = TcpStream::connect(&self.loopback_endpoint) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
         if let Some(thread) = self.acceptor.take() {
             let _ = thread.join();
         }

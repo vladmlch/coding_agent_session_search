@@ -55,13 +55,15 @@ fn record_blocks(extra: &Value) -> Vec<&Value> {
     blocks
 }
 
-/// Verified-call lookup: `(recording idx, recorded raw id)` → scoped id.
-type VerifiedCalls<'a> = HashMap<(i64, String), &'a str>;
+/// Verified-call lookup: `recording idx` -> (`recorded raw id` -> scoped id).
+type VerifiedCalls<'a> = HashMap<i64, HashMap<&'a str, &'a str>>;
 
 fn verified_call_map<'a>(facts: &'a FactPublication) -> VerifiedCalls<'a> {
     let mut map = VerifiedCalls::new();
     for tool in &facts.tools {
-        map.entry((tool.source_idx, tool.raw_call_id.clone()))
+        map.entry(tool.source_idx)
+            .or_default()
+            .entry(tool.raw_call_id.as_str())
             .or_insert(tool.call_id.as_str());
     }
     map
@@ -135,8 +137,9 @@ fn record_parts(
                     structured = true;
                     let raw_id = text_id(map.get("id")).unwrap_or_default();
                     let call_id = verified
-                        .get(&(message.idx, raw_id.clone()))
-                        .map(|scoped| scoped.to_string())
+                        .get(&message.idx)
+                        .and_then(|by_id| by_id.get(raw_id.as_str()))
+                        .map(|scoped| (*scoped).to_string())
                         .or_else(|| (!raw_id.is_empty()).then_some(raw_id));
                     parts.push(Part {
                         kind: "tool_call",
@@ -178,8 +181,9 @@ fn record_parts(
                                 text_id(payload.get("call_id").or_else(|| payload.get("id")))
                                     .unwrap_or_default();
                             let call_id = verified
-                                .get(&(message.idx, raw_id.clone()))
-                                .map(|scoped| scoped.to_string())
+                                .get(&message.idx)
+                                .and_then(|by_id| by_id.get(raw_id.as_str()))
+                                .map(|scoped| (*scoped).to_string())
                                 .or_else(|| (!raw_id.is_empty()).then_some(raw_id.clone()));
                             parts.push(Part {
                                 kind: "tool_call",
@@ -326,8 +330,9 @@ fn record_parts(
             )
             .unwrap_or_default();
             let call_id = verified
-                .get(&(message.idx, raw_id.clone()))
-                .map(|scoped| scoped.to_string())
+                .get(&message.idx)
+                .and_then(|by_id| by_id.get(raw_id.as_str()))
+                .map(|scoped| (*scoped).to_string())
                 .or_else(|| (!raw_id.is_empty()).then_some(raw_id.clone()));
             parts.push(Part {
                 kind: "tool_call",
@@ -597,8 +602,13 @@ pub fn project_session_structure(
     // --- part dedup + tool part ordinals ------------------------------------
     for step in &mut steps {
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        step.parts
-            .retain(|part| seen.insert(part.signature.clone()));
+        let mut deduped = Vec::with_capacity(step.parts.len());
+        for mut part in std::mem::take(&mut step.parts) {
+            if seen.insert(std::mem::take(&mut part.signature)) {
+                deduped.push(part);
+            }
+        }
+        step.parts = deduped;
         let mut tool_ordinal = 0_i64;
         for part in &mut step.parts {
             if matches!(part.kind, "tool_call" | "tool_result") {

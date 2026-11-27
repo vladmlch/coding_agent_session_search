@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
@@ -108,11 +109,11 @@ const SESSION_DOC_WITNESS_KEY: &str = "\u{0}session_scope_doc";
 fn literal_session_doc_eligible(
     value: &str,
     exact: bool,
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
 ) -> bool {
     value.is_ascii()
-        && matchers
-            .get(&(value.to_owned(), exact))
+        && matchers[usize::from(exact)]
+            .get(value)
             .is_some_and(|matcher| !matcher.never && matcher.tokens.len() == 1)
 }
 
@@ -139,7 +140,7 @@ pub(super) struct FastShape {
 
 pub(super) fn classify_fast_shape(
     node: &PlanNode,
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
 ) -> FastShape {
     match node {
         PlanNode::Literal { value, exact, .. } => {
@@ -268,7 +269,7 @@ pub(super) fn enumerate_session_doc_hits(
 /// [`super::MAX_LITERAL_HITS`]; `None` when the literal is too common to
 /// enumerate or the engine refused — that claim's witness discovery
 /// degrades to the ungated structural scan.
-pub(super) type WitnessGates = HashMap<(String, bool), Option<HashMap<i64, HashSet<i64>>>>;
+pub(super) type WitnessGates = [HashMap<String, Option<HashMap<i64, HashSet<i64>>>>; 2];
 
 /// Enumerate one claim literal's raw Quill hits — message docs + region
 /// docs through the same `literal_query_text` ->
@@ -400,10 +401,10 @@ pub(super) fn unseen_inventory_result(session: &SessionCtx) -> NodeResult {
         out.unseen = true;
         for field in ["block_inventory", "text_inventory"] {
             if session.inventory_partial || session.field_blocks_strict(field) {
-                out.reasons.insert(format!(
+                out.reasons.insert(Cow::Owned(format!(
                     "{field}:{}:inventory_incomplete",
                     session.coverage_of(field)
-                ));
+                )));
             }
         }
     }
@@ -420,14 +421,14 @@ pub(super) fn unseen_inventory_result(session: &SessionCtx) -> NodeResult {
 pub(super) fn eval_node_fast(
     node: &PlanNode,
     session: &SessionCtx,
-    session_doc_hits: &HashMap<(String, bool), HashMap<i64, f32>>,
+    session_doc_hits: &[HashMap<String, HashMap<i64, f32>>; 2],
     seek: Option<&BlockSeekEvidence>,
 ) -> NodeResult {
     match node {
         PlanNode::All => NodeResult::constant(Truth::True, BTreeSet::new()),
         PlanNode::Literal { value, exact, .. } => {
-            if session_doc_hits
-                .get(&(value.clone(), *exact))
+            if session_doc_hits[usize::from(*exact)]
+                .get(value.as_str())
                 .is_some_and(|hits| hits.contains_key(&session.conversation_id))
             {
                 let mut out = NodeResult::default();
@@ -477,13 +478,13 @@ pub(super) fn eval_node_fast(
 pub(super) fn fast_score_and_claims(
     plan: &Plan,
     conversation_id: i64,
-    session_doc_hits: &HashMap<(String, bool), HashMap<i64, f32>>,
+    session_doc_hits: &[HashMap<String, HashMap<i64, f32>>; 2],
 ) -> (Option<f64>, Vec<FastClaim>) {
     let mut best_score: Option<f64> = None;
     let mut claims: Vec<FastClaim> = Vec::new();
     for (branch, (value, exact)) in &plan.positive_branches {
-        let Some(score) = session_doc_hits
-            .get(&(value.clone(), *exact))
+        let Some(score) = session_doc_hits[usize::from(*exact)]
+            .get(value.as_str())
             .and_then(|hits| hits.get(&conversation_id))
         else {
             continue;
@@ -518,7 +519,7 @@ pub(super) fn discover_fast_witnesses(
     regions: &[Region],
     claims: &[FastClaim],
     claim_gates: &[Option<&HashSet<i64>>],
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
     max_matches: usize,
     stats: &mut HydrateStats,
     deadline: &Deadline,
@@ -528,7 +529,7 @@ pub(super) fn discover_fast_witnesses(
         if discovered.len() >= max_matches {
             break;
         }
-        let Some(matcher) = matchers.get(&(value.clone(), *exact)) else {
+        let Some(matcher) = matchers[usize::from(*exact)].get(value.as_str()) else {
             continue;
         };
         if matcher.never {
@@ -601,7 +602,7 @@ pub(super) fn ungated_fast_witnesses(
     connection: &Connection,
     conversation_id: i64,
     claims: &[FastClaim],
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
     max_matches: usize,
     stats: &mut HydrateStats,
     deadline: &Deadline,

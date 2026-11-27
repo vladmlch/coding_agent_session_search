@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use coding_agent_search::franken_sync::{Connection, FrankenError, SqliteValue};
 
@@ -219,21 +221,21 @@ fn text(value: &str) -> SqliteValue {
 /// parameters for the clause groups actually emitted in a query.
 #[derive(Clone)]
 pub(super) struct SqlClause {
-    chunks: Vec<String>,
+    chunks: Vec<Cow<'static, str>>,
     params: Vec<SqliteValue>,
 }
 
 impl SqlClause {
-    fn raw(sql: impl Into<String>) -> Self {
+    fn raw(sql: impl Into<Cow<'static, str>>) -> Self {
         Self {
             chunks: vec![sql.into()],
             params: Vec::new(),
         }
     }
 
-    fn one(before: &str, param: SqliteValue, after: &str) -> Self {
+    fn one(before: &'static str, param: SqliteValue, after: &'static str) -> Self {
         Self {
-            chunks: vec![before.to_owned(), after.to_owned()],
+            chunks: vec![Cow::Borrowed(before), Cow::Borrowed(after)],
             params: vec![param],
         }
     }
@@ -243,13 +245,13 @@ impl SqlClause {
         let mut params = Vec::with_capacity(ids.len());
         for (idx, id) in ids.iter().enumerate() {
             chunks.push(if idx == 0 {
-                format!("{column} IN (")
+                Cow::Owned(format!("{column} IN ("))
             } else {
-                ",".to_owned()
+                Cow::Borrowed(",")
             });
             params.push(SqliteValue::Integer(*id));
         }
-        chunks.push(")".to_owned());
+        chunks.push(Cow::Borrowed(")"));
         Self { chunks, params }
     }
 }
@@ -261,7 +263,7 @@ pub(super) fn append_clauses(
 ) {
     for clause in group {
         if clause.params.is_empty() {
-            clauses.push(clause.chunks[0].clone());
+            clauses.push(clause.chunks[0].as_ref().into());
             continue;
         }
         let mut sql = String::new();

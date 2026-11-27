@@ -563,8 +563,12 @@ pub(crate) fn scan_copilot_parts(parts: &[Value]) -> CopilotPartsScan {
                     match group_index.get(&call_id) {
                         Some(&position) => {
                             let group = &mut scan.tool_groups[position];
-                            group.name = group.name.clone().or(tool.tool_id);
-                            group.arguments = group.arguments.clone().or(tool.arguments);
+                            if group.name.is_none() {
+                                group.name = tool.tool_id;
+                            }
+                            if group.arguments.is_none() {
+                                group.arguments = tool.arguments;
+                            }
                             group.message_texts.extend(tool.message_texts);
                             if let Some(texts) = tool.result_texts {
                                 group

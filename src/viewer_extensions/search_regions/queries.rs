@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -104,7 +105,7 @@ pub fn regions_for_conversations(
             if i > 0 {
                 sql.push(',');
             }
-            sql.push_str(&format!("?{}", i + 1));
+            let _ = write!(sql, "?{}", i + 1);
             params.push(ParamValue::from(*cid));
         }
         sql.push_str(") ORDER BY conversation_id, region_ordinal");
@@ -259,16 +260,13 @@ pub fn regions_for_quill_slots(
             if chunk.is_empty() {
                 continue;
             }
-            let mut placeholders = Vec::with_capacity(chunk.len() + 1);
-            placeholders.push("?1".to_owned());
-            for index in 0..chunk.len() {
-                placeholders.push(format!("?{}", index + 2));
-            }
-            let sql = format!(
-                "{REGION_STRUCTURAL_COLUMNS} WHERE conversation_id = ?1 \
-                 AND quill_idx IN ({}) ORDER BY region_ordinal",
-                placeholders.join(",")
+            let mut sql = format!(
+                "{REGION_STRUCTURAL_COLUMNS} WHERE conversation_id = ?1 AND quill_idx IN (?1"
             );
+            for index in 0..chunk.len() {
+                let _ = write!(sql, ",?{}", index + 2);
+            }
+            sql.push_str(") ORDER BY region_ordinal");
             let mut params: Vec<crate::franken_sync::SqliteValue> =
                 Vec::with_capacity(chunk.len() + 1);
             params.push(crate::franken_sync::SqliteValue::Integer(cid));
@@ -458,7 +456,7 @@ pub fn region_marks_for(
             if i > 0 {
                 sql.push(',');
             }
-            sql.push_str(&format!("?{}", i + 1));
+            let _ = write!(sql, "?{}", i + 1);
             params.push(ParamValue::from(*cid));
         }
         sql.push(')');
