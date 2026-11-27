@@ -80,20 +80,27 @@ pub fn workspace_source_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Resolve a repository-relative path `rel` against `root`, checking
-/// `crates/*/src/<rest>` when `rel` starts with `src/` and does not exist
-/// directly at `root.join(rel)`.
-pub fn resolve_workspace_source_file(root: &Path, rel: &str) -> PathBuf {
-    let direct = root.join(rel);
+/// Resolve a repository-relative path `subpath` against `root`, checking
+/// `crates/*/src/<rest>` when `subpath` starts with `src/` and does not exist
+/// directly at `root.join(subpath)`.
+pub fn resolve_workspace_source_file(root: &Path, subpath: &str) -> PathBuf {
+    let p = Path::new(subpath);
+    if p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return root.to_path_buf();
+    }
+    let direct = root.join(subpath);
     if direct.exists() {
         return direct;
     }
-    if let Some(subpath) = rel
+    if let Some(stripped) = subpath
         .strip_prefix("src/")
-        .or_else(|| rel.strip_prefix("src\\"))
+        .or_else(|| subpath.strip_prefix("src\\"))
     {
         for src_dir in workspace_source_dirs(root) {
-            let candidate = src_dir.join(subpath);
+            let candidate = src_dir.join(stripped);
             if candidate.exists() {
                 return candidate;
             }
