@@ -276,10 +276,9 @@ pub(crate) fn doctor_record_storage_bytes(
     entry.bytes = entry.bytes.saturating_add(bytes);
     entry.file_count += 1;
     if entry.example_paths.len() < 3 {
+        let example = relative_path.display().to_string();
         // ubs:ignore[rust.security.path-traversal] — Vec<String>::push, not PathBuf::push
-        entry
-            .example_paths
-            .push(relative_path.display().to_string());
+        entry.example_paths.push(example);
     }
 }
 
