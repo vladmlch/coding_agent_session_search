@@ -336,9 +336,10 @@ pub fn flatten_pi_family_text_content(content: &Value) -> Option<String> {
             Some(text.to_string())
         } else {
             match block_type {
-                None | Some("text" | "input_text" | "output_text") => {
-                    block.get("text").and_then(Value::as_str).map(str::to_string)
-                }
+                None | Some("text" | "input_text" | "output_text") => block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 Some("thinking") => block
                     .get("thinking")
                     .and_then(Value::as_str)

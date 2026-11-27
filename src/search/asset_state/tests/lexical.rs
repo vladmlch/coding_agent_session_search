@@ -1214,8 +1214,7 @@ fn legacy_omp_reclassification_preserves_one_canonical_conversation() -> anyhow:
     use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
     use crate::sources::provenance::LOCAL_SOURCE_ID;
     use crate::storage::sqlite::{
-        LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY,
-        LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
+        LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY, LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
         LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, LegacyOmpReclassificationResult,
         SqliteStorage, legacy_omp_analytics_pending, tests::set_env_var,
     };

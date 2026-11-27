@@ -96,12 +96,12 @@ pub(crate) use source_and_historical_import::{
     message_extra_to_source_jsonl_line, seed_canonical_from_best_historical_bundle,
 };
 
+pub use omp_and_semantic_meta::{CURRENT_SCHEMA_VERSION, LegacyOmpReclassificationResult};
 #[cfg(test)]
 pub(crate) use omp_and_semantic_meta::{
     LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY, LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
     LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, legacy_omp_analytics_pending,
 };
-pub use omp_and_semantic_meta::{CURRENT_SCHEMA_VERSION, LegacyOmpReclassificationResult};
 pub(crate) use omp_and_semantic_meta::{
     MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION, SemanticIdentityTier,
     legacy_omp_analytics_pending_with_query,

@@ -10,8 +10,10 @@ pub fn workspace_root() -> PathBuf {
     for ancestor in manifest_dir.ancestors() {
         let cargo_toml = ancestor.join("Cargo.toml");
         if cargo_toml.is_file()
-            && std::fs::read_to_string(&cargo_toml)
-                .is_ok_and(|body| body.lines().any(|line| line.trim_start().starts_with("[workspace]")))
+            && std::fs::read_to_string(&cargo_toml).is_ok_and(|body| {
+                body.lines()
+                    .any(|line| line.trim_start().starts_with("[workspace]"))
+            })
         {
             return ancestor.to_path_buf();
         }

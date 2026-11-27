@@ -325,7 +325,9 @@ fn try_publish_linux_bundle_via_atomic_exchange(
             Ok(true)
         }
         Err(exchange_error)
-            if crate::resource_plan::fs_atomic::linux_atomic_exchange_is_unsupported(&exchange_error) =>
+            if crate::resource_plan::fs_atomic::linux_atomic_exchange_is_unsupported(
+                &exchange_error,
+            ) =>
         {
             restore_linux_atomic_staged_candidate(
                 backup_dir,

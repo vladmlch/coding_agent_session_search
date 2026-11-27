@@ -760,9 +760,10 @@ fn search_self_heal_refreshes_stale_checkpoint_when_live_index_matches_db() {
     .expect("search self-heal should refresh checkpoint");
     assert_eq!(repair.action, "refreshed-checkpoint");
 
-    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
-        .expect("load repaired checkpoint")
-        .expect("checkpoint present");
+    let checkpoint =
+        crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
+            .expect("load repaired checkpoint")
+            .expect("checkpoint present");
     assert_eq!(checkpoint.schema_hash, crate::search::tantivy::SCHEMA_HASH);
     assert!(checkpoint.completed);
 }
@@ -808,9 +809,10 @@ fn search_self_heal_rebuilds_when_checkpoint_references_different_db() {
     assert_eq!(repair.action, "rebuilt-from-canonical-db");
     assert_eq!(repair.indexed_docs, Some(1));
 
-    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
-        .expect("load rebuilt checkpoint")
-        .expect("checkpoint present");
+    let checkpoint =
+        crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
+            .expect("load rebuilt checkpoint")
+            .expect("checkpoint present");
     assert!(stored_path_identity_matches(&checkpoint.db_path, &db_path));
 
     let client = SearchClient::open(&index_path, Some(&db_path))
@@ -1406,9 +1408,10 @@ fn search_self_heal_replaces_corrupt_live_artifact_for_empty_db() {
     crate::search::tantivy::validate_searchable_index_contract(&index_path)
         .expect("empty repaired lexical artifact contract");
 
-    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
-        .expect("load empty repair checkpoint")
-        .expect("checkpoint present");
+    let checkpoint =
+        crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
+            .expect("load empty repair checkpoint")
+            .expect("checkpoint present");
     assert!(checkpoint.completed);
     assert_eq!(checkpoint.indexed_docs, 0);
 }

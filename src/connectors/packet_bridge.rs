@@ -29,7 +29,11 @@ pub fn conversation_packet_from_normalized(
             title: conversation.title.clone(),
         },
         provenance,
-        timestamps: timestamps_from_parts(conversation.started_at, conversation.ended_at, &messages),
+        timestamps: timestamps_from_parts(
+            conversation.started_at,
+            conversation.ended_at,
+            &messages,
+        ),
         metadata_json: conversation.metadata.clone(),
         messages,
     };

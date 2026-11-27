@@ -88,9 +88,7 @@ fn exact_pins(manifest: &str) -> BTreeMap<String, Pin> {
         .and_then(toml::Value::as_table)
         .and_then(|ws| ws.get("dependencies"))
         .and_then(toml::Value::as_table);
-    let deps = manifest
-        .get("dependencies")
-        .and_then(toml::Value::as_table);
+    let deps = manifest.get("dependencies").and_then(toml::Value::as_table);
     assert!(
         deps.is_some() || workspace_deps.is_some(),
         "[dependencies] or [workspace.dependencies] table must exist"

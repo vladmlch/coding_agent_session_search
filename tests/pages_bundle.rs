@@ -2696,10 +2696,8 @@ mod tests {
             "unencrypted database loading must stream within its declared size and zero temporary plaintext bytes"
         );
 
-        let attrs = fs::read_to_string(
-            crate::ws_paths_1c::workspace_root().join(".gitattributes"),
-        )
-        .expect("read .gitattributes");
+        let attrs = fs::read_to_string(crate::ws_paths_1c::workspace_root().join(".gitattributes"))
+            .expect("read .gitattributes");
         assert!(attrs.contains("src/pages_assets/vendor/sqlite3.mjs whitespace=-trailing-space"));
         assert!(attrs.contains(
             "src/pages_assets/vendor/sqlite3-opfs-async-proxy.js whitespace=-trailing-space"

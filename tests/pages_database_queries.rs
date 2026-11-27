@@ -7,8 +7,7 @@ mod ws_paths_1c;
 
 #[test]
 fn pages_database_queries_against_real_sqlite() {
-    let script =
-        ws_paths_1c::workspace_root().join("tests/js/pages_database_queries.test.mjs");
+    let script = ws_paths_1c::workspace_root().join("tests/js/pages_database_queries.test.mjs");
     let output = Command::new("node")
         .args(["--experimental-vm-modules", "--test"])
         .arg(script)

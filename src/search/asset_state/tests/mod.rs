@@ -6,8 +6,6 @@ pub(super) use std::fs::OpenOptions;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::time::Duration;
 
-pub(super) use crate::storage::lexical_checkpoint_io::LexicalRebuildCheckpoint;
-pub(super) use crate::storage::run_lock::LEXICAL_REBUILD_PAGE_SIZE_PUBLIC;
 pub(super) use crate::search::ann_index::hnsw_index_path;
 pub(super) use crate::search::embedder::Embedder;
 pub(super) use crate::search::fastembed_embedder::FastEmbedder;
@@ -22,6 +20,8 @@ pub(super) use crate::search::tantivy::SCHEMA_HASH;
 pub(super) use crate::search::vector_index::{
     SemanticProgressiveUnavailableReason, VECTOR_INDEX_DIR, vector_index_path,
 };
+pub(super) use crate::storage::lexical_checkpoint_io::LexicalRebuildCheckpoint;
+pub(super) use crate::storage::run_lock::LEXICAL_REBUILD_PAGE_SIZE_PUBLIC;
 pub(super) use crate::storage::sqlite::{FrankenStorage, SemanticIdentityTier};
 
 use super::write_index_run_lock_metadata_sidecar;

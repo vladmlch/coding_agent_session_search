@@ -487,12 +487,11 @@ impl MemoizingRedactor {
 
     fn with_retention_budget(capacity: usize, retention: Arc<MemoRetentionBudget>) -> Self {
         Self {
-            text_cache:
-                super::memoization::ContentAddressedMemoCache::with_retention_budget(
-                    capacity,
-                    Arc::clone(&retention),
-                    String::capacity,
-                ),
+            text_cache: super::memoization::ContentAddressedMemoCache::with_retention_budget(
+                capacity,
+                Arc::clone(&retention),
+                String::capacity,
+            ),
             algorithm_fingerprint: redaction_algorithm_fingerprint(),
             last_retention_limit: retention.limit(),
             retention,
@@ -562,10 +561,7 @@ impl MemoizingRedactor {
     pub(crate) fn redact_text_with_audit(
         &mut self,
         input: &str,
-    ) -> (
-        String,
-        Vec<super::memoization::MemoCacheAuditRecord>,
-    ) {
+    ) -> (String, Vec<super::memoization::MemoCacheAuditRecord>) {
         self.refresh_retention_limit();
         // Empty fast-path matches the uncached contract and bypasses
         // the cache entirely (see memoizing_redactor_empty_input_skips_cache).
@@ -747,9 +743,8 @@ impl MemoizingRedactor {
         // dominate cache memory).
         let mut hasher = blake3::Hasher::new();
         hasher.update(input.as_bytes());
-        let content_hash = super::memoization::MemoContentHash::from_bytes(
-            hasher.finalize().as_bytes().to_vec(),
-        );
+        let content_hash =
+            super::memoization::MemoContentHash::from_bytes(hasher.finalize().as_bytes().to_vec());
         super::memoization::MemoKey::new(
             content_hash,
             "redact_text",

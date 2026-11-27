@@ -68,9 +68,7 @@ impl Drop for TestBuildMetadataGuard {
 /// returned RAII guard.
 #[cfg(test)]
 #[must_use]
-pub fn install_thread_local_test_metadata(
-    meta: &'static BuildMetadata,
-) -> TestBuildMetadataGuard {
+pub fn install_thread_local_test_metadata(meta: &'static BuildMetadata) -> TestBuildMetadataGuard {
     let previous = TEST_OVERRIDE.with(|slot| slot.replace(Some(meta)));
     TestBuildMetadataGuard(previous)
 }

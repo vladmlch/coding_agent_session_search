@@ -23,15 +23,15 @@ use super::serial_batch::{
     defer_lexical_updates_enabled, persist_conversations_batched_whole, with_ephemeral_writer,
 };
 
+pub(super) use crate::source_onboarding::conv_map::extract_provenance;
+pub use crate::source_onboarding::conv_map::map_to_internal;
+#[allow(unused_imports)]
+pub(crate) use crate::source_onboarding::conv_map::map_to_internal_with_redactor;
 #[cfg(test)]
 pub(super) use crate::source_onboarding::conv_map::{
     INNER_REDACTION_MIN_MESSAGES, INNER_REDACTION_MIN_TEXT_BYTES, MAP_HEARTBEAT_MESSAGE_STRIDE,
     use_inner_message_redaction,
 };
-pub use crate::source_onboarding::conv_map::map_to_internal;
-pub(super) use crate::source_onboarding::conv_map::extract_provenance;
-#[allow(unused_imports)]
-pub(crate) use crate::source_onboarding::conv_map::map_to_internal_with_redactor;
 
 /// Work-liveness heartbeat threaded through batched persistence
 /// (gh373/oeu5a). Mirrors the #282/#332/#366 pattern: real work ticks

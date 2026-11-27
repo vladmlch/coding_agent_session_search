@@ -907,6 +907,10 @@ checksum = "same-name-dependency"
         assert!(blocks(Some("cass-model"), Some("0.10.0"), None));
         assert!(blocks(Some("cass-unlisted"), Some("0.11.0"), None));
         assert!(blocks(Some("external-helper"), Some("0.11.0"), None));
-        assert!(blocks(Some("franken-agent-detection"), Some("0.3.11"), None));
+        assert!(blocks(
+            Some("franken-agent-detection"),
+            Some("0.3.11"),
+            None
+        ));
     }
 }

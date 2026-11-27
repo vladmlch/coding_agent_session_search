@@ -6,11 +6,11 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 
+pub(crate) use super::lexical_checkpoint_io::load_lexical_rebuild_checkpoint;
 use super::lexical_checkpoint_io::{
     count_total_conversations_exact, lexical_rebuild_content_fingerprint,
     lexical_rebuild_storage_fingerprint,
 };
-pub(crate) use super::lexical_checkpoint_io::load_lexical_rebuild_checkpoint;
 use crate::storage::sqlite::{FrankenStorage, database_sidecar_path};
 
 pub(crate) fn lexical_storage_fingerprint_for_db(db_path: &Path) -> Result<String> {

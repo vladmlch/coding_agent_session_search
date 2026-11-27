@@ -80,7 +80,8 @@ impl WatchSourceLedger {
         }
         let mut ctx = ctx.clone();
         ctx.since_ts = None;
-        let build_meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
+        let build_meta =
+            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
         let producer_contract =
             WorkspaceExclusions::from_env()?.bind_contract(build_meta.ingest_contract);
         // As in startup, a self-contained provider needs no second inventory

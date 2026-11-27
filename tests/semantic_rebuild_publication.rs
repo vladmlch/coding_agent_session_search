@@ -551,7 +551,7 @@ fn canonical_full_replacement_supersedes_retained_wal_at_generation_wrap() -> Re
     for generation in [1, 254, 255] {
         let temp = tempfile::tempdir()?;
         coding_agent_search::ensure_runtime_hooks_registered();
-    let indexer = SemanticIndexer::new("hash", None)?;
+        let indexer = SemanticIndexer::new("hash", None)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;
         let original = rows(&indexer, 1)?;
@@ -1062,7 +1062,7 @@ fn canonical_unchanged_reconciliation_admits_empty_and_f32_generations_without_r
     for empty in [false, true] {
         let temp = tempfile::tempdir()?;
         coding_agent_search::ensure_runtime_hooks_registered();
-    let indexer = SemanticIndexer::new("hash", None)?;
+        let indexer = SemanticIndexer::new("hash", None)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;
         let mut original = if empty {
@@ -1108,7 +1108,7 @@ fn canonical_unchanged_admission_rejects_unusable_persisted_vectors() -> Result<
     for value in [1e-20f32, 70_000.0f32] {
         let temp = tempfile::tempdir()?;
         coding_agent_search::ensure_runtime_hooks_registered();
-    let indexer = SemanticIndexer::new("hash", None)?;
+        let indexer = SemanticIndexer::new("hash", None)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;
         let mut original = rows(&indexer, 1)?;
@@ -1143,7 +1143,7 @@ fn canonical_unchanged_admission_requires_unique_rows_matching_the_current_space
     for foreign in [false, true] {
         let temp = tempfile::tempdir()?;
         coding_agent_search::ensure_runtime_hooks_registered();
-    let indexer = SemanticIndexer::new("hash", None)?;
+        let indexer = SemanticIndexer::new("hash", None)?;
         let original = rows(&indexer, 1)?;
         let path = vector_index_path(temp.path(), indexer.embedder_id());
         fs::create_dir_all(path.parent().unwrap())?;

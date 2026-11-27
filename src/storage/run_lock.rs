@@ -433,11 +433,7 @@ impl IndexRunLockGuard {
     /// previous v0.6.5 lock-file payload only reported `phase=watch_startup`,
     /// which hid the wedge inside a multi-second-to-multi-hour preflight
     /// block.
-    pub(crate) fn set_phase(
-        &mut self,
-        mode: SearchMaintenanceMode,
-        phase: &str,
-    ) -> Result<()> {
+    pub(crate) fn set_phase(&mut self, mode: SearchMaintenanceMode, phase: &str) -> Result<()> {
         self.write_metadata_with_phase(mode, phase)
     }
 }
@@ -1212,10 +1208,7 @@ pub(crate) fn write_index_run_lock_heartbeat_in_place(
     }
 }
 
-pub(crate) fn write_index_run_lock_file_in_place(
-    lock_path: &Path,
-    refreshed: &str,
-) -> Result<()> {
+pub(crate) fn write_index_run_lock_file_in_place(lock_path: &Path, refreshed: &str) -> Result<()> {
     // Do not temp-file+rename `index-run.lock`: POSIX advisory locks attach
     // to the existing file inode/open handle, and replacing the path would
     // let another process lock a fresh inode while this process still holds

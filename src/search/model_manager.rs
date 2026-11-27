@@ -14,7 +14,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::search_defaults::expected_vector_space_revision;
 use crate::search::ann_index::hnsw_index_path;
 use crate::search::embedder::Embedder;
 use crate::search::fastembed_embedder::{FastEmbedder, LazyFastEmbedder};
@@ -32,6 +31,7 @@ use crate::search::vector_index::{
     ROLE_ASSISTANT, ROLE_USER, SemanticFilterMaps, SemanticIndexArtifact,
     SemanticProgressiveUnavailableReason, VectorIndex, vector_index_path,
 };
+use crate::search_defaults::expected_vector_space_revision;
 use crate::storage::sqlite::{FrankenStorage, SemanticIdentityTier};
 
 /// Unified TUI state machine for semantic search availability.
@@ -1047,19 +1047,19 @@ fn refuse_stale_semantic_assets(
     let db_fingerprint =
         match crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_storage(storage)
         {
-        Ok(fingerprint) => fingerprint,
-        Err(err) => {
-            // The archive answered the open but not the fingerprint queries;
-            // the filter-map load right after this will surface the real
-            // error, so do not invent a staleness verdict here.
-            tracing::debug!(
-                error = %format!("{err:#}"),
-                embedder = served_embedder_id,
-                "semantic staleness gate skipped: could not fingerprint current DB"
-            );
-            return None;
-        }
-    };
+            Ok(fingerprint) => fingerprint,
+            Err(err) => {
+                // The archive answered the open but not the fingerprint queries;
+                // the filter-map load right after this will surface the real
+                // error, so do not invent a staleness verdict here.
+                tracing::debug!(
+                    error = %format!("{err:#}"),
+                    embedder = served_embedder_id,
+                    "semantic staleness gate skipped: could not fingerprint current DB"
+                );
+                return None;
+            }
+        };
     let state = crate::search::asset_state::semantic_state_from_availability(
         data_dir,
         availability_if_served,

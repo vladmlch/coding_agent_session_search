@@ -29,11 +29,11 @@
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
+use crate::franken_sync::compat::{RowExt, param_slice_to_values};
+use crate::franken_sync::{Connection, Row, SqliteValue, params};
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use crate::franken_sync::compat::{RowExt, param_slice_to_values};
-use crate::franken_sync::{Connection, Row, SqliteValue, params};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;

@@ -562,8 +562,8 @@ fn insert_conversations_batched_reprocessing_conversation_is_idempotent() {
 fn parallel_insert_conversation_tree_keeps_unique_external_ids_distinct() {
     use crate::connectors::{NormalizedConversation, NormalizedMessage};
     use crate::franken_sync::compat::{ConnectionExt, RowExt};
-    use crate::source_onboarding::conv_map::map_to_internal;
     use crate::model::types::{Agent, AgentKind};
+    use crate::source_onboarding::conv_map::map_to_internal;
     use rand::RngExt;
     use rayon::prelude::*;
 
@@ -723,8 +723,8 @@ fn parallel_insert_conversation_tree_keeps_unique_external_ids_distinct() {
 #[test]
 fn insert_conversation_tree_merges_duplicate_external_id_with_gaps() {
     use crate::connectors::{NormalizedConversation, NormalizedMessage};
-    use crate::source_onboarding::conv_map::map_to_internal;
     use crate::model::types::{Agent, AgentKind};
+    use crate::source_onboarding::conv_map::map_to_internal;
     use std::path::PathBuf;
 
     let dir = TempDir::new().unwrap();

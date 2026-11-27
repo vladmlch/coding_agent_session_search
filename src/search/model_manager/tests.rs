@@ -295,9 +295,8 @@ fn stale_manifest_tier_is_refused_even_when_the_artifact_loads() {
     );
 
     // Once the record matches the live database again, serving resumes.
-    let current =
-        crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db(&db_path)
-            .expect("current fingerprint");
+    let current = crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db(&db_path)
+        .expect("current fingerprint");
     let mut manifest = SemanticManifest::load_or_default(tmp.path()).expect("manifest");
     assert!(manifest.adopt_legacy_artifact(
         TierKind::Fast,

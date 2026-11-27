@@ -150,8 +150,14 @@ mod tests {
     #[test]
     fn resolves_workspace_root_from_member_crate_dir() {
         let tmp = TempRoot::new();
-        tmp.write("Cargo.toml", "[workspace]\nmembers = [\"crates/cass-model\"]\n");
-        tmp.write("crates/cass-model/Cargo.toml", "[package]\nname = \"cass-model\"\n");
+        tmp.write(
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/cass-model\"]\n",
+        );
+        tmp.write(
+            "crates/cass-model/Cargo.toml",
+            "[package]\nname = \"cass-model\"\n",
+        );
         let member_dir = tmp.0.join("crates/cass-model");
         assert_eq!(workspace_root_from_manifest_dir(&member_dir), tmp.0);
         assert_eq!(workspace_root_from_manifest_dir(&tmp.0), tmp.0);

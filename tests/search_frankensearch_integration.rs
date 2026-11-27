@@ -162,7 +162,8 @@ fn cass_selects_only_the_explicit_tantivy_compatibility_surface() {
             .all(|line| !line.contains("git =")),
         "frankensearch must not resolve from git; crates.io publishing forbids it: {frankensearch_decls:?}"
     );
-    let lockfile = std::fs::read_to_string(workspace_root.join("Cargo.lock")).expect("read Cargo.lock");
+    let lockfile =
+        std::fs::read_to_string(workspace_root.join("Cargo.lock")).expect("read Cargo.lock");
     let expected_lock = format!(
         "name = \"frankensearch\"\nversion = \"{pinned_version}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\""
     );
@@ -176,8 +177,7 @@ fn cass_selects_only_the_explicit_tantivy_compatibility_surface() {
         build_contract.contains(&format!("expected_version: \"{pinned_version}\"")),
         "build.rs must enforce the same exact FrankenSearch version as Cargo.toml"
     );
-    let readme =
-        std::fs::read_to_string(workspace_root.join("README.md")).expect("read README.md");
+    let readme = std::fs::read_to_string(workspace_root.join("README.md")).expect("read README.md");
     assert!(
         readme.contains(&format!("={pinned_version}"))
             && readme.contains("cass-compat")
@@ -219,7 +219,10 @@ fn cass_selects_only_the_explicit_tantivy_compatibility_surface() {
         }
     }
     if crates_dir.is_dir() {
-        for entry in std::fs::read_dir(&crates_dir).expect("scan crates directory").flatten() {
+        for entry in std::fs::read_dir(&crates_dir)
+            .expect("scan crates directory")
+            .flatten()
+        {
             let crate_dir = entry.path();
             if crate_dir.is_dir() {
                 for subdir in ["tests", "benches"] {

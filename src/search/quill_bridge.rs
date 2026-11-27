@@ -1123,8 +1123,8 @@ mod region_convergence_tests {
     /// [`TantivyIndex::converge_all_search_region_docs`]:
     ///     crate::search::tantivy::TantivyIndex::converge_all_search_region_docs
     #[test]
-    fn converge_pending_onto_a_committed_candidate_publishes_per_batch_not_per_session() -> Result<()>
-    {
+    fn converge_pending_onto_a_committed_candidate_publishes_per_batch_not_per_session()
+    -> Result<()> {
         let (temp, storage) = fixture();
         let db = storage.raw();
         let agent = agent_id(&storage);

@@ -133,10 +133,10 @@ pub use cli_root::cli_types::{
     PagesDeployTarget, ProgressMode, ProgressResolved, QuarantineCommand, RebuildProfileArg,
     RobotTopic, SourcesCommand, TimelineGrouping,
 };
-pub use model::cli_error::{CliError, CliResult, RobotFormat};
 pub use cli_root::commands::{Cli, Commands, InvocationInterpretation};
 pub use cli_root::entry::{ParsedCli, parse_cli, run, run_with_parsed, try_run_with_parsed_fast};
 pub use cli_root::search_filters::{SemanticSearchOptions, TimeFilter};
+pub use model::cli_error::{CliError, CliResult, RobotFormat};
 
 pub use cli_app::introspect::capabilities::{
     ArgumentSchema, CapabilitiesLimits, CapabilitiesResponse, CommandSchema, EnvVarCapability,
@@ -144,11 +144,11 @@ pub use cli_app::introspect::capabilities::{
     WorkflowCapability,
 };
 pub use cli_app::introspect::clap_schema::register_external_subcommands;
-pub use model::paths::{default_data_dir, default_db_path, resolve_data_dir};
 pub use cli_app::view_export::message_grouping::{
     AgentFormat, MessageClassification, classify_message, detect_agent_format,
     extract_correlation_id, group_messages_for_export,
 };
+pub use model::paths::{default_data_dir, default_db_path, resolve_data_dir};
 
 #[allow(unused_imports)]
 pub(crate) use cli_app::{
@@ -162,31 +162,21 @@ pub(crate) use cli_app::{
     validate_followup_source_id,
 };
 #[allow(unused_imports)]
+pub(crate) use cli_root::{
+    DEFAULT_STALE_THRESHOLD_SECS, DoctorCandidateLiveInventory, DoctorCandidatePromotionReport,
+    auto_refresh_is_scratch_data_dir, build_truth_table_for_data_dir, build_truth_table_from_state,
+    cass_lexical_index_initialized, cass_not_initialized, cass_not_initialized_recommended_action,
+    cli_error_json_payload, doctor_forensic_create_private_dir_all, doctor_now_ms,
+    doctor_redacted_path, doctor_sqlite_sidecar_path, encode_structured_value,
+    lexical_rebuild_progress_note, maybe_test_search_worker_delay, robot_format_from_env,
+    run_read_only_search_worker, state_meta_json_for_health,
+};
+#[allow(unused_imports)]
 pub(crate) use export::message_parse::{
     extract_role, extract_text_content, extract_text_content_without_tool_blocks,
     extract_tool_calls, format_as_markdown, smart_truncate, strip_flattened_tool_call_lines,
     strip_tool_marker,
 };
-#[allow(unused_imports)]
-pub(crate) use cli_root::{
-    DEFAULT_STALE_THRESHOLD_SECS, DoctorCandidateLiveInventory, DoctorCandidatePromotionReport,
-    auto_refresh_is_scratch_data_dir, build_truth_table_for_data_dir,
-    build_truth_table_from_state, cass_lexical_index_initialized, cass_not_initialized,
-    cass_not_initialized_recommended_action, cli_error_json_payload,
-    doctor_forensic_create_private_dir_all, doctor_now_ms, doctor_redacted_path,
-    doctor_sqlite_sidecar_path, encode_structured_value, lexical_rebuild_progress_note,
-    maybe_test_search_worker_delay, robot_format_from_env, run_read_only_search_worker,
-    state_meta_json_for_health,
-};
-#[allow(unused_imports)]
-pub(crate) use model::cli_error::WrapConfig;
-#[allow(unused_imports)]
-pub(crate) use model::paths::{
-    default_data_dir_with_source, normalize_path_identity, path_identities_match,
-    stored_path_identity_matches,
-};
-#[allow(unused_imports)]
-pub(crate) use storage::sqlite::open_and_locks::bounded_canonical_db_corruption_probe;
 #[allow(unused_imports)]
 pub(crate) use lib_doctor::{
     DOCTOR_LEAKED_PAGES_REPAIR_BACKUP_MANIFEST_KIND, DoctorRuntimeSummaryInput,
@@ -197,6 +187,15 @@ pub(crate) use lib_doctor::{
     promote_doctor_reconstruct_candidate_bundle, run_doctor_archive_normalize_impl,
     run_doctor_archive_scan_impl, run_doctor_backups_impl, write_doctor_restore_candidate_manifest,
 };
+#[allow(unused_imports)]
+pub(crate) use model::cli_error::WrapConfig;
+#[allow(unused_imports)]
+pub(crate) use model::paths::{
+    default_data_dir_with_source, normalize_path_identity, path_identities_match,
+    stored_path_identity_matches,
+};
+#[allow(unused_imports)]
+pub(crate) use storage::sqlite::open_and_locks::bounded_canonical_db_corruption_probe;
 
 #[cfg(test)]
 fn lib_split_is_src_test_only(rel_path: &str) -> bool {

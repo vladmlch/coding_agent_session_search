@@ -286,8 +286,6 @@ pub fn query_requests_system_prompt(query: &str) -> bool {
         || lower.contains("\"you are")
 }
 
-
-
 /// Noise we should suppress from search results.
 pub fn is_search_noise_text(text: &str, query: &str) -> bool {
     let trimmed = text.trim();

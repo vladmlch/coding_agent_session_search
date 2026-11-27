@@ -279,10 +279,9 @@ fn rendered_answer_pack_with_correlation(
             redaction_policy: request.redaction_policy.clone(),
             redaction_applied,
             sensitive_output: request.sensitive_output,
-            skill_content_included: plan
-                .evidence
-                .iter()
-                .any(|item| crate::resource_plan::text_filters::is_skill_injection(&item.candidate.excerpt)),
+            skill_content_included: plan.evidence.iter().any(|item| {
+                crate::resource_plan::text_filters::is_skill_injection(&item.candidate.excerpt)
+            }),
             redaction_counts,
         },
         warnings,

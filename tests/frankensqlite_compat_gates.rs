@@ -69,9 +69,7 @@ fn resolve_dependency_table_with_workspace(
 }
 
 fn check_rusqlite_pinned_in_manifest(manifest: &toml::Table) {
-    let dependencies = manifest
-        .get("dependencies")
-        .and_then(toml::Value::as_table);
+    let dependencies = manifest.get("dependencies").and_then(toml::Value::as_table);
     let workspace_dependencies = manifest
         .get("workspace")
         .and_then(toml::Value::as_table)

@@ -460,9 +460,9 @@ pub enum RobotTopic {
 }
 
 #[allow(unused_imports)]
-pub use crate::model::cli_error::{CliError, CliResult, RobotFormat};
-#[allow(unused_imports)]
 pub(crate) use crate::model::cli_error::{CLI_ERROR_ALREADY_REPORTED_SENTINEL, WrapConfig};
+#[allow(unused_imports)]
+pub use crate::model::cli_error::{CliError, CliResult, RobotFormat};
 
 /// Human-readable display format for CLI output (non-JSON)
 #[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]

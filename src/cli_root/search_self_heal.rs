@@ -211,19 +211,18 @@ pub(crate) fn search_lexical_checkpoint_diagnosis(
     index_path: &Path,
     db_path: &Path,
 ) -> CliResult<Option<SearchLexicalSelfHealDiagnosis>> {
-    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(
-        index_path,
-    )
-    .map_err(|e| CliError {
-            code: 5,
-            kind: CliErrorKind::LexicalRebuild.kind_str(),
-            message: format!("failed to inspect lexical rebuild checkpoint: {e}"),
-            hint: Some(
-                "cass will rebuild the derived lexical index on the next search attempt"
-                    .to_string(),
-            ),
-            retryable: true,
-        })?;
+    let checkpoint =
+        crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(index_path)
+            .map_err(|e| CliError {
+                code: 5,
+                kind: CliErrorKind::LexicalRebuild.kind_str(),
+                message: format!("failed to inspect lexical rebuild checkpoint: {e}"),
+                hint: Some(
+                    "cass will rebuild the derived lexical index on the next search attempt"
+                        .to_string(),
+                ),
+                retryable: true,
+            })?;
     let Some(checkpoint) = checkpoint else {
         return Ok(Some(SearchLexicalSelfHealDiagnosis::existing_index(
             "lexical rebuild checkpoint missing",
@@ -505,9 +504,10 @@ pub(crate) fn describe_background_lexical_repair(
 /// Progress of the lexical rebuild recorded under `index_path`, for messages
 /// that tell a caller how far an active rebuild has come.
 pub(crate) fn lexical_rebuild_progress_note(index_path: &Path) -> Option<String> {
-    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(index_path)
-        .ok()
-        .flatten()?;
+    let checkpoint =
+        crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(index_path)
+            .ok()
+            .flatten()?;
     if checkpoint.completed || checkpoint.total_conversations == 0 {
         return None;
     }
@@ -801,12 +801,11 @@ pub(crate) fn verify_search_lexical_repair_publication(
     db_path: &Path,
     indexed_docs: usize,
 ) -> anyhow::Result<()> {
-    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(
-        index_path,
-    )?
-    .ok_or_else(|| {
-            anyhow::anyhow!("lexical repair returned success without a published checkpoint")
-        })?;
+    let checkpoint =
+        crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(index_path)?
+            .ok_or_else(|| {
+                anyhow::anyhow!("lexical repair returned success without a published checkpoint")
+            })?;
     anyhow::ensure!(
         checkpoint.completed,
         "lexical repair returned success but publication is incomplete"

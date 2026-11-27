@@ -365,9 +365,8 @@ impl TantivyIndex {
         // path remains for indexer/mod.rs callers until that file's
         // exclusive lock is released and they can migrate too.
         let provenance = ConversationPacketProvenance::local();
-        let packet = crate::connectors::packet_bridge::conversation_packet_from_normalized(
-            conv, provenance,
-        );
+        let packet =
+            crate::connectors::packet_bridge::conversation_packet_from_normalized(conv, provenance);
         self.add_messages_from_packet(&packet, None, None, |_| Ok(()))
     }
 
@@ -377,9 +376,8 @@ impl TantivyIndex {
         conversation_id: Option<i64>,
     ) -> Result<()> {
         let provenance = ConversationPacketProvenance::local();
-        let mut packet = crate::connectors::packet_bridge::conversation_packet_from_normalized(
-            conv, provenance,
-        );
+        let mut packet =
+            crate::connectors::packet_bridge::conversation_packet_from_normalized(conv, provenance);
         // Stamp the canonical id onto the packet identity so the lexical
         // doc carries the same conversation_id the legacy path emitted.
         packet.payload.identity.conversation_id = conversation_id;

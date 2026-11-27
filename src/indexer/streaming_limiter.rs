@@ -675,8 +675,7 @@ pub(in crate::indexer) fn source_ledger_matches(
     source_ledger_matches_with_contract(
         observation,
         source,
-        crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
-            .ingest_contract,
+        crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract,
     )
 }
 

@@ -45,9 +45,7 @@ fn check_manifest_baseline_contract(manifest_text: &str) -> Result<(), String> {
         .and_then(toml::Value::as_table)
         .and_then(|ws| ws.get("dependencies"))
         .and_then(toml::Value::as_table);
-    let deps = manifest
-        .get("dependencies")
-        .and_then(toml::Value::as_table);
+    let deps = manifest.get("dependencies").and_then(toml::Value::as_table);
     if workspace_deps.is_some_and(|table| table.contains_key("fastembed"))
         || deps.is_some_and(|table| table.contains_key("fastembed"))
     {

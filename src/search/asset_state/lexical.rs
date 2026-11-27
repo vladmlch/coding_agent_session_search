@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::search::tantivy::SCHEMA_HASH;
 use crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db;
 use crate::storage::lexical_checkpoint_io::{
     LexicalRebuildCheckpoint, load_lexical_rebuild_checkpoint,
@@ -9,7 +10,6 @@ use crate::storage::lexical_checkpoint_io::{
 use crate::storage::run_lock::{
     LEXICAL_REBUILD_PAGE_SIZE_PUBLIC, lexical_rebuild_page_size_is_compatible,
 };
-use crate::search::tantivy::SCHEMA_HASH;
 
 use super::maintenance::{
     SearchMaintenanceMode, SearchMaintenanceSnapshot, maintenance_stall_age_ms,

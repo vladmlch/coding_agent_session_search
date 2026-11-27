@@ -7,13 +7,13 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+use crate::pages::redact::CustomPattern;
 use crate::resource_plan::redact_secrets::{
     ANTHROPIC_API_KEY_PATTERN, AWS_ACCESS_KEY_PATTERN, AWS_SECRET_KEY_PATTERN,
     AWS_SESSION_TOKEN_PATTERN, BEARER_TOKEN_PATTERN, DATABASE_URL_PATTERN,
     GENERIC_SECRET_ASSIGNMENT_PATTERN, GITHUB_TOKEN_PATTERN, OPENAI_API_KEY_PATTERN,
     SLACK_TOKEN_PATTERN, STRIPE_KEY_PATTERN,
 };
-use crate::pages::redact::CustomPattern;
 
 /// Categories of sensitive patterns for organizational clarity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

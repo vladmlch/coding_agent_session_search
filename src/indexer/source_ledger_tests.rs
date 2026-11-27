@@ -624,9 +624,10 @@ impl Connector for LedgerDiscoveryCounter {
 
 #[test]
 fn gh512_real_connectors_complete_during_growth_without_redundant_discovery() -> Result<()> {
-    let _build_meta = crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
-        &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
-    );
+    let _build_meta =
+        crate::dependency_pin_correlation::build_metadata::install_thread_local_test_metadata(
+            &crate::dependency_pin_correlation::build_metadata::PINNED_TEST_METADATA,
+        );
     let factories: Vec<_> = crate::connectors::get_connector_factories()
         .into_iter()
         .filter(|(name, _)| matches!(*name, "claude" | "codex"))
@@ -738,9 +739,8 @@ fn gh512_real_connectors_complete_during_growth_without_redundant_discovery() ->
             },
         )?;
         sender.flush()?;
-        let reusable =
-            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
-                .ingest_reuse;
+        let reusable = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+            .ingest_reuse;
         assert_eq!(rescanned, usize::from(!reusable), "{name}");
         assert_eq!(connector.discoveries.get(), 0);
         if reusable {
