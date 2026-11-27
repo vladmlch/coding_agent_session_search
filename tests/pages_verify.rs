@@ -6,8 +6,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
+mod ws_paths_1c;
+
 fn fixture_root(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests/fixtures/pages_verify")
         .join(name)
 }
@@ -218,7 +220,7 @@ fn test_attachment_object_urls_are_cached_per_mime_type() {
             "--eval",
             script,
         ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .current_dir(ws_paths_1c::workspace_root())
         .output()
         .expect("run node module assertions");
 

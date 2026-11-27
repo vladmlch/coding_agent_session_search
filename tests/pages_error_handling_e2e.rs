@@ -23,6 +23,8 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+mod ws_paths_1c;
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
@@ -38,7 +40,7 @@ fn run_node_module_assertions(script: &str) -> std::io::Result<Output> {
             "--eval",
             script,
         ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .current_dir(ws_paths_1c::workspace_root())
         .output()
 }
 

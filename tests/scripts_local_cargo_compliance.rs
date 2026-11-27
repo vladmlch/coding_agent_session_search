@@ -54,6 +54,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod ws_paths_1c;
+
 /// File extensions that count as scripts for compliance rule 1. Task 3
 /// widened the scan from a hand-maintained allowlist to every `*.sh`,
 /// `*.ps1` and `*.py` file under `scripts/`.
@@ -103,7 +105,7 @@ fn is_prefix_token(token: &str) -> bool {
 }
 
 fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
 }
 
 fn local_script_paths() -> Vec<PathBuf> {

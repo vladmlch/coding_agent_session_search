@@ -10,6 +10,8 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod ws_paths_1c;
+
 fn cass_cmd(test_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -21,7 +23,7 @@ fn cass_cmd(test_home: &Path) -> Command {
 }
 
 fn seed_claude_code_fixture(test_home: &Path) -> PathBuf {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let src = ws_paths_1c::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("claude_code_real")
@@ -44,7 +46,7 @@ fn scrub_temp_home(input: &str, test_home: &Path) -> String {
 }
 
 fn assert_golden(name: &str, actual: &str) {
-    let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let golden_path = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join("regression")

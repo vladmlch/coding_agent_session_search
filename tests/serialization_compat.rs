@@ -9,12 +9,14 @@ use coding_agent_search::connectors::{
 };
 use std::path::PathBuf;
 
+mod ws_paths_1c;
+
 // ============================================================================
 // Helpers
 // ============================================================================
 
 fn golden_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests/fixtures/golden")
         .join(name)
 }

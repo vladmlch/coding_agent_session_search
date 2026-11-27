@@ -14,8 +14,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+mod ws_paths_1c;
+
 fn golden_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join("robot")
@@ -60,20 +62,17 @@ fn collect_non_test_rs_files(
 }
 
 fn lib_split_production_files() -> Vec<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let src_dir = manifest_dir.join("src");
-    let mut files = vec![src_dir.join("lib.rs")];
-    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
-        collect_non_test_rs_files(&manifest_dir, &src_dir.join(subdir), &mut files);
+    let workspace_root = ws_paths_1c::workspace_root();
+    let mut files = vec![ws_paths_1c::resolve_workspace_source("src/lib.rs")];
+    for subdir in ["src/cli_root", "src/lib_doctor", "src/cli_app"] {
+        let dir = ws_paths_1c::resolve_workspace_source(subdir);
+        collect_non_test_rs_files(&workspace_root, &dir, &mut files);
     }
     files
 }
 
 fn error_kind_rs_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("model")
-        .join("cli_error_kind.rs")
+    ws_paths_1c::resolve_workspace_source("src/model/cli_error_kind.rs")
 }
 
 fn extract_kind_str_mappings() -> BTreeMap<String, (String, usize)> {

@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use tempfile::TempDir;
 
 mod util;
+mod ws_paths_1c;
 use util::e2e_log::PhaseTracker;
 
 // =============================================================================
@@ -28,7 +29,6 @@ use util::e2e_log::PhaseTracker;
 /// frankensearch re-exports.
 #[test]
 fn no_direct_tantivy_imports_in_src() {
-    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut violations = Vec::new();
 
     fn scan_dir(dir: &std::path::Path, violations: &mut Vec<String>) {
@@ -62,7 +62,9 @@ fn no_direct_tantivy_imports_in_src() {
         }
     }
 
-    scan_dir(&src_dir, &mut violations);
+    for src_dir in ws_paths_1c::workspace_source_dirs() {
+        scan_dir(&src_dir, &mut violations);
+    }
 
     assert!(
         violations.is_empty(),
@@ -71,20 +73,39 @@ fn no_direct_tantivy_imports_in_src() {
     );
 }
 
+fn workspace_manifest_paths() -> Vec<std::path::PathBuf> {
+    let root = ws_paths_1c::workspace_root();
+    let mut manifest_paths = vec![root.join("Cargo.toml")];
+    let crates_dir = root.join("crates");
+    if crates_dir.is_dir() {
+        let mut crate_manifests: Vec<std::path::PathBuf> = std::fs::read_dir(&crates_dir)
+            .expect("read crates dir")
+            .flatten()
+            .map(|entry| entry.path().join("Cargo.toml"))
+            .filter(|path| path.is_file())
+            .collect();
+        crate_manifests.sort();
+        manifest_paths.extend(crate_manifests);
+    }
+    manifest_paths
+}
+
 /// Verify Cargo.toml has no direct tantivy dependency.
 #[test]
 fn no_direct_tantivy_in_cargo_toml() {
-    let cargo_toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    let content = std::fs::read_to_string(cargo_toml).expect("read Cargo.toml");
+    for cargo_toml in workspace_manifest_paths() {
+        let content = std::fs::read_to_string(&cargo_toml).expect("read Cargo.toml");
 
-    // Check [dependencies] section for a direct tantivy = line
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("tantivy") && trimmed.contains('=') {
-            panic!(
-                "Found direct tantivy dependency in Cargo.toml: {trimmed}\n\
-                 tantivy should only be used via frankensearch re-exports"
-            );
+        // Check [dependencies] / [workspace.dependencies] for a direct tantivy = line
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("tantivy") && trimmed.contains('=') {
+                panic!(
+                    "Found direct tantivy dependency in {}: {trimmed}\n\
+                     tantivy should only be used via frankensearch re-exports",
+                    cargo_toml.display()
+                );
+            }
         }
     }
 }
@@ -94,22 +115,35 @@ fn no_direct_tantivy_in_cargo_toml() {
 /// selecting the explicit compatibility lane when the facade default changes.
 #[test]
 fn cass_selects_only_the_explicit_tantivy_compatibility_surface() {
-    let manifest = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .expect("read Cargo.toml");
-    let dependency = manifest
-        .lines()
-        .find(|line| line.trim_start().starts_with("frankensearch = "))
+    let workspace_root = ws_paths_1c::workspace_root();
+    let crates_dir = workspace_root.join("crates");
+    let manifests: Vec<String> = workspace_manifest_paths()
+        .iter()
+        .map(|path| std::fs::read_to_string(path).expect("read Cargo.toml"))
+        .collect();
+    let frankensearch_decls: Vec<&str> = manifests
+        .iter()
+        .flat_map(|manifest| manifest.lines())
+        .filter(|line| line.trim_start().starts_with("frankensearch = "))
+        .collect();
+    let dependency = frankensearch_decls
+        .iter()
+        .copied()
+        .find(|line| line.contains("version ="))
+        .or_else(|| frankensearch_decls.first().copied())
         .expect("frankensearch dependency declaration");
 
     assert!(
-        dependency.contains("\"cass-compat\""),
-        "CASS must select the explicit foreign-index compatibility feature: {dependency}"
+        frankensearch_decls
+            .iter()
+            .any(|line| line.contains("\"cass-compat\"")),
+        "CASS must select the explicit foreign-index compatibility feature: {frankensearch_decls:?}"
     );
     assert!(
-        !dependency.contains("\"lexical\""),
-        "CASS must not select the facade's swappable generic lexical feature: {dependency}"
+        frankensearch_decls
+            .iter()
+            .all(|line| !line.contains("\"lexical\"")),
+        "CASS must not select the facade's swappable generic lexical feature: {frankensearch_decls:?}"
     );
 
     // gh#416: frankensearch resolves from crates.io behind an EXACT version
@@ -123,13 +157,12 @@ fn cass_selects_only_the_explicit_tantivy_compatibility_surface() {
         .map(|(version, _)| version.to_owned())
         .expect("frankensearch dependency must pin an exact registry version (= prefix)");
     assert!(
-        !dependency.contains("git ="),
-        "frankensearch must not resolve from git; crates.io publishing forbids it: {dependency}"
+        frankensearch_decls
+            .iter()
+            .all(|line| !line.contains("git =")),
+        "frankensearch must not resolve from git; crates.io publishing forbids it: {frankensearch_decls:?}"
     );
-    let lockfile = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"),
-    )
-    .expect("read Cargo.lock");
+    let lockfile = std::fs::read_to_string(workspace_root.join("Cargo.lock")).expect("read Cargo.lock");
     let expected_lock = format!(
         "name = \"frankensearch\"\nversion = \"{pinned_version}\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\""
     );
@@ -138,15 +171,13 @@ fn cass_selects_only_the_explicit_tantivy_compatibility_surface() {
         "Cargo.lock must resolve frankensearch {pinned_version} from the crates.io registry"
     );
     let build_contract =
-        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"))
-            .expect("read build.rs");
+        std::fs::read_to_string(workspace_root.join("build.rs")).expect("read build.rs");
     assert!(
         build_contract.contains(&format!("expected_version: \"{pinned_version}\"")),
         "build.rs must enforce the same exact FrankenSearch version as Cargo.toml"
     );
     let readme =
-        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
-            .expect("read README.md");
+        std::fs::read_to_string(workspace_root.join("README.md")).expect("read README.md");
     assert!(
         readme.contains(&format!("={pinned_version}"))
             && readme.contains("cass-compat")
@@ -172,22 +203,35 @@ fn cass_selects_only_the_explicit_tantivy_compatibility_surface() {
         lockfile.contains("name = \"frankensearch-quill\""),
         "the lexical backend crate must be in the graph after the CASS->Quill flip"
     );
-    let manifest_text = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .expect("read Cargo.toml");
-    let frankensearch_dep_line = manifest_text
-        .lines()
-        .find(|line| line.starts_with("frankensearch = "))
-        .expect("frankensearch dependency line");
     assert!(
-        frankensearch_dep_line.contains("\"quill\""),
+        frankensearch_decls
+            .iter()
+            .any(|line| line.contains("\"quill\"")),
         "Quill must be selected explicitly in the frankensearch feature list, not acquired transitively"
     );
 
     let mut generic_imports = Vec::new();
-    for root in ["src", "tests", "benches"] {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(root);
+    let mut scan_roots = ws_paths_1c::workspace_source_dirs();
+    for subdir in ["tests", "benches"] {
+        let dir = workspace_root.join(subdir);
+        if dir.is_dir() {
+            scan_roots.push(dir);
+        }
+    }
+    if crates_dir.is_dir() {
+        for entry in std::fs::read_dir(&crates_dir).expect("scan crates directory").flatten() {
+            let crate_dir = entry.path();
+            if crate_dir.is_dir() {
+                for subdir in ["tests", "benches"] {
+                    let dir = crate_dir.join(subdir);
+                    if dir.is_dir() {
+                        scan_roots.push(dir);
+                    }
+                }
+            }
+        }
+    }
+    for root in scan_roots {
         let mut pending = vec![root];
         while let Some(path) = pending.pop() {
             for entry in std::fs::read_dir(&path).expect("scan Rust source tree") {

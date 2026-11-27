@@ -18,6 +18,8 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 
+mod ws_paths_1c;
+
 const MEMO_TRACE_CHILD_ENV: &str = "CASS_TEST_MEMO_TRACE_CHILD";
 const MEMO_TRACE_CHILD_RECEIPT: &str = "MEMO_TRACE_CHILD_OK";
 
@@ -118,7 +120,7 @@ fn sort_json(value: Value) -> Value {
 }
 
 fn assert_golden(name: &str, actual: &str) -> Result<()> {
-    let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let golden_path = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join(name);

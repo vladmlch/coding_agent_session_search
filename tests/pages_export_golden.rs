@@ -23,6 +23,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+mod ws_paths_1c;
+
 fn cass_cmd(test_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -185,7 +187,7 @@ fn scrub_html(input: &str, test_home: &Path) -> String {
 }
 
 fn assert_golden(name: &str, actual: &str) {
-    let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let golden_path = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join("html_export")

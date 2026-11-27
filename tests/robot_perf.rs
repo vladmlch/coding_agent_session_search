@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+mod ws_paths_1c;
+
 const ANSWER_PACK_PERF_NOW_MS: i64 = 1_764_000_000_000;
 const ANSWER_PACK_FRESHNESS_WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
 static CLI_PERF_LOCK: Mutex<()> = Mutex::new(());
@@ -31,7 +33,7 @@ fn base_cmd() -> Command {
 }
 
 fn health_fixture_data_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1c::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("search_demo_data")

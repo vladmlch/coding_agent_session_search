@@ -1,13 +1,14 @@
 //! Execute the shipped Pages database queries against Node's real SQLite/FTS5.
 //! This covers query semantics, not the browser DOM or WASM loader.
 
-use std::path::Path;
 use std::process::Command;
+
+mod ws_paths_1c;
 
 #[test]
 fn pages_database_queries_against_real_sqlite() {
     let script =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/js/pages_database_queries.test.mjs");
+        ws_paths_1c::workspace_root().join("tests/js/pages_database_queries.test.mjs");
     let output = Command::new("node")
         .args(["--experimental-vm-modules", "--test"])
         .arg(script)

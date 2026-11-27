@@ -14,6 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 
 mod util;
+mod ws_paths_1c;
 
 /// Helper to create Codex session with modern envelope format.
 fn make_codex_session(
@@ -980,7 +981,7 @@ fn test_models_install_from_file_directory_validates_checksums() {
     let data_dir = tmp.path().join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
 
-    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/models");
+    let fixture_dir = ws_paths_1c::workspace_root().join("tests/fixtures/models");
 
     let output = cargo_bin_cmd!("cass")
         .args(["models", "install", "--from-file"])
@@ -1043,7 +1044,7 @@ fn test_models_install_rejects_mirror_flag() {
 /// the removed flag wins over the surviving one.
 #[test]
 fn test_models_install_rejects_mirror_and_from_file() {
-    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/models");
+    let fixture_dir = ws_paths_1c::workspace_root().join("tests/fixtures/models");
 
     let output = cargo_bin_cmd!("cass")
         .args([

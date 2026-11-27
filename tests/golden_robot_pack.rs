@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 
+mod ws_paths_1c;
+
 /// Run `cass <args> --data-dir <data_dir>`, parse the stderr error envelope,
 /// pretty-print it, and scrub the (volatile) data-dir path to `[TEST_HOME]` so
 /// the golden is host-independent. This matches the scrubbing the shared
@@ -44,7 +46,7 @@ fn pack_error_envelope(data_dir: &Path, args: &[&str]) -> String {
 /// Compare `actual` against `tests/golden/<name>`; overwrite when
 /// `UPDATE_GOLDENS=1` is set (mirrors the shared harness helper).
 fn assert_golden(name: &str, actual: &str) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1c::workspace_root()
         .join("tests")
         .join("golden")
         .join(name);
