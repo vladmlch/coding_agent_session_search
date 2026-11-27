@@ -114,10 +114,36 @@ fn plant_eof_checkpoint(index: &Path) {
 }
 
 fn assert_certified_and_searches_are_read_only(home: &Path, data_dir: &Path, index: &Path) {
+    let region_docs = {
+        let storage = coding_agent_search::storage::sqlite::SqliteStorage::open_readonly(
+            &data_dir.join("agent_search.db"),
+        )
+        .expect("open archive readonly");
+        coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+            storage.raw(),
+        )
+        .expect("read live region doc bound")
+    };
+    let expected_messages = (SESSIONS * 2) as u64;
+    let expected_region_docs = (SESSIONS * 3) as u64;
+    assert_eq!(region_docs, expected_region_docs);
     let checkpoint = read_json(&index.join(CHECKPOINT));
     assert_eq!(checkpoint["completed"], true, "{checkpoint}");
     assert_eq!(checkpoint["pending"], Value::Null, "{checkpoint}");
-    assert_eq!(checkpoint["indexed_docs"], SESSIONS * 2, "{checkpoint}");
+    assert_eq!(
+        checkpoint["indexed_region_docs"].as_u64(),
+        Some(expected_region_docs),
+        "{checkpoint}"
+    );
+    let checkpoint_docs = checkpoint["indexed_docs"]
+        .as_u64()
+        .expect("checkpoint indexed_docs");
+    assert_eq!(checkpoint_docs - region_docs, expected_messages, "{checkpoint}");
+    assert_eq!(
+        checkpoint_docs,
+        expected_messages + expected_region_docs,
+        "{checkpoint}"
+    );
     assert!(
         checkpoint["db"]["storage_fingerprint"]
             .as_str()
@@ -127,7 +153,15 @@ fn assert_certified_and_searches_are_read_only(home: &Path, data_dir: &Path, ind
     let generation = read_json(&index.join(GENERATION));
     assert_ne!(generation["generation_id"], OLD_GENERATION_ID);
     assert_eq!(generation["publish_state"], "published");
-    assert_eq!(generation["indexed_doc_count"], SESSIONS * 2);
+    let generation_docs = generation["indexed_doc_count"]
+        .as_u64()
+        .expect("generation indexed_doc_count");
+    assert_eq!(generation_docs - region_docs, expected_messages, "{generation}");
+    assert_eq!(
+        generation_docs,
+        expected_messages + expected_region_docs,
+        "{generation}"
+    );
     let manifest_before = std::fs::read(index.join("MANIFEST")).unwrap();
     let checkpoint_before = std::fs::read(index.join(CHECKPOINT)).unwrap();
     let generation_before = std::fs::read(index.join(GENERATION)).unwrap();
