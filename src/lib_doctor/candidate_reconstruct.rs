@@ -36,6 +36,43 @@ use std::time::{Duration, Instant};
 #[allow(unused_imports)]
 use tracing::{info, warn};
 
+fn failed_evidence_parent_receipt(
+    context: &DoctorCandidateCopyContext<'_>,
+    directory: &Path,
+    err: &io::Error,
+) -> DoctorFsMutationReceipt {
+    let target_path = directory.display().to_string();
+    DoctorFsMutationReceipt {
+        schema_version: 1,
+        operation_id: context.operation_id.to_string(),
+        action_id: "prepare-raw-mirror-evidence-copy".to_string(),
+        mutation_kind: DoctorFsMutationKind::CopyFileToStaging,
+        fallback_kind: None,
+        mode: DoctorRepairMode::ReconstructPromote,
+        asset_class: DoctorAssetClass::RawMirrorBlob,
+        source_path: None,
+        redacted_source_path: None,
+        redacted_target_path: doctor_redacted_path(&target_path, context.data_dir),
+        target_path,
+        staging_root: Some(context.candidate_dir.display().to_string()),
+        redacted_staging_root: Some(doctor_redacted_path(
+            &context.candidate_dir.display().to_string(),
+            context.data_dir,
+        )),
+        expected_source_blake3: None,
+        actual_source_blake3: None,
+        actual_target_blake3: None,
+        planned_bytes: 0,
+        affected_bytes: 0,
+        status: DoctorActionStatus::Failed,
+        blocked_reasons: vec![format!("failed to create raw mirror evidence parent: {err}")],
+        precondition_checks: Vec::new(),
+        forensic_bundle: doctor_forensic_bundle_uncaptured(
+            "not_captured_for_failed_evidence_parent_creation",
+        ),
+    }
+}
+
 pub(crate) fn doctor_candidate_copy_raw_mirror_evidence_to_staging(
     context: &DoctorCandidateCopyContext<'_>,
     manifest: &DoctorRawMirrorManifestReport,
@@ -44,40 +81,7 @@ pub(crate) fn doctor_candidate_copy_raw_mirror_evidence_to_staging(
     let evidence_root = context.candidate_dir.join("evidence/raw-mirror");
     for directory in [evidence_root.join("blobs"), evidence_root.join("manifests")] {
         if let Err(err) = doctor_forensic_create_private_dir_all(&directory) {
-            receipts.push(DoctorFsMutationReceipt {
-                schema_version: 1,
-                operation_id: context.operation_id.to_string(),
-                action_id: "prepare-raw-mirror-evidence-copy".to_string(),
-                mutation_kind: DoctorFsMutationKind::CopyFileToStaging,
-                fallback_kind: None,
-                mode: DoctorRepairMode::ReconstructPromote,
-                asset_class: DoctorAssetClass::RawMirrorBlob,
-                source_path: None,
-                redacted_source_path: None,
-                target_path: directory.display().to_string(),
-                redacted_target_path: doctor_redacted_path(
-                    &directory.display().to_string(),
-                    context.data_dir,
-                ),
-                staging_root: Some(context.candidate_dir.display().to_string()),
-                redacted_staging_root: Some(doctor_redacted_path(
-                    &context.candidate_dir.display().to_string(),
-                    context.data_dir,
-                )),
-                expected_source_blake3: None,
-                actual_source_blake3: None,
-                actual_target_blake3: None,
-                planned_bytes: 0,
-                affected_bytes: 0,
-                status: DoctorActionStatus::Failed,
-                blocked_reasons: vec![format!(
-                    "failed to create raw mirror evidence parent: {err}"
-                )],
-                precondition_checks: Vec::new(),
-                forensic_bundle: doctor_forensic_bundle_uncaptured(
-                    "not_captured_for_failed_evidence_parent_creation",
-                ),
-            });
+            receipts.push(failed_evidence_parent_receipt(context, &directory, &err));
             return receipts;
         }
     }
@@ -92,7 +96,7 @@ pub(crate) fn doctor_candidate_copy_raw_mirror_evidence_to_staging(
             continue;
         };
         let source_path = doctor_raw_mirror_root(context.data_dir).join(&blob_relative_path);
-        let target_path = evidence_root.join(&blob_relative_path);
+        let target_path = evidence_root.join(&blob_relative_path); // ubs:ignore[rust.security.path-traversal] — validated 64-hex blake3 path from doctor_raw_mirror_blob_relative_path
         if let Some(parent) = target_path.parent()
             && let Err(err) = doctor_forensic_create_private_dir_all(parent)
         {
@@ -232,7 +236,7 @@ pub(crate) fn doctor_candidate_reconstruct_archive_from_raw_mirror(
                     .map(|conversation| conversation.workspace);
                 (
                     mapped.into_iter().zip(workspaces).collect::<Vec<_>>(),
-                    "connector".to_string(),
+                    std::borrow::Cow::Borrowed("connector"),
                 )
             }
             Err(reason) => (
@@ -240,10 +244,10 @@ pub(crate) fn doctor_candidate_reconstruct_archive_from_raw_mirror(
                     doctor_candidate_conversation_from_raw_mirror(manifest, &bytes, parse_errors),
                     None,
                 )],
-                format!("line_salvage ({reason})"),
+                std::borrow::Cow::Owned(format!("line_salvage ({reason})")),
             ),
         };
-        let reparsed = method == "connector";
+        let reparsed = matches!(method, std::borrow::Cow::Borrowed("connector"));
         let mut manifest_conversations_inserted = 0usize;
         let mut manifest_messages = 0usize;
         let mut last_conversation_id = None;
@@ -702,7 +706,7 @@ pub(crate) fn build_doctor_reconstruct_candidate(
             action_id,
             data_dir,
             &candidate_dir,
-            &candidate_dir.join(relative),
+            &candidate_dir.join(relative), // ubs:ignore[rust.security.path-traversal] — constant staging-relative literal checked by execute_doctor_fs_write_mutation
             DoctorAssetClass::OperationReceipt,
             bytes,
         );
@@ -832,7 +836,7 @@ pub(crate) fn build_doctor_reconstruct_candidate(
             action_id,
             data_dir,
             &candidate_dir,
-            &candidate_dir.join(relative),
+            &candidate_dir.join(relative), // ubs:ignore[rust.security.path-traversal] — constant staging-relative literal checked by execute_doctor_fs_write_mutation
             asset_class,
             &bytes,
         );
@@ -931,6 +935,90 @@ pub(crate) fn build_doctor_reconstruct_candidate(
     report
 }
 
+fn build_doctor_candidate_summary(
+    data_dir: &Path,
+    path: &Path,
+    candidate_id: String,
+) -> DoctorCandidateSummary {
+    let manifest_path = path.join("manifest.json");
+    let mut summary = DoctorCandidateSummary {
+        candidate_id,
+        lifecycle_status: "orphaned".to_string(),
+        path: path.display().to_string(),
+        redacted_path: doctor_redacted_path(&path.display().to_string(), data_dir),
+        manifest_path: manifest_path
+            .exists()
+            .then(|| manifest_path.display().to_string()),
+        redacted_manifest_path: manifest_path
+            .exists()
+            .then(|| doctor_redacted_path(&manifest_path.display().to_string(), data_dir)),
+        manifest_blake3: manifest_path
+            .exists()
+            .then(|| file_blake3_hex(&manifest_path).ok())
+            .flatten(),
+        orphaned: true,
+        interrupted: true,
+        safe_to_delete_automatically: false,
+        evidence: Vec::new(),
+        next_action: "inspect candidate directory before promotion or any cleanup consideration"
+            .to_string(),
+        ..DoctorCandidateSummary::default()
+    };
+    if manifest_path.exists() {
+        match std::fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        {
+            Some(value) => {
+                summary.orphaned = false;
+                summary.lifecycle_status = value
+                    .get("lifecycle_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                summary.artifact_count = value
+                    .get("artifact_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_default() as usize;
+                summary.checksum_count = value
+                    .get("checksum_set")
+                    .and_then(|v| v.as_object())
+                    .map(|map| map.len())
+                    .unwrap_or_default();
+                summary.selected_authority = value
+                    .get("selected_authority")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                summary.created_at_ms = value.get("created_at_ms").and_then(|v| v.as_i64());
+                summary.updated_at_ms = value.get("updated_at_ms").and_then(|v| v.as_i64());
+                summary.interrupted =
+                    !matches!(summary.lifecycle_status.as_str(), "completed" | "blocked");
+                summary
+                    .evidence
+                    .push("candidate-manifest-present".to_string());
+                if summary.interrupted {
+                    summary
+                        .evidence
+                        .push("candidate-lifecycle-not-terminal".to_string());
+                }
+            }
+            None => {
+                summary.lifecycle_status = "manifest_unreadable".to_string();
+                summary.orphaned = false;
+                summary.interrupted = true;
+                summary
+                    .evidence
+                    .push("candidate-manifest-unreadable".to_string());
+            }
+        }
+    } else {
+        summary
+            .evidence
+            .push("candidate-manifest-missing".to_string());
+    }
+    summary
+}
+
 pub(crate) fn collect_doctor_candidate_staging_report(
     data_dir: &Path,
     db_path: &Path,
@@ -981,83 +1069,7 @@ pub(crate) fn collect_doctor_candidate_staging_report(
             continue;
         }
         let candidate_id = entry.file_name().to_string_lossy().to_string();
-        let manifest_path = path.join("manifest.json");
-        let mut summary = DoctorCandidateSummary {
-            candidate_id,
-            lifecycle_status: "orphaned".to_string(),
-            path: path.display().to_string(),
-            redacted_path: doctor_redacted_path(&path.display().to_string(), data_dir),
-            manifest_path: manifest_path
-                .exists()
-                .then(|| manifest_path.display().to_string()),
-            redacted_manifest_path: manifest_path
-                .exists()
-                .then(|| doctor_redacted_path(&manifest_path.display().to_string(), data_dir)),
-            manifest_blake3: manifest_path
-                .exists()
-                .then(|| file_blake3_hex(&manifest_path).ok())
-                .flatten(),
-            orphaned: true,
-            interrupted: true,
-            safe_to_delete_automatically: false,
-            evidence: Vec::new(),
-            next_action:
-                "inspect candidate directory before promotion or any cleanup consideration"
-                    .to_string(),
-            ..DoctorCandidateSummary::default()
-        };
-        if manifest_path.exists() {
-            match std::fs::read_to_string(&manifest_path)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            {
-                Some(value) => {
-                    summary.orphaned = false;
-                    summary.lifecycle_status = value
-                        .get("lifecycle_status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    summary.artifact_count = value
-                        .get("artifact_count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or_default() as usize;
-                    summary.checksum_count = value
-                        .get("checksum_set")
-                        .and_then(|v| v.as_object())
-                        .map(|map| map.len())
-                        .unwrap_or_default();
-                    summary.selected_authority = value
-                        .get("selected_authority")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    summary.created_at_ms = value.get("created_at_ms").and_then(|v| v.as_i64());
-                    summary.updated_at_ms = value.get("updated_at_ms").and_then(|v| v.as_i64());
-                    summary.interrupted =
-                        !matches!(summary.lifecycle_status.as_str(), "completed" | "blocked");
-                    summary
-                        .evidence
-                        .push("candidate-manifest-present".to_string());
-                    if summary.interrupted {
-                        summary
-                            .evidence
-                            .push("candidate-lifecycle-not-terminal".to_string());
-                    }
-                }
-                None => {
-                    summary.lifecycle_status = "manifest_unreadable".to_string();
-                    summary.orphaned = false;
-                    summary.interrupted = true;
-                    summary
-                        .evidence
-                        .push("candidate-manifest-unreadable".to_string());
-                }
-            }
-        } else {
-            summary
-                .evidence
-                .push("candidate-manifest-missing".to_string());
-        }
+        let summary = build_doctor_candidate_summary(data_dir, &path, candidate_id);
 
         match summary.lifecycle_status.as_str() {
             "completed" => report.completed_candidate_count += 1,
@@ -1071,7 +1083,7 @@ pub(crate) fn collect_doctor_candidate_staging_report(
         if summary.orphaned {
             report.orphaned_candidate_count += 1;
         }
-        report.candidates.push(summary);
+        report.candidates.push(summary); // ubs:ignore[rust.security.archive-entry-path] — Vec::push on report.candidates, not an archive entry path
     }
     report
         .candidates

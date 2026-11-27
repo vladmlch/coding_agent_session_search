@@ -86,7 +86,17 @@ pub(crate) struct DoctorSupportBundleArtifactSpec<'a> {
     pub(crate) sensitive: bool,
     pub(crate) opt_in_required: bool,
     pub(crate) included_by_default: bool,
-    pub(crate) risk_copy: Option<String>,
+    pub(crate) risk_copy: Option<&'a str>,
+}
+
+fn support_bundle_io_error(message: impl Into<String>, hint: &str) -> CliError {
+    CliError {
+        code: 14,
+        kind: "io",
+        message: message.into(),
+        hint: Some(hint.to_string()),
+        retryable: true,
+    }
 }
 
 pub(crate) fn doctor_support_bundle_root(data_dir: &Path) -> PathBuf {
@@ -174,7 +184,7 @@ pub(crate) fn doctor_support_bundle_artifact_path(
             "refusing unsafe support bundle relative path {relative_path}"
         ));
     }
-    Ok(bundle_dir.join(relative_path))
+    Ok(bundle_dir.join(relative_path)) // ubs:ignore[rust.security.path-traversal] — guarded by doctor_support_bundle_relative_path_is_safe above
 }
 
 pub(crate) fn doctor_support_bundle_existing_artifact_metadata(
@@ -252,7 +262,7 @@ pub(crate) fn doctor_support_bundle_file_artifact(
         } else {
             "redacted".to_string()
         },
-        risk_copy: spec.risk_copy,
+        risk_copy: spec.risk_copy.map(str::to_string),
     })
 }
 
@@ -802,32 +812,17 @@ pub(crate) fn doctor_support_bundle_include_sensitive_attachments(
             retryable: true,
         })?;
         if copied != metadata.len() {
-            return Err(CliError {
-                code: 14,
-                kind: "io",
-                message: "sensitive attachment copy byte count mismatch".to_string(),
-                hint: Some("Retry after checking filesystem health.".to_string()),
-                retryable: true,
-            });
+            return Err(support_bundle_io_error(
+                "sensitive attachment copy byte count mismatch",
+                "Retry after checking filesystem health.",
+            ));
         }
-        sync_file(&target_path, "support bundle sensitive attachment").map_err(|message| {
-            CliError {
-                code: 14,
-                kind: "io",
-                message,
-                hint: Some("Retry after checking filesystem health.".to_string()),
-                retryable: true,
-            }
-        })?;
-        sync_directory(parent).map_err(|message| CliError {
-            code: 14,
-            kind: "io",
-            message,
-            hint: Some("Retry after checking filesystem health.".to_string()),
-            retryable: true,
-        })?;
+        sync_file(&target_path, "support bundle sensitive attachment")
+            .map_err(|msg| support_bundle_io_error(msg, "Retry after checking filesystem health."))?;
+        sync_directory(parent)
+            .map_err(|msg| support_bundle_io_error(msg, "Retry after checking filesystem health."))?;
         let source_path_text = source_path.display().to_string();
-        let risk_copy = "explicit operator opt-in: this file may contain raw private session data, source snippets, credentials, or customer data".to_string();
+        const SENSITIVE_ATTACHMENT_RISK_COPY: &str = "explicit operator opt-in: this file may contain raw private session data, source snippets, credentials, or customer data";
         artifacts.push(
             doctor_support_bundle_file_artifact(
                 bundle_dir,
@@ -838,16 +833,10 @@ pub(crate) fn doctor_support_bundle_include_sensitive_attachments(
                     sensitive: true,
                     opt_in_required: true,
                     included_by_default: false,
-                    risk_copy: Some(risk_copy.clone()),
+                    risk_copy: Some(SENSITIVE_ATTACHMENT_RISK_COPY),
                 },
             )
-            .map_err(|message| CliError {
-                code: 14,
-                kind: "io",
-                message,
-                hint: Some("Retry after checking filesystem health.".to_string()),
-                retryable: true,
-            })?,
+            .map_err(|msg| support_bundle_io_error(msg, "Retry after checking filesystem health."))?,
         );
         opt_ins.push(serde_json::json!({
             "attachment_index": idx,
@@ -1113,13 +1102,10 @@ pub(crate) fn run_doctor_support_bundle_impl(
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => {
-                return Err(CliError {
-                    code: 14,
-                    kind: "io",
-                    message: format!("failed to allocate support bundle directory: {err}"),
-                    hint: Some("Choose a writable cass data directory and retry.".to_string()),
-                    retryable: true,
-                });
+                return Err(support_bundle_io_error(
+                    format!("failed to allocate support bundle directory: {err}"),
+                    "Choose a writable cass data directory and retry.",
+                ));
             }
         }
     }

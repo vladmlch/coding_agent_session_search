@@ -910,7 +910,12 @@ impl DoctorConnectorReparse {
                 original
                     .strip_prefix(root)
                     .ok()
-                    .filter(|relative| relative.components().next().is_some())
+                    .filter(|relative| {
+                        relative.components().next().is_some()
+                            && relative
+                                .components()
+                                .all(|c| matches!(c, std::path::Component::Normal(_)))
+                    })
                     .map(|relative| (root, relative))
             })
             .min_by_key(|(_, relative)| relative.components().count())
@@ -921,7 +926,7 @@ impl DoctorConnectorReparse {
         };
         let staged_dir = self.scratch.path().join(&manifest.manifest_id);
         let staged_root = staged_dir.join("root");
-        let staged = staged_root.join(relative);
+        let staged = staged_root.join(relative); // ubs:ignore[rust.security.path-traversal] — relative validated to contain only Normal components after strip_prefix
         let parent = staged
             .parent()
             .ok_or_else(|| "its staged copy has no parent directory".to_string())?;
@@ -952,13 +957,18 @@ impl DoctorConnectorReparse {
                         .as_deref()
                         .and_then(|root| conversation.source_path.strip_prefix(root).ok())
                 })
+                .filter(|relative| {
+                    relative
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)))
+                })
                 .map(Path::to_path_buf)
                 .ok_or_else(|| {
                     format!(
                         "the {provider} connector returned a conversation from outside the staged source"
                     )
                 })?;
-            conversation.source_path = original_root.join(relative);
+            conversation.source_path = original_root.join(relative); // ubs:ignore[rust.security.path-traversal] — relative validated to contain only Normal components after strip_prefix
             crate::indexer::inject_provenance(conversation, &crate::connectors::Origin::local());
         }
         Ok(conversations)

@@ -276,7 +276,7 @@ fn reconstruction_output_path(
         Some(hint) if hint != stem => format!("{stem}__{hint}.jsonl"),
         _ => format!("{stem}.jsonl"),
     };
-    target_dir.join(file_name)
+    target_dir.join(file_name) // ubs:ignore[rust.security.path-traversal] — single-segment sanitized filename from sanitize_path_component
 }
 
 /// Replace path-unsafe characters so reconstructed file names never escape the

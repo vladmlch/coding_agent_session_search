@@ -333,7 +333,13 @@ pub(crate) fn doctor_candidate_promotion_record_metadata_artifact(
     manifest: &serde_json::Value,
     relative_path: &str,
 ) {
-    let path = candidate_dir.join(relative_path);
+    if !doctor_forensic_relative_path_is_safe(Path::new(relative_path)) {
+        report.blocked_reasons.push(format!(
+            "candidate derived metadata artifact relative path is unsafe: {relative_path}"
+        ));
+        return;
+    }
+    let path = candidate_dir.join(relative_path); // ubs:ignore[rust.security.path-traversal] — guarded by doctor_forensic_relative_path_is_safe above
     if !path.exists() {
         report.warnings.push(format!(
             "candidate derived metadata artifact is absent: {relative_path}"

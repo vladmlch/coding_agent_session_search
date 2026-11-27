@@ -1142,6 +1142,34 @@ pub(crate) fn build_doctor_source_authority_report(
     }
 }
 
+fn apply_verified_raw_mirror_deferred_candidate(
+    candidate: &mut DoctorSourceAuthorityCandidate,
+    reason: &str,
+) {
+    candidate.reason = format!(
+        "checksum-verified raw mirror may seed an isolated candidate after affirmative canonical corruption; archive-wide coverage remains unchecked: {reason}"
+    );
+    candidate
+        .evidence
+        .push("affirmative-canonical-integrity-failure".to_string());
+    candidate
+        .evidence
+        .push("candidate-only-not-promotion-authority".to_string());
+}
+
+fn apply_deferred_collector_authority_refusal(
+    candidate: &mut DoctorSourceAuthorityCandidate,
+    reason: &str,
+) {
+    candidate.decision = DoctorSourceAuthorityDecision::Refused;
+    candidate.reason = format!(
+        "archive-wide authority evidence is unchecked; prior provisional selection refused: {reason}"
+    );
+    candidate
+        .evidence
+        .push("archive-wide-collectors-deferred".to_string());
+}
+
 pub(crate) fn doctor_refuse_source_authority_when_collectors_deferred(
     mut report: DoctorSourceAuthorityReport,
     reason: &str,
@@ -1163,25 +1191,11 @@ pub(crate) fn doctor_refuse_source_authority_when_collectors_deferred(
                 DoctorArtifactChecksumStatus::Matched
             )
         {
-            candidate.reason = format!(
-                "checksum-verified raw mirror may seed an isolated candidate after affirmative canonical corruption; archive-wide coverage remains unchecked: {reason}"
-            );
-            candidate
-                .evidence
-                .push("affirmative-canonical-integrity-failure".to_string());
-            candidate
-                .evidence
-                .push("candidate-only-not-promotion-authority".to_string());
+            apply_verified_raw_mirror_deferred_candidate(&mut candidate, reason);
             preserved_authorities.push(candidate);
             continue;
         }
-        candidate.decision = DoctorSourceAuthorityDecision::Refused;
-        candidate.reason = format!(
-            "archive-wide authority evidence is unchecked; prior provisional selection refused: {reason}"
-        );
-        candidate
-            .evidence
-            .push("archive-wide-collectors-deferred".to_string());
+        apply_deferred_collector_authority_refusal(&mut candidate, reason);
         report.rejected_authorities.push(candidate);
     }
     report.selected_authorities = preserved_authorities;

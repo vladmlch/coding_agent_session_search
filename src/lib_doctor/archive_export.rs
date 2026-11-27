@@ -705,7 +705,7 @@ pub(crate) fn doctor_archive_export_verify_target(
             continue;
         }
         expected_paths.insert(relative_path.to_string());
-        let target_path = target_root.join(relative_path);
+        let target_path = target_root.join(relative_path); // ubs:ignore[rust.security.path-traversal] — validated by doctor_archive_export_relative_is_safe above
         let target_metadata =
             match doctor_archive_export_target_artifact_safety(target_root, &target_path) {
                 Ok(Some(metadata)) => metadata,

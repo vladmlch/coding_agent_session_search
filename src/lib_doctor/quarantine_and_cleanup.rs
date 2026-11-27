@@ -71,7 +71,7 @@ pub(crate) struct DiagQuarantinedGeneration {
 pub(crate) struct DiagQuarantineInspectionArtifact {
     #[serde(flatten)]
     pub(crate) asset_safety: DoctorAssetSafety,
-    pub(crate) artifact_kind: String,
+    pub(crate) artifact_kind: &'static str,
     pub(crate) path: String,
     pub(crate) generation_id: Option<String>,
     pub(crate) shard_id: Option<String>,
@@ -316,6 +316,60 @@ pub(crate) struct DiagLexicalManifestEntry {
     pub(crate) quarantined_shards: usize,
 }
 
+fn quarantined_generation_gc_reason(
+    include_cleanup_plan: bool,
+    safe_to_gc: bool,
+    candidate_safe_to_gc: bool,
+    inspection_required: bool,
+    reclaimable_bytes: u64,
+    observed_bytes: u64,
+) -> String {
+    if !include_cleanup_plan {
+        "cleanup planning not run during bounded doctor check".to_string()
+    } else if safe_to_gc {
+        format!(
+            "cleanup dry-run marks the full retained generation reclaimable ({reclaimable_bytes} bytes)"
+        )
+    } else if candidate_safe_to_gc {
+        "asset taxonomy retains quarantined lexical generations for operator inspection".to_string()
+    } else if inspection_required {
+        "cleanup dry-run requires inspection before garbage collection".to_string()
+    } else if reclaimable_bytes == 0 {
+        "cleanup dry-run exposes no reclaimable bytes for this quarantined generation".to_string()
+    } else {
+        format!(
+            "cleanup dry-run only marks {reclaimable_bytes} of {observed_bytes} bytes reclaimable"
+        )
+    }
+}
+
+fn new_cleanup_apply_action(
+    asset_class: DoctorAssetClass,
+    artifact_kind: &str,
+    path: String,
+    generation_id: Option<String>,
+    disposition: Option<crate::indexer::lexical_generation::LexicalCleanupDisposition>,
+    reason: String,
+    planned_reclaimable_bytes: u64,
+    skip_reason: Option<String>,
+) -> DiagCleanupApplyAction {
+    DiagCleanupApplyAction {
+        asset_safety: doctor_asset_safety(asset_class),
+        artifact_kind: artifact_kind.to_string(),
+        path,
+        generation_id,
+        shard_id: None,
+        disposition,
+        reason,
+        planned_reclaimable_bytes,
+        reclaimed_bytes: 0,
+        applied: false,
+        skipped: skip_reason.is_some(),
+        skip_reason,
+        mutation_receipt: None,
+    }
+}
+
 pub(crate) fn collect_diag_quarantine_report(
     data_dir: &Path,
     index_path: &Path,
@@ -374,7 +428,7 @@ pub(crate) fn collect_diag_quarantine_report_inner(
                     .quarantined_artifacts
                     .push(DiagQuarantineInspectionArtifact {
                         asset_safety: doctor_asset_safety(DoctorAssetClass::FailedSeedBundle),
-                        artifact_kind: "failed_seed_bundle_file".to_string(),
+                        artifact_kind: "failed_seed_bundle_file",
                         path: path.display().to_string(),
                         generation_id: None,
                         shard_id: None,
@@ -531,27 +585,14 @@ pub(crate) fn collect_diag_quarantine_report_inner(
             DoctorAssetClass::QuarantinedLexicalGeneration,
             candidate_safe_to_gc,
         );
-        let gc_reason = if !include_cleanup_plan {
-            "cleanup planning not run during bounded doctor check".to_string()
-        } else if safe_to_gc {
-            format!(
-                "cleanup dry-run marks the full retained generation reclaimable ({} bytes)",
-                reclaimable_bytes
-            )
-        } else if candidate_safe_to_gc {
-            "asset taxonomy retains quarantined lexical generations for operator inspection"
-                .to_string()
-        } else if inspection_required {
-            "cleanup dry-run requires inspection before garbage collection".to_string()
-        } else if reclaimable_bytes == 0 {
-            "cleanup dry-run exposes no reclaimable bytes for this quarantined generation"
-                .to_string()
-        } else {
-            format!(
-                "cleanup dry-run only marks {} of {} bytes reclaimable",
-                reclaimable_bytes, observation.size_bytes
-            )
-        };
+        let gc_reason = quarantined_generation_gc_reason(
+            include_cleanup_plan,
+            safe_to_gc,
+            candidate_safe_to_gc,
+            inspection_required,
+            reclaimable_bytes,
+            observation.size_bytes,
+        );
         if matches!(
             entry.manifest.publish_state,
             LexicalGenerationPublishState::Quarantined
@@ -562,7 +603,7 @@ pub(crate) fn collect_diag_quarantine_report_inner(
                     asset_safety: doctor_asset_safety(
                         DoctorAssetClass::QuarantinedLexicalGeneration,
                     ),
-                    artifact_kind: "lexical_generation".to_string(),
+                    artifact_kind: "lexical_generation",
                     path: entry.path.display().to_string(),
                     generation_id: Some(entry.manifest.generation_id.clone()),
                     shard_id: None,
@@ -585,7 +626,7 @@ pub(crate) fn collect_diag_quarantine_report_inner(
                 .quarantined_artifacts
                 .push(DiagQuarantineInspectionArtifact {
                     asset_safety: doctor_asset_safety(DoctorAssetClass::QuarantinedLexicalShard),
-                    artifact_kind: "lexical_shard".to_string(),
+                    artifact_kind: "lexical_shard",
                     path: entry.path.display().to_string(),
                     generation_id: Some(entry.manifest.generation_id.clone()),
                     shard_id: Some(shard.shard_id.clone()),
@@ -838,22 +879,16 @@ pub(crate) fn planned_cleanup_apply_actions(
         .iter()
         .filter(|artifact| artifact.safe_to_gc)
     {
-        let asset_class = DoctorAssetClass::RetainedPublishBackup;
-        actions.push(DiagCleanupApplyAction {
-            asset_safety: doctor_asset_safety(asset_class),
-            artifact_kind: "retained_publish_backup".to_string(),
-            path: artifact.path.clone(),
-            generation_id: None,
-            shard_id: None,
-            disposition: None,
-            reason: artifact.gc_reason.clone(),
-            planned_reclaimable_bytes: artifact.size_bytes,
-            reclaimed_bytes: 0,
-            applied: false,
-            skipped: false,
-            skip_reason: None,
-            mutation_receipt: None,
-        });
+        actions.push(new_cleanup_apply_action(
+            DoctorAssetClass::RetainedPublishBackup,
+            "retained_publish_backup",
+            artifact.path.clone(),
+            None,
+            None,
+            artifact.gc_reason.clone(),
+            artifact.size_bytes,
+            None,
+        ));
     }
 
     if !apply_gate.apply_allowed {
@@ -888,21 +923,16 @@ pub(crate) fn planned_cleanup_apply_actions(
                     lexical_cleanup_disposition_label(inventory.disposition)
                 )
             });
-        actions.push(DiagCleanupApplyAction {
-            asset_safety: doctor_asset_safety(asset_class),
-            artifact_kind: "lexical_generation".to_string(),
-            path: entry.path.display().to_string(),
-            generation_id: Some(entry.manifest.generation_id.clone()),
-            shard_id: None,
-            disposition: Some(inventory.disposition),
-            reason: inventory.reason.clone(),
-            planned_reclaimable_bytes: inventory.reclaimable_bytes,
-            reclaimed_bytes: 0,
-            applied: false,
-            skipped: skip_reason.is_some(),
+        actions.push(new_cleanup_apply_action(
+            asset_class,
+            "lexical_generation",
+            entry.path.display().to_string(),
+            Some(entry.manifest.generation_id.clone()),
+            Some(inventory.disposition),
+            inventory.reason.clone(),
+            inventory.reclaimable_bytes,
             skip_reason,
-            mutation_receipt: None,
-        });
+        ));
     }
     doctor_sorted_cleanup_actions(&actions)
 }
@@ -1079,21 +1109,16 @@ pub(crate) fn apply_diag_quarantine_cleanup(
     {
         let path = PathBuf::from(&artifact.path);
         let asset_class = DoctorAssetClass::RetainedPublishBackup;
-        let mut action = DiagCleanupApplyAction {
-            asset_safety: doctor_asset_safety(asset_class),
-            artifact_kind: "retained_publish_backup".to_string(),
-            path: artifact.path.clone(),
-            generation_id: None,
-            shard_id: None,
-            disposition: None,
-            reason: artifact.gc_reason.clone(),
-            planned_reclaimable_bytes: artifact.size_bytes,
-            reclaimed_bytes: 0,
-            applied: false,
-            skipped: false,
-            skip_reason: None,
-            mutation_receipt: None,
-        };
+        let mut action = new_cleanup_apply_action(
+            asset_class,
+            "retained_publish_backup",
+            artifact.path.clone(),
+            None,
+            None,
+            artifact.gc_reason.clone(),
+            artifact.size_bytes,
+            None,
+        );
 
         let action_id = doctor_cleanup_action_id(&action);
         let mutation_started_at_ms = doctor_now_ms();
@@ -1174,21 +1199,16 @@ pub(crate) fn apply_diag_quarantine_cleanup(
             }
 
             let asset_class = doctor_asset_class_for_cleanup_disposition(inventory.disposition);
-            let mut action = DiagCleanupApplyAction {
-                asset_safety: doctor_asset_safety(asset_class),
-                artifact_kind: "lexical_generation".to_string(),
-                path: entry.path.display().to_string(),
-                generation_id: Some(entry.manifest.generation_id.clone()),
-                shard_id: None,
-                disposition: Some(inventory.disposition),
-                reason: inventory.reason.clone(),
-                planned_reclaimable_bytes: inventory.reclaimable_bytes,
-                reclaimed_bytes: 0,
-                applied: false,
-                skipped: false,
-                skip_reason: None,
-                mutation_receipt: None,
-            };
+            let mut action = new_cleanup_apply_action(
+                asset_class,
+                "lexical_generation",
+                entry.path.display().to_string(),
+                Some(entry.manifest.generation_id.clone()),
+                Some(inventory.disposition),
+                inventory.reason.clone(),
+                inventory.reclaimable_bytes,
+                None,
+            );
 
             let generation_fully_reclaimable = inventory.retained_bytes == 0
                 && inventory.reclaimable_bytes >= inventory.artifact_bytes;

@@ -239,13 +239,13 @@ pub(crate) fn capabilities_connector_names() -> Vec<String> {
     ];
 
     let mut connectors: Vec<String> = preferred.iter().map(|name| (*name).to_string()).collect();
-    let mut seen: HashSet<String> = connectors.iter().cloned().collect();
+    let mut seen: HashSet<&str> = preferred.into_iter().collect();
 
     // Append any connector newly registered in the indexer to prevent list drift.
     for (slug, _) in crate::indexer::get_connector_factories() {
-        let public = public_connector_slug(slug).to_string();
-        if seen.insert(public.clone()) {
-            connectors.push(public);
+        let public = public_connector_slug(slug);
+        if seen.insert(public) {
+            connectors.push(public.to_string());
         }
     }
 

@@ -94,9 +94,18 @@ pub fn run_doctor_cleanup_interrupted_artifacts(
     for src in &candidates {
         let name = src
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
+            .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("artifact-{}", now_unix_ms()));
-        let dst = quarantine_root.join(&name);
+        let mut components = std::path::Path::new(&name).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(io_error(
+                format!("refusing unsafe interrupted-artifact name {name}"),
+                None,
+            ));
+        }
+        let dst = quarantine_root.join(&name); // ubs:ignore[rust.security.path-traversal] — single Normal component verified from read_dir file_name()
         let final_dst = if dst.exists() {
             quarantine_root.join(format!("{name}.{}", now_unix_ms()))
         } else {

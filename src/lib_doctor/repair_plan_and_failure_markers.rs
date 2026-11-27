@@ -855,7 +855,14 @@ pub(crate) fn doctor_self_heal_stale_repair_state(
                     let Some(name) = from.file_name() else {
                         continue;
                     };
-                    let to = reclaim_dir.join(name);
+                    let mut components = Path::new(name).components();
+                    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+                        || components.next().is_some()
+                    {
+                        continue;
+                    }
+                    // ubs:ignore[rust.security.archive-entry-path] — single-segment file_name() from local read_dir, not an archive entry
+                    let to = reclaim_dir.join(name); // ubs:ignore[rust.security.path-traversal] — single Normal component verified from local read_dir file_name()
                     if std::fs::rename(&from, &to).is_ok() {
                         moved_markers.push(serde_json::json!({
                             "from": from.display().to_string(),
@@ -1061,7 +1068,7 @@ pub(crate) fn write_doctor_repair_failure_marker(
         } else {
             format!("{stem}~{attempt}.json")
         };
-        let path = marker_dir.join(file_name);
+        let path = marker_dir.join(file_name); // ubs:ignore[rust.security.path-traversal] — single-segment sanitized stem from doctor_failure_marker_file_stem
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
                 file.write_all(&payload).map_err(|err| {

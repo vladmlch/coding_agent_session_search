@@ -84,8 +84,8 @@ pub(crate) struct DoctorBackupArtifactVerification {
     pub(crate) expected_blake3: Option<String>,
     pub(crate) actual_blake3: Option<String>,
     pub(crate) size_bytes: Option<u64>,
-    pub(crate) status: String,
-    pub(crate) error: Option<String>,
+    pub(crate) status: &'static str,
+    pub(crate) error: Option<std::borrow::Cow<'static, str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +95,7 @@ pub(crate) struct DoctorBackupVerification {
     pub(crate) manifest_path: PathBuf,
     pub(crate) manifest_blake3: Option<String>,
     pub(crate) status: String,
-    pub(crate) checksum_status_counts: BTreeMap<String, usize>,
+    pub(crate) checksum_status_counts: BTreeMap<&'static str, usize>,
     pub(crate) restore_rehearsal_allowed: bool,
     pub(crate) storage_probe_status: &'static str,
     pub(crate) sidecar_bundle_status: String,
@@ -522,28 +522,28 @@ pub(crate) fn verify_doctor_backup_record(
             expected_blake3,
             actual_blake3: None,
             size_bytes: None,
-            status: "not-recorded".to_string(),
+            status: "not-recorded",
             error: None,
         };
         let Some(path) = backup_path else {
-            artifact_verification.status = "missing-path".to_string();
-            artifact_verification.error = Some("artifact has no backup_path".to_string());
+            artifact_verification.status = "missing-path";
+            artifact_verification.error = Some("artifact has no backup_path".into());
             verification.blocked_reasons.push(format!(
                 "backup artifact {artifact_kind} failed verification: missing-path"
             ));
             *verification
                 .checksum_status_counts
-                .entry(artifact_verification.status.clone())
+                .entry(artifact_verification.status)
                 .or_default() += 1;
             verification.artifacts.push(artifact_verification);
             continue;
         };
         if !doctor_backup_artifact_path_is_safe(&path, &backup_dir, data_dir) {
-            artifact_verification.status = "unsafe-path".to_string();
+            artifact_verification.status = "unsafe-path";
             artifact_verification.error = Some(format!(
                 "backup artifact path is outside the manifest backup dir or is not a regular file: {}",
                 path.display()
-            ));
+            ).into());
             verification.blocked_reasons.push(format!(
                 "unsafe backup artifact path for {artifact_kind}: {}",
                 path.display()
@@ -556,9 +556,9 @@ pub(crate) fn verify_doctor_backup_record(
                         verification.total_size_bytes.saturating_add(metadata.len());
                 }
                 Err(err) => {
-                    artifact_verification.status = "missing".to_string();
+                    artifact_verification.status = "missing";
                     artifact_verification.error =
-                        Some(format!("failed to inspect backup artifact: {err}"));
+                        Some(format!("failed to inspect backup artifact: {err}").into());
                 }
             }
             if artifact_verification.status == "not-recorded" {
@@ -567,16 +567,16 @@ pub(crate) fn verify_doctor_backup_record(
                         artifact_verification.actual_blake3 = Some(hash.clone());
                         artifact_verification.status =
                             if artifact_verification.expected_blake3.as_deref() == Some(&hash) {
-                                "matched".to_string()
+                                "matched"
                             } else if artifact_verification.expected_blake3.is_some() {
-                                "checksum-mismatch".to_string()
+                                "checksum-mismatch"
                             } else {
-                                "not-recorded".to_string()
+                                "not-recorded"
                             };
                     }
                     Err(err) => {
-                        artifact_verification.status = "hash-error".to_string();
-                        artifact_verification.error = Some(err);
+                        artifact_verification.status = "hash-error";
+                        artifact_verification.error = Some(err.into());
                     }
                 }
             }
@@ -610,7 +610,7 @@ pub(crate) fn verify_doctor_backup_record(
         }
         *verification
             .checksum_status_counts
-            .entry(artifact_verification.status.clone())
+            .entry(artifact_verification.status)
             .or_default() += 1;
         verification.artifacts.push(artifact_verification);
     }

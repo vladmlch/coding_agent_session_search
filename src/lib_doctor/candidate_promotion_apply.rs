@@ -181,6 +181,19 @@ pub(crate) fn doctor_candidate_promotion_record_derived_followup_artifact(
     }
 }
 
+fn fail_candidate_promotion_report(
+    mut report: DoctorCandidatePromotionReport,
+    err: String,
+    db_path: &Path,
+    index_path: &Path,
+) -> DoctorCandidatePromotionReport {
+    report.status = "failed".to_string();
+    report.blocked_reasons.push(err);
+    report.live_inventory_after = doctor_candidate_live_inventory(db_path, index_path);
+    doctor_candidate_promotion_finalize_report(&mut report);
+    report
+}
+
 #[allow(dead_code)]
 pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
     data_dir: &Path,
@@ -534,12 +547,7 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
                     ));
                 }
                 Err(err) => {
-                    report.status = "failed".to_string();
-                    report.blocked_reasons.push(err);
-                    report.live_inventory_after =
-                        doctor_candidate_live_inventory(db_path, index_path);
-                    doctor_candidate_promotion_finalize_report(&mut report);
-                    return report;
+                    return fail_candidate_promotion_report(report, err, db_path, index_path);
                 }
             }
         }
@@ -567,12 +575,7 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
                     ));
                 }
                 Err(err) => {
-                    report.status = "failed".to_string();
-                    report.blocked_reasons.push(err);
-                    report.live_inventory_after =
-                        doctor_candidate_live_inventory(db_path, index_path);
-                    doctor_candidate_promotion_finalize_report(&mut report);
-                    return report;
+                    return fail_candidate_promotion_report(report, err, db_path, index_path);
                 }
             }
         }
@@ -669,6 +672,7 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
     receipt.fallback_kind = Some("none".to_string());
 
     let mut promoted_component_count = 0usize;
+    let mut cross_device_fallback = false;
     for item in bundle_items.iter().filter(|item| item.candidate_exists) {
         match doctor_candidate_promotion_replace_file(
             &item.source_path,
@@ -680,7 +684,7 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
             Ok(move_method) => {
                 promoted_component_count += 1;
                 if move_method == DoctorFsMoveMethod::CrossDeviceCopyRemoveSource {
-                    receipt.fallback_kind = Some("cross_device_copy_replace".to_string());
+                    cross_device_fallback = true;
                 }
                 receipt.precondition_checks.push(format!(
                     "{}:{}",
@@ -760,15 +764,14 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
         // the REPLACED database cannot pair with the newly promoted one
         // (SQLite rebuilds shm on the next WAL-mode open).
         if receipt.status != DoctorActionStatus::Failed {
+            let mut stale_shm_removed = false;
             for item in bundle_items
                 .iter()
                 .filter(|item| item.suffix == "-shm" && item.live_exists && !item.candidate_exists)
             {
                 match std::fs::remove_file(&item.target_path) {
                     Ok(()) => {
-                        receipt
-                            .precondition_checks
-                            .push("stale_live_shm_removed_after_backup:-shm".to_string());
+                        stale_shm_removed = true;
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                     Err(err) => {
@@ -781,6 +784,14 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
                     }
                 }
             }
+            if stale_shm_removed {
+                receipt
+                    .precondition_checks
+                    .push("stale_live_shm_removed_after_backup:-shm".to_string());
+            }
+        }
+        if cross_device_fallback {
+            receipt.fallback_kind = Some("cross_device_copy_replace".to_string());
         }
         if receipt.status != DoctorActionStatus::Failed
             && let Err(err) =

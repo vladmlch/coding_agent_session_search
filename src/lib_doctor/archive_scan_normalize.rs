@@ -591,7 +591,7 @@ pub(crate) fn doctor_archive_normalize_action_for_finding(
         }),
     );
     let target_relative_path = format!("doctor/archive-normalize/annotations/{action_id}.json");
-    let target_path = data_dir.join(&target_relative_path);
+    let target_path = data_dir.join(&target_relative_path); // ubs:ignore[rust.security.path-traversal] — fixed prefix with 64-hex blake3 action_id
     DoctorArchiveNormalizeAction {
         action_id,
         action_kind: "write_metadata_annotation".to_string(),
@@ -721,7 +721,7 @@ pub(crate) fn build_doctor_archive_normalize_plan(
     let path_gate_ok = actions.iter().all(|action| {
         let relative = Path::new(&action.target_relative_path);
         doctor_forensic_relative_path_is_safe(relative)
-            && data_dir.join(relative).starts_with(data_dir)
+            && data_dir.join(relative).starts_with(data_dir) // ubs:ignore[rust.security.path-traversal] — guarded by doctor_forensic_relative_path_is_safe above
             && action.additive_only
             && action.idempotent
             && !action.precious_asset_mutation
@@ -868,6 +868,20 @@ pub(crate) fn doctor_archive_normalize_blocked_receipt(
     }
 }
 
+fn push_archive_normalize_event(
+    event_log: &mut Vec<DoctorArchiveNormalizeEvent>,
+    event: &str,
+    action: &DoctorArchiveNormalizeAction,
+    message: impl Into<String>,
+) {
+    event_log.push(DoctorArchiveNormalizeEvent {
+        event: event.to_string(),
+        action_id: Some(action.action_id.clone()),
+        target_relative_path: Some(action.target_relative_path.clone()),
+        message: message.into(),
+    });
+}
+
 pub(crate) fn apply_doctor_archive_normalize_plan(
     data_dir: &Path,
     plan: &DoctorArchiveNormalizePlan,
@@ -889,64 +903,64 @@ pub(crate) fn apply_doctor_archive_normalize_plan(
         let relative = Path::new(&action.target_relative_path);
         if !doctor_forensic_relative_path_is_safe(relative) {
             refused_action_count += 1;
-            event_log.push(DoctorArchiveNormalizeEvent {
-                event: "refused".to_string(),
-                action_id: Some(action.action_id.clone()),
-                target_relative_path: Some(action.target_relative_path.clone()),
-                message: "target path failed relative path guard".to_string(),
-            });
+            push_archive_normalize_event(
+                &mut event_log,
+                "refused",
+                action,
+                "target path failed relative path guard",
+            );
             continue;
         }
-        let target_path = data_dir.join(relative);
+        let target_path = data_dir.join(relative); // ubs:ignore[rust.security.path-traversal] — guarded by doctor_forensic_relative_path_is_safe above
         if !target_path.starts_with(data_dir) {
             refused_action_count += 1;
-            event_log.push(DoctorArchiveNormalizeEvent {
-                event: "refused".to_string(),
-                action_id: Some(action.action_id.clone()),
-                target_relative_path: Some(action.target_relative_path.clone()),
-                message: "target path escaped data directory".to_string(),
-            });
+            push_archive_normalize_event(
+                &mut event_log,
+                "refused",
+                action,
+                "target path escaped data directory",
+            );
             continue;
         }
         let Some(parent) = target_path.parent() else {
             refused_action_count += 1;
-            event_log.push(DoctorArchiveNormalizeEvent {
-                event: "refused".to_string(),
-                action_id: Some(action.action_id.clone()),
-                target_relative_path: Some(action.target_relative_path.clone()),
-                message: "target path has no parent".to_string(),
-            });
+            push_archive_normalize_event(
+                &mut event_log,
+                "refused",
+                action,
+                "target path has no parent",
+            );
             continue;
         };
         if existing_path_has_symlink_below_root(parent, data_dir) {
             refused_action_count += 1;
-            event_log.push(DoctorArchiveNormalizeEvent {
-                event: "refused".to_string(),
-                action_id: Some(action.action_id.clone()),
-                target_relative_path: Some(action.target_relative_path.clone()),
-                message: "target parent contains a symlinked component".to_string(),
-            });
+            push_archive_normalize_event(
+                &mut event_log,
+                "refused",
+                action,
+                "target parent contains a symlinked component",
+            );
             continue;
         }
         match std::fs::symlink_metadata(&target_path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 refused_action_count += 1;
-                event_log.push(DoctorArchiveNormalizeEvent {
-                    event: "refused".to_string(),
-                    action_id: Some(action.action_id.clone()),
-                    target_relative_path: Some(action.target_relative_path.clone()),
-                    message: "target already exists as a symlink".to_string(),
-                });
+                push_archive_normalize_event(
+                    &mut event_log,
+                    "refused",
+                    action,
+                    "target already exists as a symlink",
+                );
                 continue;
             }
             Ok(metadata) if !metadata.is_file() => {
                 refused_action_count += 1;
-                event_log.push(DoctorArchiveNormalizeEvent {
-                    event: "refused".to_string(),
-                    action_id: Some(action.action_id.clone()),
-                    target_relative_path: Some(action.target_relative_path.clone()),
-                    message: "target already exists but is not a regular file".to_string(),
-                });
+                push_archive_normalize_event(
+                    &mut event_log,
+                    "refused",
+                    action,
+                    "target already exists but is not a regular file",
+                );
                 continue;
             }
             Ok(_) => {
@@ -958,55 +972,55 @@ pub(crate) fn apply_doctor_archive_normalize_plan(
                 });
                 if existing_hash.as_deref() == Some(action.content_blake3.as_str()) {
                     already_present_count += 1;
-                    event_log.push(DoctorArchiveNormalizeEvent {
-                        event: "already_present".to_string(),
-                        action_id: Some(action.action_id.clone()),
-                        target_relative_path: Some(action.target_relative_path.clone()),
-                        message: "matching additive annotation already exists".to_string(),
-                    });
+                    push_archive_normalize_event(
+                        &mut event_log,
+                        "already_present",
+                        action,
+                        "matching additive annotation already exists",
+                    );
                 } else {
                     refused_action_count += 1;
-                    event_log.push(DoctorArchiveNormalizeEvent {
-                        event: "refused".to_string(),
-                        action_id: Some(action.action_id.clone()),
-                        target_relative_path: Some(action.target_relative_path.clone()),
-                        message: "target already exists with different content".to_string(),
-                    });
+                    push_archive_normalize_event(
+                        &mut event_log,
+                        "refused",
+                        action,
+                        "target already exists with different content",
+                    );
                 }
                 continue;
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => {
                 refused_action_count += 1;
-                event_log.push(DoctorArchiveNormalizeEvent {
-                    event: "refused".to_string(),
-                    action_id: Some(action.action_id.clone()),
-                    target_relative_path: Some(action.target_relative_path.clone()),
-                    message: format!("failed to inspect annotation target: {err}"),
-                });
+                push_archive_normalize_event(
+                    &mut event_log,
+                    "refused",
+                    action,
+                    format!("failed to inspect annotation target: {err}"),
+                );
                 continue;
             }
         }
         if let Err(err) = doctor_forensic_create_private_dir_all(parent) {
             refused_action_count += 1;
-            event_log.push(DoctorArchiveNormalizeEvent {
-                event: "refused".to_string(),
-                action_id: Some(action.action_id.clone()),
-                target_relative_path: Some(action.target_relative_path.clone()),
-                message: format!("failed to create annotation directory: {err}"),
-            });
+            push_archive_normalize_event(
+                &mut event_log,
+                "refused",
+                action,
+                format!("failed to create annotation directory: {err}"),
+            );
             continue;
         }
         let bytes = match serde_json::to_vec_pretty(&action.annotation_content) {
             Ok(bytes) => bytes,
             Err(err) => {
                 refused_action_count += 1;
-                event_log.push(DoctorArchiveNormalizeEvent {
-                    event: "refused".to_string(),
-                    action_id: Some(action.action_id.clone()),
-                    target_relative_path: Some(action.target_relative_path.clone()),
-                    message: format!("failed to serialize annotation content: {err}"),
-                });
+                push_archive_normalize_event(
+                    &mut event_log,
+                    "refused",
+                    action,
+                    format!("failed to serialize annotation content: {err}"),
+                );
                 continue;
             }
         };
@@ -1017,21 +1031,21 @@ pub(crate) fn apply_doctor_archive_normalize_plan(
         }) {
             Ok(()) => {
                 applied_action_count += 1;
-                event_log.push(DoctorArchiveNormalizeEvent {
-                    event: "applied".to_string(),
-                    action_id: Some(action.action_id.clone()),
-                    target_relative_path: Some(action.target_relative_path.clone()),
-                    message: "wrote additive archive-normalize annotation".to_string(),
-                });
+                push_archive_normalize_event(
+                    &mut event_log,
+                    "applied",
+                    action,
+                    "wrote additive archive-normalize annotation",
+                );
             }
             Err(err) => {
                 refused_action_count += 1;
-                event_log.push(DoctorArchiveNormalizeEvent {
-                    event: "refused".to_string(),
-                    action_id: Some(action.action_id.clone()),
-                    target_relative_path: Some(action.target_relative_path.clone()),
-                    message: format!("failed to write annotation: {err}"),
-                });
+                push_archive_normalize_event(
+                    &mut event_log,
+                    "refused",
+                    action,
+                    format!("failed to write annotation: {err}"),
+                );
             }
         }
     }

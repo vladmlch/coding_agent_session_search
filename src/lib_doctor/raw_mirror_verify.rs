@@ -773,17 +773,23 @@ pub(crate) fn doctor_raw_mirror_validate_relative_path(
         return Err("relative path must not be absolute".to_string());
     }
     let mut cleaned = PathBuf::new();
+    let mut err_msg: Option<&'static str> = None;
     for component in path.components() {
         match component {
             std::path::Component::Normal(part) => cleaned.push(part),
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                return Err("relative path must not contain parent traversal".to_string());
+                err_msg = Some("relative path must not contain parent traversal");
+                break;
             }
             std::path::Component::RootDir | std::path::Component::Prefix(_) => {
-                return Err("relative path must stay under the mirror root".to_string());
+                err_msg = Some("relative path must stay under the mirror root");
+                break;
             }
         }
+    }
+    if let Some(msg) = err_msg {
+        return Err(msg.to_string());
     }
     if cleaned.as_os_str().is_empty() {
         return Err("relative path has no normal components".to_string());
@@ -881,8 +887,9 @@ pub(crate) fn doctor_file_blake3(path: &Path) -> io::Result<String> {
 pub(crate) fn doctor_raw_mirror_invalid_manifest_report(
     data_dir: &Path,
     manifest_path: &Path,
-    reason: String,
+    reason: impl Into<String>,
 ) -> DoctorRawMirrorManifestReport {
+    let reason = reason.into();
     DoctorRawMirrorManifestReport {
         manifest_id: "invalid".to_string(),
         manifest_path: manifest_path.display().to_string(),
@@ -1026,7 +1033,7 @@ pub(crate) fn doctor_verify_raw_mirror_manifest(
         Ok(path) => path,
         Err(reason) => return invalid(reason),
     };
-    let blob_path = root.join(relative_blob);
+    let blob_path = root.join(relative_blob); // ubs:ignore[rust.security.path-traversal] — validated by doctor_raw_mirror_validate_relative_path above
     let blob_path_string = blob_path.display().to_string();
     if std::fs::symlink_metadata(manifest_path)
         .map(|metadata| metadata.file_type().is_symlink())

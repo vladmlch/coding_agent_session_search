@@ -37,14 +37,14 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 #[derive(Debug, Default)]
-pub(crate) struct DoctorRawMirrorSourceAmplificationAccumulator {
-    pub(crate) providers: BTreeSet<String>,
-    pub(crate) source_id: String,
-    pub(crate) original_path: String,
-    pub(crate) redacted_original_path: String,
-    pub(crate) original_path_blake3: String,
-    pub(crate) snapshots: BTreeSet<String>,
-    pub(crate) blobs: BTreeMap<String, u64>,
+pub(crate) struct DoctorRawMirrorSourceAmplificationAccumulator<'a> {
+    pub(crate) providers: BTreeSet<&'a str>,
+    pub(crate) source_id: &'a str,
+    pub(crate) original_path: &'a str,
+    pub(crate) redacted_original_path: &'a str,
+    pub(crate) original_path_blake3: &'a str,
+    pub(crate) snapshots: BTreeSet<&'a str>,
+    pub(crate) blobs: BTreeMap<&'a str, u64>,
 }
 
 #[derive(Debug)]
@@ -88,7 +88,7 @@ pub(crate) fn doctor_raw_mirror_source_amplification_reports_from_versions(
     ratio_warn_threshold_milli: u64,
     excess_warn_threshold_bytes: u64,
 ) -> Vec<DoctorRawMirrorSourceAmplificationReport> {
-    let mut sources: BTreeMap<(String, String), DoctorRawMirrorSourceAmplificationAccumulator> =
+    let mut sources: BTreeMap<(&str, &str), DoctorRawMirrorSourceAmplificationAccumulator<'_>> =
         BTreeMap::new();
     for version in versions {
         // `original_path` is meaningful only on the machine that captured a
@@ -108,27 +108,27 @@ pub(crate) fn doctor_raw_mirror_source_amplification_reports_from_versions(
             continue;
         }
         let key = (
-            version.source_id.clone(),
-            version.original_path_blake3.clone(),
+            version.source_id.as_str(),
+            version.original_path_blake3.as_str(),
         );
         let source =
             sources
                 .entry(key)
                 .or_insert_with(|| DoctorRawMirrorSourceAmplificationAccumulator {
                     providers: BTreeSet::new(),
-                    source_id: version.source_id.clone(),
-                    original_path: version.original_path.clone(),
-                    redacted_original_path: version.redacted_original_path.clone(),
-                    original_path_blake3: version.original_path_blake3.clone(),
+                    source_id: version.source_id.as_str(),
+                    original_path: version.original_path.as_str(),
+                    redacted_original_path: version.redacted_original_path.as_str(),
+                    original_path_blake3: version.original_path_blake3.as_str(),
                     snapshots: BTreeSet::new(),
                     blobs: BTreeMap::new(),
                 });
-        source.providers.insert(version.provider.clone());
-        source.snapshots.insert(version.snapshot_blake3.clone());
+        source.providers.insert(version.provider.as_str());
+        source.snapshots.insert(version.snapshot_blake3.as_str());
         for (blob_blake3, blob_size_bytes) in &version.stored_blobs {
             source
                 .blobs
-                .entry(blob_blake3.clone())
+                .entry(blob_blake3.as_str())
                 .or_insert(*blob_size_bytes);
         }
     }
@@ -139,7 +139,7 @@ pub(crate) fn doctor_raw_mirror_source_amplification_reports_from_versions(
         if version_count < 2 {
             continue;
         }
-        let current_source_size_bytes = match std::fs::symlink_metadata(&source.original_path) {
+        let current_source_size_bytes = match std::fs::symlink_metadata(source.original_path) {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
                 metadata.len()
             }
@@ -161,10 +161,10 @@ pub(crate) fn doctor_raw_mirror_source_amplification_reports_from_versions(
         }
         reports.push(DoctorRawMirrorSourceAmplificationReport {
             evidence_kind,
-            providers: source.providers.into_iter().collect(),
-            source_id: source.source_id,
-            redacted_original_path: source.redacted_original_path,
-            original_path_blake3: source.original_path_blake3,
+            providers: source.providers.into_iter().map(str::to_string).collect(),
+            source_id: source.source_id.to_string(),
+            redacted_original_path: source.redacted_original_path.to_string(),
+            original_path_blake3: source.original_path_blake3.to_string(),
             version_count,
             referenced_blob_bytes,
             current_source_size_bytes,
@@ -215,7 +215,7 @@ pub(crate) fn doctor_raw_mirror_amplification_version_from_manifest_path(
     }
     let relative_blob =
         doctor_raw_mirror_validate_relative_path(&manifest.blob_relative_path).ok()?;
-    let blob_path = root.join(relative_blob);
+    let blob_path = root.join(relative_blob); // ubs:ignore[rust.security.path-traversal] — validated by doctor_raw_mirror_validate_relative_path above
     if blob_path
         .parent()
         .is_none_or(|parent| existing_path_has_symlink_below_root(parent, root))
@@ -312,7 +312,7 @@ pub(crate) fn doctor_raw_mirror_amplification_version_from_manifest_path(
             }
             let relative_chunk =
                 doctor_raw_mirror_validate_relative_path(chunk_relative_path).ok()?;
-            let chunk_path = root.join(relative_chunk);
+            let chunk_path = root.join(relative_chunk); // ubs:ignore[rust.security.path-traversal] — validated by doctor_raw_mirror_validate_relative_path above
             if chunk_path
                 .parent()
                 .is_none_or(|parent| existing_path_has_symlink_below_root(parent, root))
@@ -791,7 +791,7 @@ pub(crate) fn collect_doctor_raw_mirror_report_with_thresholds_and_mode(
             doctor_raw_mirror_invalid_manifest_report(
                 data_dir,
                 &path,
-                "manifest path is a symlink".to_string(),
+                "manifest path is a symlink",
             )
         } else if std::fs::symlink_metadata(&path)
             .is_ok_and(|metadata| metadata.len() > DOCTOR_RAW_MIRROR_MANIFEST_MAX_BYTES)
@@ -815,7 +815,7 @@ pub(crate) fn collect_doctor_raw_mirror_report_with_thresholds_and_mode(
                 None => doctor_raw_mirror_invalid_manifest_report(
                     data_dir,
                     &path,
-                    "manifest is not parseable JSON".to_string(),
+                    "manifest is not parseable JSON",
                 ),
             }
         };
