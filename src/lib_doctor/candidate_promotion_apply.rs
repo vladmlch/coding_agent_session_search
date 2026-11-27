@@ -747,6 +747,10 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
         }
     }
 
+    if cross_device_fallback {
+        receipt.fallback_kind = Some("cross_device_copy_replace".to_string());
+    }
+
     if receipt.status != DoctorActionStatus::Failed {
         receipt.affected_bytes = planned_bytes;
         receipt.precondition_checks.push(format!(
@@ -789,9 +793,6 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
                     .precondition_checks
                     .push("stale_live_shm_removed_after_backup:-shm".to_string());
             }
-        }
-        if cross_device_fallback {
-            receipt.fallback_kind = Some("cross_device_copy_replace".to_string());
         }
         if receipt.status != DoctorActionStatus::Failed
             && let Err(err) =
