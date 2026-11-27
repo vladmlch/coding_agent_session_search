@@ -2,9 +2,9 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-
+#[allow(unused_imports)]
 pub use crate::search_defaults::{SearchMaintenanceJobKind, SearchMaintenanceMode};
+#[allow(unused_imports)]
 pub use crate::storage::run_lock::{
     clear_index_run_lock_metadata_sidecar, index_run_lock_metadata_sidecar_path,
     index_run_lock_path, windows_lock_conflict, write_index_run_lock_metadata_sidecar,

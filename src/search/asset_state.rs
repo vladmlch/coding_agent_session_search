@@ -37,6 +37,7 @@ pub(crate) use lexical::{
 };
 #[cfg(test)]
 use maintenance::maintenance_stall_age_ms;
+#[allow(unused_imports)]
 pub(crate) use maintenance::{
     SearchMaintenanceJobKind, SearchMaintenanceMode, SearchMaintenanceSnapshot,
     clear_index_run_lock_metadata_sidecar, index_run_lock_metadata_sidecar_path,

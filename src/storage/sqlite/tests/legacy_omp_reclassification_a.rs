@@ -3,7 +3,6 @@ use crate::franken_sync::SqliteValue;
 use crate::franken_sync::compat::{ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt};
 use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use crate::sources::provenance::LOCAL_SOURCE_ID;
-use anyhow::Result;
 use serial_test::serial;
 use tempfile::TempDir;
 

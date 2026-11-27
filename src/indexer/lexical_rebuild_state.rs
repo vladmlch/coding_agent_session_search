@@ -344,6 +344,7 @@ impl LexicalRebuildState {
             .unwrap_or(self.processed_conversations)
     }
 
+    #[allow(dead_code)]
     pub(in crate::indexer) fn reported_committed_conversation_id(&self) -> Option<i64> {
         self.pending
             .as_ref()

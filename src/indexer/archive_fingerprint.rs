@@ -6,6 +6,7 @@ use crate::franken_sync::compat::{
 #[cfg(test)]
 use crate::storage::sqlite::{DailyStatsRebuildResult, StatsAggregator, StatsDelta};
 
+#[allow(unused_imports)]
 pub(crate) use crate::storage::archive_fingerprint::{
     ARCHIVE_FINGERPRINT_CACHE_FILE, ARCHIVE_FINGERPRINT_CACHE_SCHEMA_VERSION,
     ArchiveFingerprintCache, ArchivePhysicalIdentity, lexical_storage_fingerprint_for_db,
@@ -14,6 +15,18 @@ pub(crate) use crate::storage::archive_fingerprint::{
     lexical_storage_fingerprint_for_storage, lexical_storage_physical_identity,
     load_lexical_rebuild_checkpoint, prime_archive_fingerprint_cache_from_completed_checkpoint,
     write_archive_fingerprint_cache_best_effort, write_archive_fingerprint_cache_for_identity,
+};
+
+const _: fn() = || {
+    let _ = (
+        super::lexical_storage_fingerprint_for_db_cached,
+        super::lexical_storage_fingerprint_for_db_cached_readonly,
+        super::lexical_storage_fingerprint_for_db_strict,
+        super::write_archive_fingerprint_cache_best_effort,
+        super::LEXICAL_REBUILD_PAGE_SIZE_PUBLIC,
+        super::lexical_rebuild_storage_fingerprint,
+    );
+    let _: Option<super::LexicalRebuildCheckpoint> = None;
 };
 
 pub(crate) fn load_active_lexical_rebuild_pipeline_runtime(
