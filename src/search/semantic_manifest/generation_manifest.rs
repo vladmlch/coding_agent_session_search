@@ -425,6 +425,7 @@ impl SemanticGenerationManifestV1 {
         prepare_generation_directory(data_dir, &generation_dir)?;
         self.validate_artifacts_on_disk(data_dir, true)?;
         after_checkpoint(ManifestSealCheckpoint::ArtifactDurabilityEstablished)?;
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time SEMANTIC_GENERATION_MANIFEST_FILENAME constant
         let manifest_path = generation_dir.join(SEMANTIC_GENERATION_MANIFEST_FILENAME);
         reject_symlink_entry(&manifest_path, "generation manifest")?;
         let bytes = self.canonical_bytes()?;
@@ -548,6 +549,7 @@ impl SemanticGenerationManifestV1 {
                         reason,
                     }
                 })?;
+            // ubs:ignore[rust.security.path-traversal] — validated by normalized_manifest_relative_path
             let joined = generation_dir.join(relative);
             reject_existing_path_links(&generation_dir, &joined).map_err(|error| {
                 SemanticGenerationError::ArtifactIo {

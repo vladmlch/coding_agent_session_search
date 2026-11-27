@@ -396,6 +396,7 @@ pub const BOOKMARKS_DB_FILE: &str = "bookmarks.db";
 
 /// Location of the bookmarks database inside a specific data directory.
 pub fn bookmarks_path_in(data_dir: &Path) -> PathBuf {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time constant filename BOOKMARKS_DB_FILE
     data_dir.join(BOOKMARKS_DB_FILE)
 }
 

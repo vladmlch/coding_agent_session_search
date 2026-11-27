@@ -10,6 +10,8 @@ use crate::robot_budget_envelope::RobotBudget;
 use crate::storage::sqlite::FrankenStorage;
 use crate::{CliError, CliErrorKind, CliResult, RobotFormat, ViewWindow};
 use serde_json::{Value, json};
+use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
@@ -372,7 +374,8 @@ fn run(
         let mut output = format!("Archived messages in {}\n", request.path.display());
         for message in lines.as_array().expect("message projection is an array") {
             check_deadline(&budget)?;
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "{} M{} {}\n{}\n\n",
                 if message["is_target"] == true {
                     ">>>"
@@ -382,7 +385,7 @@ fn run(
                 message["message_index"],
                 message["role"].as_str().unwrap_or("unknown"),
                 message["content"].as_str().unwrap_or_default(),
-            ));
+            );
         }
         check_deadline(&budget)?;
         Ok(output)
@@ -714,12 +717,13 @@ fn run_physical(
         for entry in lines.as_array().expect("physical projection is an array") {
             check_deadline(&budget)?;
             let content = entry["content"].as_str().unwrap_or_default();
-            let display = if expand {
-                content.chars().take(300).collect::<String>()
+            let display: Cow<'_, str> = if expand {
+                Cow::Owned(content.chars().take(300).collect::<String>())
             } else {
-                content.to_string()
+                Cow::Borrowed(content)
             };
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "{} L{} {}\n{}\n\n",
                 if entry["is_target"] == true {
                     ">>>"
@@ -729,7 +733,7 @@ fn run_physical(
                 entry["line"],
                 entry["role"].as_str().unwrap_or_default(),
                 display,
-            ));
+            );
         }
         check_deadline(&budget)?;
         Ok(output)

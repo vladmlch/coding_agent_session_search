@@ -639,7 +639,7 @@ impl FrankenStorage {
                     if let Some(path) = &candidate.source_path {
                         *selected_by_path.entry(path.clone()).or_default() += 1;
                         if report.sample_source_paths.len() < 20 {
-                            report.sample_source_paths.push(path.clone());
+                            report.sample_source_paths.push(path.clone()); // ubs:ignore[rust.security.path-traversal] — Vec::push of metadata string, not PathBuf::push
                         }
                     }
                     if report.sample_sessions.len() < 20 {

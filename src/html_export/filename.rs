@@ -72,8 +72,8 @@ pub struct FilenameMetadata {
 /// # Examples
 /// ```
 /// use coding_agent_search::html_export::normalize_topic;
-/// assert_eq!(normalize_topic("My Cool Topic"), "my_cool_topic");
-/// assert_eq!(normalize_topic("HTML Export Feature"), "html_export_feature");
+/// assert_eq!(normalize_topic("My Cool Topic"), "my_cool_topic"); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(normalize_topic("HTML Export Feature"), "html_export_feature"); // ubs:ignore[rust.panic.assert-macros] — doctest example
 /// ```
 pub fn normalize_topic(topic: &str) -> String {
     sanitize(topic)

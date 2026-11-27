@@ -612,7 +612,7 @@ pub(super) fn parse_env_regex_list(var: &str) -> Result<Vec<String>> {
 pub(super) fn compile_regexes(patterns: &[String], label: &str) -> Result<Vec<Regex>> {
     let mut compiled = Vec::new();
     for pat in patterns {
-        let regex = Regex::new(pat).with_context(|| format!("Invalid {} regex: {}", label, pat))?;
+        let regex = Regex::new(pat).with_context(|| format!("Invalid {} regex: {}", label, pat))?; // ubs:ignore[rust.perf.regex-in-loop] — one-time initialization compilation of caller-supplied pattern list
         compiled.push(regex);
     }
     Ok(compiled)

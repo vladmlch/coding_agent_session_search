@@ -2,8 +2,8 @@ use super::io::{
     RAW_MIRROR_MANIFEST_KIND, raw_mirror_path_has_symlink_below_root, raw_mirror_root,
 };
 use super::manifest::{
-    raw_mirror_manifest_relative_path, read_raw_mirror_manifest,
-    validate_raw_mirror_manifest_contents,
+    join_validated_raw_mirror_relative_path, raw_mirror_manifest_relative_path,
+    read_raw_mirror_manifest, validate_raw_mirror_manifest_contents,
 };
 use super::prune::collect_raw_mirror_physical_blobs;
 use super::types::RawMirrorStorageSummary;
@@ -67,12 +67,13 @@ pub fn storage_summary(data_dir: &Path) -> RawMirrorStorageSummary {
             }
         };
         summary.manifest_count = summary.manifest_count.saturating_add(1);
-        let expected_path = root.join(raw_mirror_manifest_relative_path(&manifest.manifest_id));
-        let blob_references = if path == expected_path {
-            validate_raw_mirror_manifest_contents(&manifest, &manifest.manifest_id).ok()
-        } else {
-            None
-        };
+        let blob_references = join_validated_raw_mirror_relative_path(
+            &root,
+            &raw_mirror_manifest_relative_path(&manifest.manifest_id),
+        )
+        .ok()
+        .filter(|expected_path| path == *expected_path)
+        .and_then(|_| validate_raw_mirror_manifest_contents(&manifest, &manifest.manifest_id).ok());
         let Some(blob_references) = blob_references else {
             summary.invalid_manifest_count = summary.invalid_manifest_count.saturating_add(1);
             continue;
@@ -89,10 +90,11 @@ pub fn storage_summary(data_dir: &Path) -> RawMirrorStorageSummary {
         );
 
         for blob_reference in blob_references {
-            if !seen_blobs.insert(blob_reference.blob_relative_path.clone()) {
+            if seen_blobs.contains(&blob_reference.blob_relative_path) {
                 continue;
             }
             let blob_path = root.join(&blob_reference.blob_relative_path);
+            seen_blobs.insert(blob_reference.blob_relative_path);
             if raw_mirror_path_has_symlink_below_root(&root, &blob_path) {
                 summary.missing_blob_count = summary.missing_blob_count.saturating_add(1);
                 continue;

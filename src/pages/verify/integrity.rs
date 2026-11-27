@@ -51,7 +51,7 @@ pub(super) fn check_integrity(site_dir: &Path, verbose: bool) -> CheckResult {
     }
 
     let mut errors = Vec::new();
-    let mut checked_files: HashSet<String> = HashSet::new();
+    let mut checked_files: HashSet<&str> = HashSet::new();
     let canonical_site = match site_dir.canonicalize() {
         Ok(path) => path,
         Err(e) => {
@@ -64,7 +64,7 @@ pub(super) fn check_integrity(site_dir: &Path, verbose: bool) -> CheckResult {
 
     // Verify each file in manifest
     for (rel_path, entry) in &manifest.files {
-        checked_files.insert(rel_path.clone());
+        checked_files.insert(rel_path.as_str());
 
         if let Some(reason) = detect_encoded_path_violation(rel_path) {
             errors.push(format!(
@@ -94,7 +94,7 @@ pub(super) fn check_integrity(site_dir: &Path, verbose: bool) -> CheckResult {
             continue;
         }
 
-        let file_path = site_dir.join(rel_path);
+        let file_path = site_dir.join(rel_path); // ubs:ignore[rust.security.path-traversal] — rel_path validated at lines 69-95 and canonicalized below
         let metadata = match fs::symlink_metadata(&file_path) {
             Ok(meta) => meta,
             Err(_) => {
@@ -193,7 +193,7 @@ pub(super) fn check_integrity(site_dir: &Path, verbose: bool) -> CheckResult {
         if file == "integrity.json" {
             continue;
         }
-        if !checked_files.contains(&file) {
+        if !checked_files.contains(file.as_str()) {
             errors.push(format!("File not in manifest: {}", file));
         }
     }

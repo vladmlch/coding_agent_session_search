@@ -491,7 +491,7 @@ impl FrankenStorage {
                 );
 
                 let conv_day_id = day_id;
-                let mut session_model_family = String::from("unknown");
+                let mut session_model_family: Option<String> = None;
                 let mut has_any_tokens = false;
 
                 // Local fix (review 2026-11-02, U1): count a Claude reply once.
@@ -573,7 +573,7 @@ impl FrankenStorage {
                         .unwrap_or_else(|| "unknown".into());
 
                     if model_family != "unknown" {
-                        session_model_family = model_family.clone();
+                        session_model_family = Some(model_family.clone());
                     }
 
                     let estimated_cost = pricing_table.compute_cost(
@@ -672,7 +672,7 @@ impl FrankenStorage {
                         &conv.agent_slug,
                         &conv.source_id,
                         conv_day_id,
-                        &session_model_family,
+                        session_model_family.as_deref().unwrap_or("unknown"),
                     );
                 }
 
@@ -1120,7 +1120,7 @@ pub(super) fn ensure_sources_in_tx(
             conversation_origin_kind(conv),
             conv.origin_host.as_deref(),
         );
-        if !seen.insert(source_id.clone()) {
+        if seen.contains(&source_id) {
             continue;
         }
         let exists: i64 = tx.query_row_map(
@@ -1149,6 +1149,7 @@ pub(super) fn ensure_sources_in_tx(
                 ],
             )?;
         }
+        seen.insert(source_id);
     }
     Ok(())
 }

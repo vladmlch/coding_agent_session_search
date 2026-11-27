@@ -1018,6 +1018,7 @@ pub(in crate::indexer) fn connector_local_scan_since_ts_map<F>(
                 .get(&workspace_policy_key)
                 .map(String::as_str)
                 .unwrap_or_default();
+            // ubs:ignore[rust.security.constant-time-compare] — compares non-secret workspace policy digest
             let local_since_ts = if saved_workspace_policy != workspace_policy.signature {
                 // A removed or changed exclusion can admit sessions older than
                 // the previous successful scan. Revisit once, then save the new

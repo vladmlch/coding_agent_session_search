@@ -161,6 +161,7 @@ impl TantivyIndex {
                         continue;
                     }
                     let relative_path = std::path::PathBuf::from(name);
+                    // ubs:ignore[rust.security.path-traversal] — single filename component from DirEntry::file_name
                     let source_path = input_path.join(&relative_path);
                     if !source_path.is_file() {
                         continue;
@@ -244,6 +245,17 @@ fn link_or_copy_searchable_index_file(
     output_path: &Path,
     relative_path: &Path,
 ) -> Result<()> {
+    let mut components = relative_path.components();
+    if !matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        return Err(anyhow::anyhow!(
+            "assembled Tantivy relative path must be a single normal filename: {}",
+            relative_path.display()
+        ));
+    }
+    // ubs:ignore[rust.security.path-traversal] — single normal component validated above
     let destination_path = output_path.join(relative_path);
     if destination_path.exists() {
         return Err(anyhow::anyhow!(

@@ -180,8 +180,12 @@ where
                 ),
             });
             let local_origin = Origin::local();
-            let mut batch_sender =
-                StreamingBatchSender::new(&tx, config.flow_limiter.clone(), name, is_discovered);
+            let mut batch_sender = StreamingBatchSender::new(
+                &tx,
+                Arc::clone(&config.flow_limiter),
+                name,
+                is_discovered,
+            );
             let fallback_roots: Vec<ScanRoot> = match &override_roots {
                 Some(roots) => roots.clone(),
                 None => detect
@@ -320,8 +324,12 @@ where
                 vec![root.clone()],
                 root_since_ts,
             ));
-            let mut batch_sender =
-                StreamingBatchSender::new(&tx, config.flow_limiter.clone(), name, is_discovered);
+            let mut batch_sender = StreamingBatchSender::new(
+                &tx,
+                Arc::clone(&config.flow_limiter),
+                name,
+                is_discovered,
+            );
             let (mut ingest_diagnostics, preparse_active_source_skipped) =
                 capture_connector_sources_before_parse(
                     conn.as_ref(),

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
@@ -54,7 +55,7 @@ pub(super) struct NodeResult {
     pub(super) possible: BTreeSet<String>,
     pub(super) unseen: bool,
     pub(super) witnesses: Vec<(String, String)>, // (region key, branch id)
-    pub(super) reasons: BTreeSet<String>,        // "field:state:reason"
+    pub(super) reasons: BTreeSet<Cow<'static, str>>, // "field:state:reason"
 }
 
 impl NodeResult {
@@ -67,7 +68,7 @@ impl NodeResult {
             Truth::False
         }
     }
-    pub(super) fn constant(truth: Truth, reasons: BTreeSet<String>) -> Self {
+    pub(super) fn constant(truth: Truth, reasons: BTreeSet<Cow<'static, str>>) -> Self {
         match truth {
             Truth::False => Self::default(),
             _ => Self {
@@ -293,9 +294,9 @@ pub(super) fn coverage_field(field: &str) -> &str {
         .unwrap_or(field)
 }
 
-fn missing_reason(session: &SessionCtx, field: &str, fallback: &str) -> String {
+fn missing_reason(session: &SessionCtx, field: &str, fallback: &str) -> Cow<'static, str> {
     let state = session.coverage_of(coverage_field(field));
-    format!("{field}:{state}:{fallback}")
+    Cow::Owned(format!("{field}:{state}:{fallback}"))
 }
 
 /// `_block_value`: predicate truth over ONE region.
@@ -783,10 +784,10 @@ pub(super) fn eval_literal(
     session: &SessionCtx,
     connection: &Connection,
     stats: &mut HydrateStats,
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
     quill_possible: Option<&HashSet<i64>>,
 ) -> Result<NodeResult> {
-    let matcher = &matchers[&(value.to_owned(), exact)];
+    let matcher = &matchers[usize::from(exact)][value];
     let mut out = NodeResult::default();
     if matcher.never {
         return Ok(out);
@@ -820,7 +821,7 @@ pub(super) fn eval_literal(
             if stats.ungated_chat_hydrations >= MAX_UNGATED_CHAT_HYDRATIONS {
                 out.unseen = true;
                 out.reasons
-                    .insert("literal:chat_verification_budget_exceeded".to_owned());
+                    .insert(Cow::Borrowed("literal:chat_verification_budget_exceeded"));
                 continue;
             }
             stats.ungated_chat_hydrations += 1;
@@ -848,7 +849,7 @@ pub(super) fn eval_literal(
                 } else {
                     out.unseen = true;
                     out.reasons
-                        .insert("literal:verification_bytes_budget_exceeded".to_owned());
+                        .insert(Cow::Borrowed("literal:verification_bytes_budget_exceeded"));
                 }
             }
             // A Quill-verified hit whose COMPLETE evidence cannot
@@ -902,7 +903,7 @@ pub(super) fn eval_node(
     session: &SessionCtx,
     connection: &Connection,
     stats: &mut HydrateStats,
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
     seek: Option<&BlockSeekEvidence>,
 ) -> Result<NodeResult> {

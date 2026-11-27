@@ -150,6 +150,7 @@ pub(in crate::indexer) fn write_archive_fingerprint_cache_for_identity(
     if !fingerprint.starts_with("content-v1:") || !cache_dir.is_dir() {
         return;
     }
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time ARCHIVE_FINGERPRINT_CACHE_FILE constant
     let cache_path = cache_dir.join(ARCHIVE_FINGERPRINT_CACHE_FILE);
     let payload = ArchiveFingerprintCache {
         schema_version: ARCHIVE_FINGERPRINT_CACHE_SCHEMA_VERSION,
@@ -213,6 +214,7 @@ pub(in crate::indexer) fn lexical_storage_fingerprint_for_db_disk_cached(
     identity: &ArchivePhysicalIdentity,
     cache_dir: &Path,
 ) -> Result<String> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time ARCHIVE_FINGERPRINT_CACHE_FILE constant
     let cache_path = cache_dir.join(ARCHIVE_FINGERPRINT_CACHE_FILE);
     if let Ok(raw) = fs::read(&cache_path)
         && let Ok(cached) = serde_json::from_slice::<ArchiveFingerprintCache>(&raw)
@@ -293,6 +295,7 @@ pub(crate) fn lexical_storage_fingerprint_for_db_cached_readonly(
     index_path: &Path,
 ) -> Option<String> {
     let identity = lexical_storage_physical_identity(db_path)?;
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time ARCHIVE_FINGERPRINT_CACHE_FILE constant
     let cache_path = index_path.join(ARCHIVE_FINGERPRINT_CACHE_FILE);
     let raw = fs::read(cache_path).ok()?;
     let cached = serde_json::from_slice::<ArchiveFingerprintCache>(&raw).ok()?;

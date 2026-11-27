@@ -454,14 +454,12 @@ impl Embedder for FastEmbedder {
     }
 
     fn embed_batch_sync(&self, texts: &[&str]) -> EmbedderResult<Vec<Vec<f32>>> {
-        for text in texts {
-            if text.is_empty() {
-                return Err(EmbedderError::InvalidConfig {
-                    field: "input_text".to_string(),
-                    value: "(empty)".to_string(),
-                    reason: "empty text in batch".to_string(),
-                });
-            }
+        if texts.iter().any(|text| text.is_empty()) {
+            return Err(EmbedderError::InvalidConfig {
+                field: "input_text".to_string(),
+                value: "(empty)".to_string(),
+                reason: "empty text in batch".to_string(),
+            });
         }
         if texts.is_empty() {
             return Ok(Vec::new());

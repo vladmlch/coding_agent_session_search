@@ -52,7 +52,9 @@ struct IdInfo {
     file_id: [u8; 16],
 }
 
+// ubs:ignore[rust.panic.assert-macros] — compile-time const assertion
 const _: () = assert!(std::mem::size_of::<BasicInfo>() == 40);
+// ubs:ignore[rust.panic.assert-macros] — compile-time const assertion
 const _: () = assert!(std::mem::size_of::<IdInfo>() == 24);
 
 // SAFETY: exact Win32 ABI: HANDLE/LPVOID are pointers, the information class

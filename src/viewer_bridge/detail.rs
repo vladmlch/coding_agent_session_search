@@ -33,6 +33,8 @@
 //!   is never served against a generation the client did not see. A
 //!   per-session detail revision lands with the Task-8 projection.
 
+use std::borrow::Cow;
+
 use anyhow::Result;
 use coding_agent_search::franken_sync::compat::{RowExt, param_slice_to_values};
 use coding_agent_search::franken_sync::{Connection, params};
@@ -1003,9 +1005,9 @@ fn metric_quality(
         sources.insert(
             key.to_owned(),
             json!(if facts_present {
-                format!("viewer_session_facts.{column}")
+                Cow::Owned(format!("viewer_session_facts.{column}"))
             } else {
-                "unavailable:facts_not_persisted".to_owned()
+                Cow::Borrowed("unavailable:facts_not_persisted")
             }),
         );
     }
@@ -1071,9 +1073,9 @@ fn metric_quality(
         sources.insert(
             key.to_owned(),
             json!(if facts_present {
-                format!("viewer_session_metrics.{column}")
+                Cow::Owned(format!("viewer_session_metrics.{column}"))
             } else {
-                "unavailable:facts_not_persisted".to_owned()
+                Cow::Borrowed("unavailable:facts_not_persisted")
             }),
         );
     }

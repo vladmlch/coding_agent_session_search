@@ -143,6 +143,7 @@ fn measured_usage_cache() -> std::sync::MutexGuard<'static, HashMap<PathBuf, Mea
 const USAGE_GENERATION_FILE: &str = ".usage-generation";
 
 fn read_usage_generation(root: &Path) -> Result<u64> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time USAGE_GENERATION_FILE constant
     let path = root.join(USAGE_GENERATION_FILE);
     let generation = match raw_mirror_symlink_metadata(&path) {
         Ok(metadata) => {
@@ -188,6 +189,7 @@ fn make_usage_cache_room(cache: &mut HashMap<PathBuf, MeasuredUsage>, root: &Pat
 /// All cooperating writers must use this protocol; older writers cannot
 /// invalidate another process's in-memory inventory.
 pub(super) fn note_mutation(root: &Path) -> Result<()> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time USAGE_GENERATION_FILE constant
     let path = root.join(USAGE_GENERATION_FILE);
     let previous = read_usage_generation(root)?;
     let next = previous + 1;
@@ -722,6 +724,7 @@ pub(crate) fn capture(
         &record.blob_blake3,
     );
     let relative = raw_mirror_manifest_relative_path(&id);
+    // ubs:ignore[rust.security.path-traversal] — relative from raw_mirror_manifest_relative_path on blake3-hex id
     let path = root.join(&relative);
     let now = now_ms();
     let mut manifest = RawMirrorManifestFile {
@@ -796,10 +799,10 @@ pub(crate) fn capture(
     }
     let mut already_present = existing.is_some();
     for file in prepared.files {
-        let target = root.join(
-            raw_mirror_blob_relative_path(&file.blob_blake3)
-                .ok_or_else(|| anyhow!("invalid staged digest"))?,
-        );
+        let blob_relative = raw_mirror_blob_relative_path(&file.blob_blake3)
+            .ok_or_else(|| anyhow!("invalid staged digest"))?;
+        // ubs:ignore[rust.security.path-traversal] — blob_relative validated to 64-hex path by raw_mirror_blob_relative_path
+        let target = root.join(blob_relative);
         already_present &=
             publish_content_addressed_temp(&root, &file.temp_path, &target, &file.blob_blake3)?;
     }

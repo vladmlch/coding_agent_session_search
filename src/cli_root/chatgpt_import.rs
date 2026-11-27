@@ -345,11 +345,13 @@ pub(crate) fn register_import_scan_root_in(
         if source.paths.iter().any(|existing| existing == &path_str) {
             return Ok(ImportScanRootRegistration::AlreadyRegistered);
         }
+        // ubs:ignore[rust.security.path-traversal] — Vec<String>::push, not PathBuf::push
         source.paths.push(path_str);
         source.validate()?;
         Ok(ImportScanRootRegistration::PathAdded)
     } else {
         let mut source = SourceDefinition::local(source_name);
+        // ubs:ignore[rust.security.path-traversal] — Vec<String>::push, not PathBuf::push
         source.paths.push(path_str);
         config.add_source(source)?;
         Ok(ImportScanRootRegistration::Created)

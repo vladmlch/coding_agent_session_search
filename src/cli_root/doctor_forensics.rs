@@ -976,6 +976,7 @@ pub(crate) fn doctor_forensic_write_json_artifact(
             relative_path.display()
         ));
     }
+    // ubs:ignore[rust.security.path-traversal] — relative_path validated by doctor_forensic_relative_path_is_safe above
     let target_path = bundle_dir.join(relative_path);
     let Some(target_parent) = target_path.parent() else {
         return Err(format!(
@@ -1349,7 +1350,7 @@ pub(crate) fn capture_doctor_forensic_bundle(
     }
 
     let manifest_relative_path = Path::new("manifest.json");
-    let manifest_path = bundle_dir.join(manifest_relative_path);
+    let manifest_path = bundle_dir.join("manifest.json");
     let manifest_value = serde_json::json!({
         "schema_version": 1,
         "bundle_kind": "cass_doctor_forensic_bundle_v1",

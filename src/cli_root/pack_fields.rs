@@ -110,29 +110,10 @@ pub(crate) fn expand_pack_field_mask(fields: &[String]) -> CliResult<Option<Pack
                 set.extend(PACK_TOP_LEVEL_FIELDS.iter().copied().map(str::to_string));
             }
             "minimal" => {
-                set.extend([
-                    "schema_version".to_string(),
-                    "query.text".to_string(),
-                    "realized.search_mode".to_string(),
-                    "pack.answer_outline".to_string(),
-                    "evidence[].citation".to_string(),
-                    "evidence[].excerpt".to_string(),
-                    "omitted.count".to_string(),
-                    "privacy.redaction_applied".to_string(),
-                ]);
+                set.extend(PACK_MINIMAL_FIELDS.iter().copied().map(str::to_string));
             }
             "summary" => {
-                set.extend([
-                    "schema_version".to_string(),
-                    "_meta".to_string(),
-                    "limits".to_string(),
-                    "realized".to_string(),
-                    "health".to_string(),
-                    "freshness".to_string(),
-                    "pack".to_string(),
-                    "privacy".to_string(),
-                    "warnings".to_string(),
-                ]);
+                set.extend(PACK_SUMMARY_FIELDS.iter().copied().map(str::to_string));
             }
             "meta" => {
                 set.insert("_meta".to_string());
@@ -178,6 +159,29 @@ pub(crate) const PACK_TOP_LEVEL_FIELDS: &[&str] = &[
     "pack",
     "evidence",
     "omitted",
+    "privacy",
+    "warnings",
+];
+
+const PACK_MINIMAL_FIELDS: &[&str] = &[
+    "schema_version",
+    "query.text",
+    "realized.search_mode",
+    "pack.answer_outline",
+    "evidence[].citation",
+    "evidence[].excerpt",
+    "omitted.count",
+    "privacy.redaction_applied",
+];
+
+const PACK_SUMMARY_FIELDS: &[&str] = &[
+    "schema_version",
+    "_meta",
+    "limits",
+    "realized",
+    "health",
+    "freshness",
+    "pack",
     "privacy",
     "warnings",
 ];

@@ -191,7 +191,7 @@ pub(in crate::indexer) fn spawn_lexical_rebuild_shard_builder_workers(
                                     &work.packets,
                                     lexical_rebuild_worker_pool.as_deref(),
                                     Some(work.writer_parallelism),
-                                    heartbeat.clone(),
+                                    heartbeat.as_ref().map(Arc::clone),
                                 )
                             },
                         )) {

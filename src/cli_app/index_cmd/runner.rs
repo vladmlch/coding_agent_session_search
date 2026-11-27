@@ -638,9 +638,9 @@ pub(crate) fn run_index_with_data(
 
             let msg = if phase == indexer::INDEX_PHASE_SCANNING {
                 let scan_progress = if total > 0 {
-                    format!("{current}/{total} connectors")
+                    std::borrow::Cow::Owned(format!("{current}/{total} connectors"))
                 } else {
-                    "scanning connectors".to_string()
+                    std::borrow::Cow::Borrowed("scanning connectors")
                 };
                 if agents > 0 {
                     let names_preview = if agent_names.len() <= 3 {

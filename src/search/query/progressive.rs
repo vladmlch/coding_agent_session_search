@@ -7,6 +7,7 @@ use frankensearch::{
     core::LexicalRead as FsLexicalRead,
 };
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -575,7 +576,7 @@ impl SearchClient {
         let mut seen_exact = HashSet::new();
         let mut exact_query_keys = Vec::new();
         let mut seen_fallback = HashSet::new();
-        let mut fallback_query_keys = Vec::new();
+        let mut fallback_query_keys: Vec<ProgressiveFallbackQueryKey> = Vec::new();
         for (source_id, source_path, conversation_id, _title, idx, _created_at, _content_hash) in
             lookup_keys.iter().flatten()
         {
@@ -584,12 +585,8 @@ impl SearchClient {
                 if seen_exact.insert(query_key) {
                     exact_query_keys.push(query_key);
                 }
-            } else {
-                let query_key: ProgressiveFallbackQueryKey =
-                    (source_id.clone(), source_path.clone(), *idx);
-                if seen_fallback.insert(query_key.clone()) {
-                    fallback_query_keys.push(query_key);
-                }
+            } else if seen_fallback.insert((source_id.as_str(), source_path.as_str(), *idx)) {
+                fallback_query_keys.push((source_id.clone(), source_path.clone(), *idx));
             }
         }
 
@@ -607,8 +604,10 @@ impl SearchClient {
             normalized_search_source_id_sql_expr("c.source_id", "s.kind", "c.origin_host");
 
         const CHUNK_SIZE: usize = 300;
+        let mut sql = String::new();
         for chunk in exact_query_keys.chunks(CHUNK_SIZE) {
-            let mut sql = String::from("SELECT c.id, ");
+            sql.clear();
+            sql.push_str("SELECT c.id, ");
             sql.push_str(&normalized_source_sql);
             sql.push_str(
                 ", c.source_path, m.idx, m.id, c.agent_id, c.workspace_id, m.role, m.created_at, m.content, c.title
@@ -688,7 +687,8 @@ impl SearchClient {
         }
 
         for chunk in fallback_query_keys.chunks(CHUNK_SIZE) {
-            let mut sql = String::from("SELECT ");
+            sql.clear();
+            sql.push_str("SELECT ");
             sql.push_str(&normalized_source_sql);
             sql.push_str(
                 ", c.source_path, m.idx, m.id, c.agent_id, c.workspace_id, m.role, m.created_at, m.content, c.title
@@ -702,9 +702,10 @@ impl SearchClient {
                 if idx > 0 {
                     sql.push_str(" OR ");
                 }
-                sql.push_str(&format!(
+                let _ = write!(
+                    sql,
                     "({normalized_source_sql} = ? AND c.source_path = ? AND m.idx = ?)"
-                ));
+                );
                 params.push(ParamValue::from(normalize_search_source_filter_value(
                     source_id,
                 )));

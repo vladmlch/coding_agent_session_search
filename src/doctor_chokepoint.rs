@@ -316,6 +316,7 @@ pub(crate) fn mutate(req: MutationRequest) -> Result<MutationReceipt, Chokepoint
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("orphan")),
         };
+        // ubs:ignore[rust.security.path-traversal] — path_is_in_scope rejected ParentDir; strip_prefix/file_name yields safe relative path
         let backup_full = backups_root.join(&rel);
         if let Some(parent) = backup_full.parent() {
             fs::create_dir_all(parent)?;

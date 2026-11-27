@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::Path;
 #[cfg(test)]
 use std::time::Duration;
@@ -509,7 +510,7 @@ pub(super) fn load_inserted_message_ids_by_idx(
         if offset > 0 {
             sql.push_str(", ");
         }
-        sql.push_str(&format!("?{}", offset + 2));
+        let _ = write!(sql, "?{}", offset + 2);
         params.push(ParamValue::from(*idx));
     }
     sql.push_str(") ORDER BY id ASC");

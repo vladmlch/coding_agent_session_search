@@ -308,7 +308,7 @@ fn mark_conflicting(coverage: &mut CoverageBuilder) {
 struct Extraction {
     calls: BTreeMap<(String, String), DevinCall>,
     outputs: BTreeMap<(String, String), DevinOutput>,
-    conflicts: HashSet<(String, String)>,
+    conflicts: BTreeMap<String, HashSet<String>>,
     coverage: CoverageBuilder,
     thinking: i64,
     compactions: i64,
@@ -329,7 +329,7 @@ impl Extraction {
                     // (mark_conflicting narrows the marks to the tool
                     // scopes); it must not degrade chat/text scopes, so
                     // the oracle `complete` flag stays as-is.
-                    self.conflicts.insert(key);
+                    self.conflicts.entry(key.0).or_default().insert(key.1);
                 }
             }
             Entry::Vacant(entry) => {
@@ -365,7 +365,7 @@ impl Extraction {
                     // text gap — the `complete` flag stays as-is (the
                     // arguments-decode failure and the untyped `tool_call`
                     // shape still flip it).
-                    self.conflicts.insert(key);
+                    self.conflicts.entry(key.0).or_default().insert(key.1);
                 }
             }
             Entry::Vacant(entry) => {
@@ -397,7 +397,7 @@ impl Extraction {
                 if previous.name != name || previous.value != arguments {
                     // Same conflict semantics as [`Extraction::call`]: a
                     // tool-verdict gap, never a text gap.
-                    self.conflicts.insert(key);
+                    self.conflicts.entry(key.0).or_default().insert(key.1);
                 }
             }
             Entry::Vacant(entry) => {
@@ -684,7 +684,11 @@ impl Extraction {
         };
         let mut tools = ToolCollector::new();
         for ((root, identifier), call) in &self.calls {
-            if self.conflicts.contains(&(root.clone(), identifier.clone())) {
+            if self
+                .conflicts
+                .get(root.as_str())
+                .is_some_and(|ids| ids.contains(identifier.as_str()))
+            {
                 continue;
             }
             tools.call(RecordedCall {
@@ -697,7 +701,11 @@ impl Extraction {
             });
         }
         for ((root, identifier), output) in &self.outputs {
-            if self.conflicts.contains(&(root.clone(), identifier.clone())) {
+            if self
+                .conflicts
+                .get(root.as_str())
+                .is_some_and(|ids| ids.contains(identifier.as_str()))
+            {
                 continue;
             }
             tools.result(RecordedResult {
@@ -708,8 +716,7 @@ impl Extraction {
                 is_error: output.is_error,
             });
         }
-        for key in &self.conflicts {
-            let _ = key;
+        for _ in self.conflicts.values().flatten() {
             mark_conflicting(&mut self.coverage);
         }
         if !self.complete {
@@ -730,7 +737,7 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
     let mut extraction = Extraction {
         calls: BTreeMap::new(),
         outputs: BTreeMap::new(),
-        conflicts: HashSet::new(),
+        conflicts: BTreeMap::new(),
         coverage: CoverageBuilder::new(),
         thinking: 0,
         compactions: 0,

@@ -152,7 +152,7 @@ impl FrankenStorage {
                 last_conversation_id = conversation_id;
                 let conversation_day_id = started_at.map(Self::day_id_from_millis).unwrap_or(0);
                 let mut last_token_usage_id = 0_i64;
-                let mut session_model_family = String::from("unknown");
+                let mut session_model_family: Option<String> = None;
 
                 loop {
                     if let Some(control) = control {
@@ -215,7 +215,7 @@ impl FrankenStorage {
                     {
                         last_token_usage_id = token_usage_id;
                         if model_family != "unknown" {
-                            session_model_family = model_family.clone();
+                            session_model_family = Some(model_family.clone());
                         }
                         let usage = crate::connectors::ExtractedTokenUsage {
                             model_name: None,
@@ -250,7 +250,7 @@ impl FrankenStorage {
                     &agent_slug,
                     &source_id,
                     conversation_day_id,
-                    &session_model_family,
+                    session_model_family.as_deref().unwrap_or("unknown"),
                 );
             }
 

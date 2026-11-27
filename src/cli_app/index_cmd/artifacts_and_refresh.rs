@@ -585,6 +585,7 @@ pub(crate) fn collect_stall_diagnostics(data_dir: &Path) -> serde_json::Value {
     ];
     let mut checkpoints = serde_json::Map::new();
     for name in checkpoint_candidates {
+        // ubs:ignore[rust.security.path-traversal] — name comes from fixed compile-time checkpoint_candidates literals
         let path = index_dir.join(name);
         if !path.exists() {
             continue;

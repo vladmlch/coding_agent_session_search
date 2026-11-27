@@ -382,6 +382,7 @@ impl SearchClient {
     pub(in crate::search::query) fn sqlite_fts5_hydrate_row_chunks(
         ranked_rows: &[(i64, f64)],
     ) -> impl Iterator<Item = &[(i64, f64)]> {
+        // ubs:ignore[rust.panic.assert-macros] — compile-time const assertion
         const _: () = assert!(SQLITE_FTS5_HYDRATE_PARAM_CHUNK <= SQLITE_MAX_VARIABLE_NUMBER);
         ranked_rows.chunks(SQLITE_FTS5_HYDRATE_PARAM_CHUNK)
     }

@@ -70,6 +70,7 @@ fn archive_candidates(ctx: &ScanContext) -> Vec<ScanRoot> {
         if base.path.is_file() {
             continue;
         }
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time ARCHIVE constant to ScanRoot base path
         roots.push(base.with_path(base.path.join(ARCHIVE)));
         let under_codex = base
             .path

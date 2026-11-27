@@ -167,7 +167,7 @@ pub(super) fn prefetch_gated_message_texts(
     connection: &Connection,
     sessions: &[SessionCtx],
     literals: &[(String, bool)],
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
     stats: &mut HydrateStats,
     deadline: &Deadline,
@@ -181,8 +181,8 @@ pub(super) fn prefetch_gated_message_texts(
         .iter()
         .map(|(value, exact)| {
             if !value.is_ascii()
-                || matchers
-                    .get(&(value.clone(), *exact))
+                || matchers[usize::from(*exact)]
+                    .get(value.as_str())
                     .is_some_and(|matcher| matcher.never)
             {
                 return None;
@@ -374,12 +374,12 @@ fn exit_predicate_seekable(op: &str, expected: &Value) -> bool {
 
 pub(super) fn plan_region_load_mode(
     node: &PlanNode,
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
 ) -> RegionLoadMode {
     match node {
         PlanNode::Literal { value, exact, .. } => {
-            let never = matchers
-                .get(&(value.clone(), *exact))
+            let never = matchers[usize::from(*exact)]
+                .get(value.as_str())
                 .is_some_and(|matcher| matcher.never);
             if !value.is_ascii() && !never {
                 RegionLoadMode::UniverseStructural("ungated_literal")
@@ -560,7 +560,7 @@ pub(super) fn attach_gated_regions(
     connection: &Connection,
     sessions: &mut [SessionCtx],
     plan: &Plan,
-    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    matchers: &[HashMap<String, LiteralMatcher>; 2],
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
     stats: &mut HydrateStats,
     deadline: &Deadline,
@@ -568,8 +568,8 @@ pub(super) fn attach_gated_regions(
     let mut slots: HashMap<i64, Vec<i64>> = HashMap::new();
     for (value, exact) in &plan.literals {
         if !value.is_ascii()
-            || matchers
-                .get(&(value.clone(), *exact))
+            || matchers[usize::from(*exact)]
+                .get(value.as_str())
                 .is_some_and(|matcher| matcher.never)
         {
             continue;

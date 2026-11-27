@@ -314,6 +314,7 @@ impl AssetGuard {
                                     .all(|component| matches!(component, Component::Normal(_))),
                             "semantic shard asset path must stay inside the configured data directory"
                         );
+                        // ubs:ignore[rust.security.path-traversal] — path validated to contain only Component::Normal above
                         Ok(data_dir.join(path))
                     };
                     guard.vector(resolve(&shard.index_path)?)?;

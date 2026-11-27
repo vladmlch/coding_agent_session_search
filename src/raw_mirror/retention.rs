@@ -432,16 +432,24 @@ fn maintain_with_index_lease(
     }
     report.planned_reclaim_bytes = report.entries.iter().map(|entry| entry.size_bytes)
         .fold(0, u64::saturating_add);
-    for entry in &report.entries { validate_prune_target_file(&root, &root.join(&entry.path))?; }
+    for entry in &report.entries {
+        let target = join_validated_relative(&root, &entry.path)?;
+        validate_prune_target_file(&root, &target)?;
+    }
     if !report.entries.is_empty() {
         note_mutation(&root)?;
         // Preserve DB links before retiring descriptors. A failed merge leaves
         // every old descriptor intact; a crash can only add redundant links.
         for (id, successor) in &selected {
             let new = &manifests[successor];
-            merge_raw_mirror_manifest_db_links(&root,
-                &root.join(raw_mirror_manifest_relative_path(successor)),
-                &manifests[id].db_links, Some(&new.blob_blake3))?;
+            let successor_path =
+                join_validated_relative(&root, &raw_mirror_manifest_relative_path(successor))?;
+            merge_raw_mirror_manifest_db_links(
+                &root,
+                &successor_path,
+                &manifests[id].db_links,
+                Some(&new.blob_blake3),
+            )?;
         }
         // Reuse the explicit pruner's durable intent-before-delete protocol,
         // per-target validation, manifest-before-blob ordering and fsyncs.
@@ -457,6 +465,20 @@ fn maintain_with_index_lease(
     result.capture_paused = result.used_bytes_after >= policy.capture.max_bytes
         || result.available_bytes_after <= policy.capture.min_free_bytes;
     Ok(result)
+}
+
+fn join_validated_relative(root: &Path, relative_path: &str) -> Result<PathBuf> {
+    let relative = Path::new(relative_path);
+    anyhow::ensure!(
+        !relative_path.is_empty()
+            && !relative.is_absolute()
+            && relative
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "raw mirror relative path must use only normal components: {relative_path}"
+    );
+    // ubs:ignore[rust.security.path-traversal] — relative validated to contain only Component::Normal above
+    Ok(root.join(relative))
 }
 
 #[cfg(test)]

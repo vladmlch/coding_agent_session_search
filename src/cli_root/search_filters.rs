@@ -483,23 +483,25 @@ pub(crate) fn compute_aggregations(
     let mut aggregations = Aggregations::default();
 
     for field in fields {
-        let mut counts: HashMap<String, u64> = HashMap::new();
+        let mut counts: HashMap<std::borrow::Cow<'_, str>, u64> = HashMap::new();
 
         // Count occurrences based on field type
         for hit in hits {
             let key = match field {
-                AggregateField::Agent => hit.agent.clone(),
-                AggregateField::Workspace => hit.workspace.clone(),
+                AggregateField::Agent => std::borrow::Cow::Borrowed(hit.agent.as_str()),
+                AggregateField::Workspace => std::borrow::Cow::Borrowed(hit.workspace.as_str()),
                 AggregateField::Date => {
                     // Group by date (YYYY-MM-DD)
                     hit.created_at
                         .and_then(|ts| {
                             chrono::DateTime::from_timestamp_millis(ts)
-                                .map(|d| d.format("%Y-%m-%d").to_string())
+                                .map(|d| std::borrow::Cow::Owned(d.format("%Y-%m-%d").to_string()))
                         })
-                        .unwrap_or_else(|| "unknown".to_string())
+                        .unwrap_or(std::borrow::Cow::Borrowed("unknown"))
                 }
-                AggregateField::MatchType => format!("{:?}", hit.match_type).to_lowercase(),
+                AggregateField::MatchType => {
+                    std::borrow::Cow::Owned(format!("{:?}", hit.match_type).to_lowercase())
+                }
             };
             *counts.entry(key).or_insert(0) += 1;
         }
@@ -510,11 +512,11 @@ pub(crate) fn compute_aggregations(
 
         let total_count: u64 = sorted.iter().map(|(_, c)| *c).sum();
         let top_buckets: Vec<AggregationBucket> = sorted
-            .iter()
+            .into_iter()
             .take(MAX_BUCKETS)
             .map(|(key, count)| AggregationBucket {
-                key: key.clone(),
-                count: *count,
+                key: key.into_owned(),
+                count,
             })
             .collect();
         let top_sum: u64 = top_buckets.iter().map(|b| b.count).sum();
@@ -541,18 +543,18 @@ pub(crate) const VALID_AGGREGATE_FIELDS: &str = "agent, workspace, date, match_t
 /// Parse aggregate field strings into enum values.
 pub(crate) fn parse_aggregate_fields(fields: &[String]) -> CliResult<Vec<AggregateField>> {
     let mut parsed = Vec::with_capacity(fields.len());
-    let mut invalid = Vec::new();
+    let mut invalid: Vec<&str> = Vec::new();
 
     for field in fields {
         let trimmed = field.trim();
         if trimmed.is_empty() {
-            invalid.push("<empty>".to_string());
+            invalid.push("<empty>");
             continue;
         }
 
         match AggregateField::from_str(trimmed) {
             Some(field) => parsed.push(field),
-            None => invalid.push(field.clone()),
+            None => invalid.push(field.as_str()),
         }
     }
 

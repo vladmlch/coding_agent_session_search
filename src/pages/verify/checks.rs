@@ -30,7 +30,7 @@ pub(super) fn check_required_files(site_dir: &Path) -> CheckResult {
     let mut invalid = Vec::new();
 
     for file in REQUIRED_FILES {
-        let path = site_dir.join(file);
+        let path = site_dir.join(file); // ubs:ignore[rust.security.path-traversal] — compile-time REQUIRED_FILES constant filenames
         match fs::symlink_metadata(&path) {
             Ok(metadata) => {
                 let file_type = metadata.file_type();
@@ -238,7 +238,7 @@ pub(super) fn check_payload_manifest(site_dir: &Path) -> CheckResult {
     let mut errors = Vec::new();
     let rel_path = Path::new(&config.payload.path);
     if validate_payload_path(&mut errors, "payload.path", rel_path) {
-        let payload_path = site_dir.join(rel_path);
+        let payload_path = site_dir.join(rel_path); // ubs:ignore[rust.security.path-traversal] — rel_path validated by validate_payload_path above
         match fs::symlink_metadata(&payload_path) {
             Ok(meta) => {
                 let file_type = meta.file_type();
@@ -285,7 +285,7 @@ pub(super) fn check_size_limits(site_dir: &Path) -> CheckResult {
 
     let payload_path = Path::new(&config.payload.path);
     if validate_payload_path(&mut errors, "payload.path", payload_path) {
-        let payload_path = site_dir.join(payload_path);
+        let payload_path = site_dir.join(payload_path); // ubs:ignore[rust.security.path-traversal] — payload_path validated by validate_payload_path above
         if !payload_path.exists() {
             errors.push(format!(
                 "payload file not found for size check: {}",

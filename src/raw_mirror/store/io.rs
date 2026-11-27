@@ -219,6 +219,7 @@ fn raw_mirror_fsync_enabled() -> bool {
 pub(in crate::raw_mirror) fn acquire_raw_mirror_mutation_lock(
     root: &Path,
 ) -> Result<RawMirrorFileLockGuard> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time RAW_MIRROR_MUTATION_LOCK_FILE constant
     let lock_path = root.join(RAW_MIRROR_MUTATION_LOCK_FILE);
     if raw_mirror_path_has_symlink_below_root(root, &lock_path) {
         return Err(anyhow!(

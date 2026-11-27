@@ -147,6 +147,7 @@ impl EvidenceBundleManifest {
     }
 
     pub fn path(bundle_root: &Path) -> PathBuf {
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time EVIDENCE_BUNDLE_MANIFEST_FILE constant
         bundle_root.join(EVIDENCE_BUNDLE_MANIFEST_FILE)
     }
 
@@ -326,7 +327,7 @@ fn verify_manifest(
     let mut verified_parity_groups = BTreeSet::new();
     let mut seen_paths = BTreeSet::new();
     for chunk in &manifest.chunks {
-        if !seen_paths.insert(chunk.path.clone()) {
+        if !seen_paths.insert(chunk.path.as_str()) {
             chunk_failures.push(raw_chunk_failure(
                 EvidenceBundleIssueKind::DuplicateChunkPath,
                 chunk.path.clone(),
@@ -657,6 +658,7 @@ fn resolve_bundle_path(bundle_root: &Path, relative_path: &str) -> Result<PathBu
     if relative_path.is_empty() {
         return Err(anyhow!("bundle chunk path must not be empty"));
     }
+    // ubs:ignore[rust.security.path-traversal] — relative_path validated to contain only Component::Normal above
     Ok(bundle_root.join(path))
 }
 

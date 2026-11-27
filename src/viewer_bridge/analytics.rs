@@ -28,6 +28,7 @@
 //!   reads with provenance, never folded into the persisted score.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::Result;
@@ -436,7 +437,7 @@ struct Core {
 fn core_aggregates(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> Result<Core> {
     let mut select = String::from("COUNT(*)");
     for (_, column) in CORE_COLUMNS {
-        select.push_str(&format!(", SUM({column}), COUNT({column})"));
+        let _ = write!(select, ", SUM({column}), COUNT({column})");
     }
     select.push_str(&format!(", SUM({DURATION_SQL}), COUNT({DURATION_SQL})"));
     select.push_str(&format!(", AVG({HIT_RATE_SQL}), AVG(m.one_shot_rate)"));
@@ -1334,39 +1335,53 @@ fn dynamic_rules_resources(
     for path in &paths {
         for name in ["CLAUDE.md", "AGENTS.md"] {
             let file_path = Path::new(&path).join(name);
-            let mut entry = Map::new();
-            entry.insert("path".to_owned(), json!(file_path.to_string_lossy()));
-            entry.insert("project_path".to_owned(), json!(path));
-            entry.insert("name".to_owned(), json!(name));
-            entry.insert("provenance".to_owned(), json!("filesystem"));
-            match std::fs::metadata(&file_path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    entry.insert("state".to_owned(), json!("missing"));
-                }
-                Err(_) => {
-                    entry.insert("state".to_owned(), json!("unreadable"));
-                }
+            let entry = match std::fs::metadata(&file_path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({
+                    "path": file_path.to_string_lossy(),
+                    "project_path": path,
+                    "name": name,
+                    "provenance": "filesystem",
+                    "state": "missing",
+                }),
+                Err(_) => json!({
+                    "path": file_path.to_string_lossy(),
+                    "project_path": path,
+                    "name": name,
+                    "provenance": "filesystem",
+                    "state": "unreadable",
+                }),
                 Ok(metadata) => match std::fs::read(&file_path) {
                     Ok(bytes) => {
                         let bounded = bytes.len() as u64 <= RULES_FILE_BYTES;
                         let text = String::from_utf8_lossy(&bytes);
                         let lines = text.lines().count() as i64;
-                        entry.insert("state".to_owned(), json!("available"));
-                        entry.insert("bytes".to_owned(), json!(bytes.len() as i64));
-                        entry.insert("lines".to_owned(), json!(lines));
-                        if !bounded {
-                            entry.insert("state".to_owned(), json!("oversized"));
-                        }
-                        if !metadata.is_file() {
-                            entry.insert("state".to_owned(), json!("unreadable"));
-                        }
+                        let state = if !metadata.is_file() {
+                            "unreadable"
+                        } else if !bounded {
+                            "oversized"
+                        } else {
+                            "available"
+                        };
+                        json!({
+                            "path": file_path.to_string_lossy(),
+                            "project_path": path,
+                            "name": name,
+                            "provenance": "filesystem",
+                            "state": state,
+                            "bytes": bytes.len() as i64,
+                            "lines": lines,
+                        })
                     }
-                    Err(_) => {
-                        entry.insert("state".to_owned(), json!("unreadable"));
-                    }
+                    Err(_) => json!({
+                        "path": file_path.to_string_lossy(),
+                        "project_path": path,
+                        "name": name,
+                        "provenance": "filesystem",
+                        "state": "unreadable",
+                    }),
                 },
-            }
-            files.push(Value::Object(entry));
+            };
+            files.push(entry);
         }
     }
     Ok(json!({
@@ -1409,7 +1424,7 @@ pub fn projects(connection: &Connection, scope: &AnalyticsScope) -> Result<Value
          SUM({DURATION_SQL}), COUNT({DURATION_SQL})"
     );
     for (_, column) in PROJECT_METRICS {
-        select.push_str(&format!(", SUM({column}), COUNT({column})"));
+        let _ = write!(select, ", SUM({column}), COUNT({column})");
     }
     select.push_str(&format!(", {UNCERTAIN_CLASSIFICATION_SQL}"));
     let items = run_scoped_map(

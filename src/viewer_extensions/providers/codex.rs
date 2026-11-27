@@ -209,15 +209,15 @@ fn prepared_events<'a>(
     input: &'a [Event<'a>],
     coverage: &mut CoverageBuilder,
 ) -> Vec<(&'a Event<'a>, Option<String>)> {
-    let mut groups: BTreeMap<(Option<String>, String), Vec<&Event>> = BTreeMap::new();
-    let mut segment: Option<String> = None;
+    let mut groups: BTreeMap<(Option<&'a str>, String), Vec<&'a Event<'a>>> = BTreeMap::new();
+    let mut segment: Option<&'a str> = None;
     for event in input {
         let record = event.extra;
         let mut response_id = None;
         if record.is_object() {
             let (payload, _) = payload_of(record);
             if is_boundary(record, &payload) {
-                segment = Some(event.key.clone());
+                segment = Some(event.key.as_str());
             }
             if record.get("type").and_then(Value::as_str) == Some("response_item") {
                 response_id = text_id(payload.get("id"));
@@ -232,7 +232,7 @@ fn prepared_events<'a>(
             })
             .unwrap_or_else(|| format!("source:{}", event.key));
         groups
-            .entry((segment.clone(), key))
+            .entry((segment, key))
             .or_default()
             .push(event);
     }
@@ -253,7 +253,7 @@ fn prepared_events<'a>(
             }
             continue;
         }
-        result.push((candidates[0], epoch.clone()));
+        result.push((candidates[0], epoch.map(str::to_owned)));
     }
     result.sort_by(|a, b| (a.0.idx, &a.0.key).cmp(&(b.0.idx, &b.0.key)));
     result

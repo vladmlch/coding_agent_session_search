@@ -762,6 +762,7 @@ pub(crate) fn probe_on_disk(
     let files_present = present == manifest.files.len() && !manifest.files.is_empty();
     let partial_present = present > 0 && !files_present;
 
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time VERIFIED_MARKER_NAME constant
     let source = std::fs::read_to_string(model_dir.join(VERIFIED_MARKER_NAME))
         .ok()
         .and_then(|c| VerifiedMarker::parse(&c))
@@ -774,6 +775,7 @@ pub(crate) fn probe_on_disk(
             ModelSource::Unknown
         });
 
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time QUARANTINE_MARKER_NAME constant
     let quarantined = model_dir.join(QUARANTINE_MARKER_NAME).is_file();
     let budget_exceeded = policy.budget_max_bytes.is_some_and(|max| total > max);
 

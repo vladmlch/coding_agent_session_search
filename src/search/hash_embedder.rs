@@ -31,7 +31,7 @@
 //!
 //! let embedder = HashEmbedder::new(384);
 //! let embedding = embedder.embed_sync("hello world").unwrap();
-//! assert_eq!(embedding.len(), 384);
+//! assert_eq!(embedding.len(), 384); // ubs:ignore[rust.panic.assert-macros] — doctest example
 //! ```
 
 use std::sync::OnceLock;
@@ -75,6 +75,7 @@ impl HashEmbedder {
     ///
     /// Panics if dimension is 0.
     pub fn new(dimension: usize) -> Self {
+        // ubs:ignore[rust.panic.assert-macros] — documented constructor precondition enforced by unit test
         assert!(dimension > 0, "dimension must be positive");
         Self {
             dimension,

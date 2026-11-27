@@ -94,6 +94,13 @@ pub(in crate::indexer) fn record_poison_conversation(
     let conversation_id = poison_conversation_id(conv);
     let schema_version_at_quarantine = crate::storage::sqlite::CURRENT_SCHEMA_VERSION;
     let key = (conversation_id.clone(), schema_version_at_quarantine);
+    let mut components = Path::new(file_name).components();
+    anyhow::ensure!(
+        matches!(components.next(), Some(std::path::Component::Normal(_)))
+            && components.next().is_none(),
+        "ingest quarantine file name must be a single normal path component"
+    );
+    // ubs:ignore[rust.security.path-traversal] — file_name validated to single Component::Normal above
     let path = quarantine_dir.join(file_name);
     let mut raw_preserved_lines = Vec::new();
     let mut records = BTreeMap::<(String, i64), serde_json::Value>::new();
@@ -339,10 +346,14 @@ pub(in crate::indexer) fn mark_stale_index_ingest_jsonl_retry_attempted(
                 current_version,
             );
         if should_mark && let Some(object) = value.as_object_mut() {
-            object.insert(
-                "cass_version_at_quarantine".to_string(),
-                serde_json::json!(current_version),
-            );
+            if let Some(slot) = object.get_mut("cass_version_at_quarantine") {
+                *slot = serde_json::json!(current_version);
+            } else {
+                object.insert(
+                    "cass_version_at_quarantine".to_string(),
+                    serde_json::json!(current_version),
+                );
+            }
             marked = marked.saturating_add(1);
             retained_lines.push(value.to_string());
         } else {
@@ -470,6 +481,7 @@ pub(crate) fn operator_quarantine_poison_records(
     let mut records = BTreeMap::new();
     let current_version = current_cass_version();
     for file_name in [WATCH_INGEST_POISON_FILE, INDEX_INGEST_POISON_FILE] {
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time poison filename constant
         let path = quarantine_dir.join(file_name);
         let contents = match fs::read_to_string(&path) {
             Ok(contents) => contents,
@@ -872,6 +884,7 @@ pub fn conversation_ingest_quarantine_summary(
     }
 
     for file_name in [WATCH_INGEST_POISON_FILE, INDEX_INGEST_POISON_FILE] {
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time poison filename constant
         let path = quarantine_dir.join(file_name);
         if !path.exists() {
             continue;
@@ -972,6 +985,7 @@ pub(crate) fn quarantine_source_missing_ids(data_dir: &Path) -> BTreeSet<String>
     let quarantine_dir = data_dir.join("quarantine");
     let mut missing = BTreeSet::new();
     for file_name in [WATCH_INGEST_POISON_FILE, INDEX_INGEST_POISON_FILE] {
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time poison filename constant
         let path = quarantine_dir.join(file_name);
         let Ok(contents) = fs::read_to_string(&path) else {
             continue;
@@ -1021,6 +1035,7 @@ pub(in crate::indexer) fn quarantine_retry_sources(
     let quarantine_dir = data_dir.join("quarantine");
     let mut sources = BTreeMap::new();
     for file_name in [WATCH_INGEST_POISON_FILE, INDEX_INGEST_POISON_FILE] {
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time poison filename constant
         let path = quarantine_dir.join(file_name);
         let Ok(contents) = fs::read_to_string(&path) else {
             continue;

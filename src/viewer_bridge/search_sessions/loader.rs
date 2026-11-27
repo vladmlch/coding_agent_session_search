@@ -251,10 +251,9 @@ pub(super) fn build_block_seek_evidence(
     let mut tool_vocabulary: Option<Vec<String>> = None;
     let mut file_vocabulary: Option<Vec<String>> = None;
     let mut mcp_named_done = false;
-    let mut seen: HashSet<(String, String, String)> = HashSet::new();
     for (field, op, expected) in &predicates {
         let key = block_predicate_key(field, op, expected);
-        if !seen.insert(key.clone()) {
+        if evidence.predicates.contains_key(&key) {
             continue;
         }
         match field.as_str() {

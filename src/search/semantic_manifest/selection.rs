@@ -118,6 +118,7 @@ fn preflight_vector_file(
             reason,
         }
     })?;
+    // ubs:ignore[rust.security.path-traversal] — validated by normalized_manifest_relative_path
     let path = root.join(relative);
     reject_existing_path_links(root, &path).map_err(io)?;
     reject_vector_wal(&path, role)?;

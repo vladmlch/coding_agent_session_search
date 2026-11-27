@@ -298,6 +298,8 @@ pub fn format_size(bytes: usize) -> String {
 impl PrePublishSummary {
     /// Render a text overview of the summary.
     pub fn render_overview(&self) -> String {
+        use std::fmt::Write as _;
+
         let mut output = String::new();
 
         output.push_str("CONTENT OVERVIEW\n");
@@ -334,27 +336,35 @@ impl PrePublishSummary {
         output.push_str("--------------\n");
         for ws in self.workspaces.iter().take(5) {
             let included_marker = if ws.included { " " } else { "x" };
-            output.push_str(&format!(
-                "[{}] {} ({} conversations)\n",
+            let _ = writeln!(
+                output,
+                "[{}] {} ({} conversations)",
                 included_marker, ws.display_name, ws.conversation_count
-            ));
+            );
             if !ws.sample_titles.is_empty() {
-                let titles: Vec<_> = ws.sample_titles.iter().take(3).cloned().collect();
-                output.push_str(&format!("    \"{}\"...\n", titles.join("\", \"")));
+                output.push_str("    \"");
+                for (idx, title) in ws.sample_titles.iter().take(3).enumerate() {
+                    if idx > 0 {
+                        output.push_str("\", \"");
+                    }
+                    output.push_str(title);
+                }
+                output.push_str("\"...\n");
             }
         }
         if self.workspaces.len() > 5 {
-            output.push_str(&format!("... and {} more\n", self.workspaces.len() - 5));
+            let _ = writeln!(output, "... and {} more", self.workspaces.len() - 5);
         }
         output.push('\n');
 
         output.push_str("AGENTS\n");
         output.push_str("------\n");
         for agent in &self.agents {
-            output.push_str(&format!(
-                "  {}: {} conversations ({:.0}%)\n",
+            let _ = writeln!(
+                output,
+                "  {}: {} conversations ({:.0}%)",
                 agent.name, agent.conversation_count, agent.percentage
-            ));
+            );
         }
         output.push('\n');
 

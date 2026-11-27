@@ -8,6 +8,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
+use std::fmt::Write as _;
 
 use crate::search::query::SearchHit;
 
@@ -238,25 +239,26 @@ fn export_markdown(hits: &[SearchHit], options: &ExportOptions) -> String {
     // Results
     for (i, hit) in hits.iter().enumerate() {
         let safe_title = escape_markdown(&hit.title);
-        output.push_str(&format!("## {}. {}\n\n", i + 1, safe_title));
+        let _ = write!(output, "## {}. {}\n\n", i + 1, safe_title);
 
         // Metadata table
         output.push_str("| Field | Value |\n");
         output.push_str("|-------|-------|\n");
-        output.push_str(&format!("| Agent | {} |\n", escape_markdown(&hit.agent)));
-        output.push_str(&format!(
-            "| Workspace | {} |\n",
+        let _ = writeln!(output, "| Agent | {} |", escape_markdown(&hit.agent));
+        let _ = writeln!(
+            output,
+            "| Workspace | {} |",
             escape_markdown(&hit.workspace)
-        ));
+        );
 
         if options.include_score {
-            output.push_str(&format!("| Score | {:.2} |\n", hit.score));
+            let _ = writeln!(output, "| Score | {:.2} |", hit.score);
         }
 
         if let Some(ts) = hit.created_at
             && let Some(dt) = DateTime::from_timestamp_millis(ts)
         {
-            output.push_str(&format!("| Date | {} |\n", dt.format("%Y-%m-%d %H:%M")));
+            let _ = writeln!(output, "| Date | {} |", dt.format("%Y-%m-%d %H:%M"));
         }
 
         if options.include_path {
@@ -270,13 +272,14 @@ fn export_markdown(hits: &[SearchHit], options: &ExportOptions) -> String {
             } else {
                 Cow::Borrowed(hit.source_path.as_str())
             };
-            output.push_str(&format!(
-                "| Source | {} |\n",
+            let _ = writeln!(
+                output,
+                "| Source | {} |",
                 escape_markdown(path_display.as_ref())
-            ));
+            );
 
             if let Some(line) = hit.line_number {
-                output.push_str(&format!("| Line | {line} |\n"));
+                let _ = writeln!(output, "| Line | {line} |");
             }
         }
 
@@ -286,23 +289,23 @@ fn export_markdown(hits: &[SearchHit], options: &ExportOptions) -> String {
         output.push_str("### Snippet\n\n");
         let snippet = truncate_text(&hit.snippet, options.max_snippet_len);
         let delim = get_code_block_delimiter(&snippet);
-        output.push_str(&format!("{}\n", delim));
+        let _ = writeln!(output, "{delim}");
         output.push_str(&snippet);
         if !snippet.ends_with('\n') {
             output.push('\n');
         }
-        output.push_str(&format!("{}\n\n", delim));
+        let _ = write!(output, "{delim}\n\n");
 
         // Full content (optional)
         if options.include_content && !hit.content.is_empty() {
             output.push_str("<details>\n<summary>Full Content</summary>\n\n");
             let content_delim = get_code_block_delimiter(&hit.content);
-            output.push_str(&format!("{}\n", content_delim));
+            let _ = writeln!(output, "{content_delim}");
             output.push_str(&hit.content);
             if !hit.content.ends_with('\n') {
                 output.push('\n');
             }
-            output.push_str(&format!("{}\n\n", content_delim));
+            let _ = write!(output, "{content_delim}\n\n");
             output.push_str("</details>\n\n");
         }
 
@@ -411,27 +414,27 @@ fn export_plain_text(hits: &[SearchHit], options: &ExportOptions) -> String {
 
     // Results
     for (i, hit) in hits.iter().enumerate() {
-        output.push_str(&format!("[{}] {}\n", i + 1, hit.title));
+        let _ = writeln!(output, "[{}] {}", i + 1, hit.title);
         output.push_str(&"-".repeat(60));
         output.push('\n');
 
-        output.push_str(&format!("Agent: {}\n", hit.agent));
-        output.push_str(&format!("Workspace: {}\n", hit.workspace));
+        let _ = writeln!(output, "Agent: {}", hit.agent);
+        let _ = writeln!(output, "Workspace: {}", hit.workspace);
 
         if options.include_score {
-            output.push_str(&format!("Score: {:.2}\n", hit.score));
+            let _ = writeln!(output, "Score: {:.2}", hit.score);
         }
 
         if let Some(ts) = hit.created_at
             && let Some(dt) = DateTime::from_timestamp_millis(ts)
         {
-            output.push_str(&format!("Date: {}\n", dt.format("%Y-%m-%d %H:%M")));
+            let _ = writeln!(output, "Date: {}", dt.format("%Y-%m-%d %H:%M"));
         }
 
         if options.include_path {
-            output.push_str(&format!("Source: {}\n", hit.source_path));
+            let _ = writeln!(output, "Source: {}", hit.source_path);
             if let Some(line) = hit.line_number {
-                output.push_str(&format!("Line: {line}\n"));
+                let _ = writeln!(output, "Line: {line}");
             }
         }
 
@@ -439,13 +442,13 @@ fn export_plain_text(hits: &[SearchHit], options: &ExportOptions) -> String {
         output.push_str("Snippet:\n");
         let snippet = truncate_text(&hit.snippet, options.max_snippet_len);
         for line in snippet.lines() {
-            output.push_str(&format!("  {line}\n"));
+            let _ = writeln!(output, "  {line}");
         }
 
         if options.include_content && !hit.content.is_empty() {
             output.push_str("\nFull Content:\n");
             for line in hit.content.lines() {
-                output.push_str(&format!("  {line}\n"));
+                let _ = writeln!(output, "  {line}");
             }
         }
 

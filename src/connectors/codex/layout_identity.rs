@@ -155,6 +155,7 @@ impl LayoutPair {
             root.file_name().is_some_and(|name| name == "sessions"),
             "not a sessions directory"
         );
+        // ubs:ignore[rust.security.path-traversal] — filename comes from Path::file_name() single component
         let flat = root.join(filename);
         let dated = root
             .join(&date[0])

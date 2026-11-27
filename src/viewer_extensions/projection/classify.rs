@@ -444,10 +444,10 @@ pub(super) fn surviving_records(
         }
     }
 
-    let mut member_ords: BTreeMap<(String, usize), Vec<usize>> = BTreeMap::new();
+    let mut member_ords: BTreeMap<(&str, usize), Vec<usize>> = BTreeMap::new();
     for (ord, (key, segment)) in &segment_of_ord {
         member_ords
-            .entry((key.clone(), *segment))
+            .entry((key.as_str(), *segment))
             .or_default()
             .push(*ord);
     }
@@ -477,7 +477,7 @@ pub(super) fn surviving_records(
             continue;
         }
         if let Some((key, segment)) = segment_of_ord.get(&ord)
-            && let Some(members) = member_ords.get(&(key.clone(), *segment))
+            && let Some(members) = member_ords.get(&(key.as_str(), *segment))
             && members.len() > 1
         {
             rec.members = members

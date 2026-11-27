@@ -313,6 +313,7 @@ pub enum MaintenanceEventKind {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn append_maintenance_event(data_dir: &Path, event: &MaintenanceEvent) -> Result<()> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time MAINTENANCE_EVENTS_FILE constant
     let path = data_dir.join(MAINTENANCE_EVENTS_FILE);
     let line = serde_json::to_string(event).with_context(|| "serializing maintenance event")?;
     let mut file = OpenOptions::new()
@@ -332,6 +333,7 @@ pub fn read_maintenance_events(
     after_ms: Option<i64>,
     limit: Option<usize>,
 ) -> Vec<MaintenanceEvent> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time MAINTENANCE_EVENTS_FILE constant
     let path = data_dir.join(MAINTENANCE_EVENTS_FILE);
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
@@ -352,6 +354,7 @@ pub fn read_maintenance_events(
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn truncate_maintenance_event_log(data_dir: &Path) -> Result<()> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time MAINTENANCE_EVENTS_FILE constant
     let path = data_dir.join(MAINTENANCE_EVENTS_FILE);
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
@@ -387,6 +390,7 @@ pub struct YieldRequest {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn request_yield(data_dir: &Path, reason: &str) -> Result<()> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time YIELD_SIGNAL_FILE constant
     let path = data_dir.join(YIELD_SIGNAL_FILE);
     let now_ms = crate::storage::sqlite::FrankenStorage::now_millis();
     let req = YieldRequest {
@@ -401,6 +405,7 @@ pub fn request_yield(data_dir: &Path, reason: &str) -> Result<()> {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn check_yield_requested(data_dir: &Path) -> Option<YieldRequest> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time YIELD_SIGNAL_FILE constant
     let path = data_dir.join(YIELD_SIGNAL_FILE);
     let contents = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str::<YieldRequest>(&contents).ok()
@@ -408,6 +413,7 @@ pub fn check_yield_requested(data_dir: &Path) -> Option<YieldRequest> {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn clear_yield_signal(data_dir: &Path) -> Result<()> {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time YIELD_SIGNAL_FILE constant
     let path = data_dir.join(YIELD_SIGNAL_FILE);
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),

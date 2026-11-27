@@ -67,6 +67,7 @@ const FSVI_REOPEN_INITIAL_BACKOFF: Duration = Duration::from_millis(2);
 const FSVI_REOPEN_MAX_BACKOFF: Duration = Duration::from_millis(64);
 
 fn fs_index_artifact_path(dir: &Path, filename: &str) -> PathBuf {
+    // ubs:ignore[rust.security.path-traversal] — private helper called only with frankensearch VECTOR_*_FILENAME constants
     dir.join(filename)
 }
 
@@ -369,7 +370,7 @@ impl TwoTierIndex {
         for entry in entries {
             let doc_id_str = entry.doc_id.encode();
             if metadata_by_encoded_id
-                .insert(doc_id_str.clone(), (entry.doc_id.clone(), entry.message_id))
+                .insert(doc_id_str.clone(), (entry.doc_id, entry.message_id))
                 .is_some()
             {
                 bail!(

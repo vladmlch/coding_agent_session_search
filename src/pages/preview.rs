@@ -227,7 +227,7 @@ fn handle_request_with_site_root(site_root_canonical: &std::path::Path, request:
     let file_path = if request_path.is_empty() || request_path == "/" {
         site_root_canonical.join("index.html")
     } else {
-        site_root_canonical.join(request_path)
+        site_root_canonical.join(request_path) // ubs:ignore[rust.security.path-traversal] — request_path checked for '..' above and canonicalized target verified with starts_with(site_root_canonical)
     };
 
     // Canonicalize to prevent path traversal
@@ -393,6 +393,23 @@ fn bind_preview_listener(port: u16) -> std::io::Result<std::net::TcpListener> {
     std::net::TcpListener::bind(preview_bind_addr(port))
 }
 
+/// Run the blocking TCP accept loop for the local preview server.
+fn run_preview_accept_loop(listener: std::net::TcpListener, site_dir: Arc<PathBuf>) {
+    for stream_result in listener.incoming() {
+        match stream_result {
+            Ok(stream) => {
+                let site_dir = Arc::clone(&site_dir);
+                std::thread::spawn(move || {
+                    handle_connection(stream, &site_dir);
+                });
+            }
+            Err(e) => {
+                eprintln!("Accept error: {}", e);
+            }
+        }
+    }
+}
+
 /// Start the preview server.
 ///
 /// This function will block until the server is shut down (via Ctrl+C).
@@ -446,19 +463,7 @@ pub async fn start_preview_server(config: PreviewConfig) -> Result<(), PreviewEr
     // Run blocking accept loop on the blocking pool. The process terminates
     // on SIGINT via the default handler, which is fine for a dev preview server.
     asupersync::runtime::spawn_blocking(move || {
-        for stream_result in listener.incoming() {
-            match stream_result {
-                Ok(stream) => {
-                    let site_dir = Arc::clone(&site_dir);
-                    std::thread::spawn(move || {
-                        handle_connection(stream, &site_dir);
-                    });
-                }
-                Err(e) => {
-                    eprintln!("Accept error: {}", e);
-                }
-            }
-        }
+        run_preview_accept_loop(listener, site_dir);
     })
     .await;
 

@@ -150,6 +150,7 @@ pub(in crate::indexer) fn persist_lexical_publication_receipt(
         lexical_state_can_certify_publication(state),
         "cannot publish an incomplete or inconsistent lexical receipt"
     );
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time LEXICAL_PUBLISHED_STATE_FILE constant
     let path = index_path.join(LEXICAL_PUBLISHED_STATE_FILE);
     write_json_pretty_atomically(&path, state)?;
     sync_parent_directory(&path)
@@ -161,6 +162,7 @@ pub(in crate::indexer) fn persist_lexical_publication_receipt(
 pub(crate) fn has_usable_lexical_publication_receipt(index_path: &Path, db_path: &Path) -> bool {
     let inspect = || -> Result<bool> {
         use std::io::Read;
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time LEXICAL_PUBLISHED_STATE_FILE constant
         let path = index_path.join(LEXICAL_PUBLISHED_STATE_FILE);
         let metadata = fs::symlink_metadata(&path)?;
         anyhow::ensure!(

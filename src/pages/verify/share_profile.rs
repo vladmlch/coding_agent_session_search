@@ -77,10 +77,11 @@ pub(super) fn check_share_profile(
         return (CheckResult::pass(), evidence);
     };
     let relative = Path::new(&config.payload.path);
-    let payload = site_dir.join(relative);
-    if !validate_payload_path(&mut Vec::new(), "payload.path", relative)
-        || !fs::symlink_metadata(&payload).is_ok_and(|meta| meta.file_type().is_file())
-    {
+    if !validate_payload_path(&mut Vec::new(), "payload.path", relative) {
+        return (CheckResult::pass(), evidence);
+    }
+    let payload = site_dir.join(relative); // ubs:ignore[rust.security.path-traversal] — relative validated by validate_payload_path above
+    if !fs::symlink_metadata(&payload).is_ok_and(|meta| meta.file_type().is_file()) {
         return (CheckResult::pass(), evidence);
     }
     let conn = match crate::pages::open_existing_sqlite_db(&payload) {

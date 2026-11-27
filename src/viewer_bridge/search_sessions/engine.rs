@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Result;
@@ -133,10 +134,10 @@ pub fn search_sessions(
     )?;
 
     // Literal matchers + Quill evidence.
-    let mut matchers: HashMap<(String, bool), LiteralMatcher> = HashMap::new();
+    let mut matchers: [HashMap<String, LiteralMatcher>; 2] = Default::default();
     for (value, exact) in &plan.literals {
-        matchers
-            .entry((value.clone(), *exact))
+        matchers[usize::from(*exact)]
+            .entry(value.clone())
             .or_insert_with(|| LiteralMatcher::new(value, *exact));
     }
     let engine_filters = engine_filters(&super::super::protocol::BridgeFilters {
@@ -192,7 +193,7 @@ pub fn search_sessions(
         ..HydrateStats::default()
     };
     let mut accepted: Vec<EvaluatedSession> = Vec::new();
-    let mut unknown_reasons: BTreeMap<String, usize> = BTreeMap::new();
+    let mut unknown_reasons: BTreeMap<Cow<'static, str>, usize> = BTreeMap::new();
     let mut unknown_sessions = 0_usize;
     // Per-table set reads for the whole universe — the indexed path must
     // never degrade to a per-session query storm (a >50k universe still
@@ -231,7 +232,7 @@ pub fn search_sessions(
     // per-region lane — answers and refusals stay byte-identical to
     // today, and `membership_source` receipts the lane that ran.
     let fast_lane = fast_eligible && sessions.iter().all(|session| session.session_docs_current);
-    let mut session_doc_hits: HashMap<(String, bool), HashMap<i64, f32>> = HashMap::new();
+    let mut session_doc_hits: [HashMap<String, HashMap<i64, f32>>; 2] = Default::default();
     if fast_lane {
         // §6.1: one posting set per literal — `(conversation_id -> best
         // session-doc score)`. No gated-message prefetch, no fragment
@@ -244,7 +245,7 @@ pub fn search_sessions(
                 &engine_filters,
                 deadline,
             )?;
-            session_doc_hits.insert((value.clone(), *exact), hits);
+            session_doc_hits[usize::from(*exact)].insert(value.clone(), hits);
         }
     } else {
         if fast_eligible {
@@ -406,7 +407,7 @@ pub fn search_sessions(
                 // reason, and this one names the violation.
                 if result.reasons.is_empty() {
                     *unknown_reasons
-                        .entry("internal:inconsistency:unknown_without_reason".to_owned())
+                        .entry(Cow::Borrowed("internal:inconsistency:unknown_without_reason"))
                         .or_default() += 1;
                 }
             }
@@ -431,17 +432,17 @@ pub fn search_sessions(
                 "The final DSL membership depends on unavailable fact evidence: {}",
                 unknown_reasons
                     .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
+                    .map(|reason| reason.as_ref())
+                    .collect::<Vec<&str>>()
                     .join("; ")
             ),
         ));
     }
 
     // 4) Sort + keyset page.
-    let mut warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<&'static str> = Vec::new();
     if unknown_sessions > 0 {
-        warnings.push("membership_incomplete".to_owned());
+        warnings.push("membership_incomplete");
     }
     // Codex continuation rollouts (`rollout-<ts>-<A>_<B>.jsonl`) verify to
     // the same thread identity `codex:<A>` as the original. Fold every
@@ -572,7 +573,7 @@ pub fn search_sessions(
     // (B) Page-time witness gates, memoized once per request and shared by
     // every emitted fast-lane session: one raw enumeration per distinct
     // claim literal, however many sessions the page hydrates.
-    let mut witness_gates: WitnessGates = HashMap::new();
+    let mut witness_gates: WitnessGates = Default::default();
     let mut iter = accepted.iter().peekable();
     let mut has_more = false;
     for entry in iter.by_ref() {
@@ -688,8 +689,9 @@ pub fn search_sessions(
             // claims first — one raw enumeration per distinct literal per
             // request, shared by every emitted session.
             for (_, (value, exact)) in &entry.fast_claims {
-                let key = (value.clone(), *exact);
-                if let std::collections::hash_map::Entry::Vacant(slot) = witness_gates.entry(key) {
+                if let std::collections::hash_map::Entry::Vacant(slot) =
+                    witness_gates[usize::from(*exact)].entry(value.clone())
+                {
                     // `?` propagates BEFORE the insert, so a deadline hit
                     // leaves the memo unfilled — the next request retries.
                     let gate = enumerate_witness_gate(
@@ -705,8 +707,8 @@ pub fn search_sessions(
                 Vec::with_capacity(entry.fast_claims.len());
             for (_, (value, exact)) in &entry.fast_claims {
                 claim_gates.push(
-                    witness_gates
-                        .get(&(value.clone(), *exact))
+                    witness_gates[usize::from(*exact)]
+                        .get(value.as_str())
                         .and_then(|gate| gate.as_ref())
                         .and_then(|per_conversation| {
                             per_conversation.get(&session.conversation_id)
@@ -860,7 +862,7 @@ pub fn search_sessions(
             // a whole-page refusal. Budget exhaustion never reaches
             // here: it refuses the page above, so this warning names
             // ONLY consulted-and-disagreed drift.
-            warnings.push("witnesses_not_reproduced".to_owned());
+            warnings.push("witnesses_not_reproduced");
         }
         if !session_matches.is_empty() {
             matches_out.insert(session.conversation_id.to_string(), json!(session_matches));

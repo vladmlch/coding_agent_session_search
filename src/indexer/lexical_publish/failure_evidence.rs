@@ -115,6 +115,7 @@ impl Candidate {
         cause: &str,
     ) -> Result<Option<PathBuf>> {
         self.check(finalization.live)?;
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time LAST_FAILURE_FILE constant
         let destination = self.path.join(LAST_FAILURE_FILE);
         match fs::symlink_metadata(&destination) {
             Ok(_) => return Ok(None), // Preserve even malformed or ambiguous existing evidence.
