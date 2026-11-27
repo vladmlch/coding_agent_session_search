@@ -1447,7 +1447,7 @@ mod tests {
     /// requirement for the redaction sink.
     #[test]
     fn memoizing_redactor_with_audit_emits_lookup_and_insert_records() {
-        use super::memoization::{MemoCacheEvent, MemoCacheOperation};
+        use super::super::memoization::{MemoCacheEvent, MemoCacheOperation};
         let mut redactor = MemoizingRedactor::with_capacity(8);
         let payload =
             "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature";
@@ -1794,7 +1794,7 @@ mod tests {
     /// requirement.
     #[test]
     fn memoizing_redactor_quarantined_entries_fall_through_to_direct_redaction() {
-        use super::memoization::{MemoCacheEvent, MemoCacheOperation};
+        use super::super::memoization::{MemoCacheEvent, MemoCacheOperation};
         let mut redactor = MemoizingRedactor::with_capacity(8);
         let payload =
             "user=admin password=hunter2hunter2 token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
@@ -1905,7 +1905,7 @@ mod tests {
 
     #[test]
     fn redaction_retention_bypass_never_bypasses_secret_redaction() {
-        use super::memoization::MemoCacheEvent;
+        use super::super::memoization::MemoCacheEvent;
         let budget = MemoRetentionBudget::new(8);
         let mut redactor = MemoizingRedactor::with_retention_budget(16, Arc::clone(&budget));
         let input = "Bearer abcdefghijklmnopqrstuvwxyz1234";
@@ -1926,7 +1926,7 @@ mod tests {
 
     #[test]
     fn redaction_retention_pressure_preserves_quarantine_and_nested_json() {
-        use super::memoization::MemoCacheEvent;
+        use super::super::memoization::MemoCacheEvent;
         let budget = MemoRetentionBudget::new(64 * 1024);
         let mut redactor = MemoizingRedactor::with_retention_budget(16, Arc::clone(&budget));
         let input = "line password=hunter2hunter2 trailing text";
