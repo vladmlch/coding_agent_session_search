@@ -35,11 +35,11 @@ pub(super) const LEGACY_OMP_LEXICAL_PUBLISHED_META_KEY: &str =
     "legacy_omp_reclassification_lexical_published_v1";
 pub(super) const LEGACY_OMP_ANALYTICS_REBUILT_META_KEY: &str =
     "legacy_omp_reclassification_analytics_rebuilt_v1";
-pub(super) const LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY: &str =
+pub(crate) const LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY: &str =
     "legacy_omp_reclassification_analytics_cursor_context_v1";
-pub(super) const LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY: &str =
+pub(crate) const LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY: &str =
     "legacy_omp_reclassification_analytics_cursor_last_id_v1";
-pub(super) const LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY: &str =
+pub(crate) const LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY: &str =
     "legacy_omp_reclassification_analytics_cursor_processed_v1";
 pub(super) const SEMANTIC_FAST_IDENTITY_REBUILD_META_KEY: &str =
     "semantic_fast_identity_rebuild_v1";

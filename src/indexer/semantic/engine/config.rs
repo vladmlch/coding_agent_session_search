@@ -1,7 +1,5 @@
 use super::scheduler::env_truthy;
-use crate::search::fastembed_embedder::{
-    MINILM_VECTOR_SPACE_REVISION, MULTILINGUAL_MINILM_VECTOR_SPACE_REVISION,
-};
+pub use crate::search_defaults::{HASH_VECTOR_SPACE_REVISION, expected_vector_space_revision};
 
 /// Default embedder batch size — the **maximum row count** per embed batch.
 /// 128 is a sweet spot for short messages: big enough to amortize dispatch
@@ -36,26 +34,10 @@ pub(in crate::indexer::semantic::engine) const SEMANTIC_PREP_MEMO_ALGORITHM: &st
     "semantic_prepare_window";
 pub(in crate::indexer::semantic::engine) const SEMANTIC_PREP_MEMO_VERSION: &str =
     "canonicalize_for_embedding:v2:stable-content-hash";
-pub const HASH_VECTOR_SPACE_REVISION: &str = "hash-fnv1a-modular-v1:passages-v2";
-
 /// A caller-owned cancellation check for backfill jobs. It must be cheap and
 /// must not block. Backfill polls it at durable batch boundaries; an
 /// interrupted batch is never committed.
 pub type CancelCheck = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
-
-/// Return the exact vector-space revision that is safe for a current embedder.
-/// ID and dimension alone are insufficient because inference-engine changes
-/// can preserve both while changing vector values. Identities produced by the
-/// removed external HTTP embedder intentionally have no current revision:
-/// legacy external spaces are reported, never loaded or served.
-pub fn expected_vector_space_revision(embedder_id: &str) -> Option<&'static str> {
-    match embedder_id {
-        "minilm-384" => Some(MINILM_VECTOR_SPACE_REVISION),
-        "multilingual-minilm-384" => Some(MULTILINGUAL_MINILM_VECTOR_SPACE_REVISION),
-        "fnv1a-384" => Some(HASH_VECTOR_SPACE_REVISION),
-        _ => None,
-    }
-}
 
 pub(in crate::indexer::semantic::engine) fn resolved_env_usize(key: &str, default: usize) -> usize {
     dotenvy::var(key)

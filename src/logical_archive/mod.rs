@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use coding_agent_search::franken_sync::FrankenError;
-use coding_agent_search::indexer::IndexRunBusy;
+use coding_agent_search::storage::run_lock::IndexRunBusy;
 use coding_agent_search::search::archive_rebuild::ArchiveIndexPlan;
 
 #[derive(Parser)]

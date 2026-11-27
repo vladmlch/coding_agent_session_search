@@ -37,7 +37,7 @@ fn validate_maintenance_archive(data_dir: &Path, db_path: &Path) -> anyhow::Resu
 pub(crate) fn maintain_for_index(
     data_dir: &Path,
     db_path: &Path,
-    index_lease: &crate::indexer::IndexRunLockGuard,
+    index_lease: &crate::storage::run_lock::IndexRunLockGuard,
 ) {
     let result = validate_maintenance_archive(data_dir, db_path)
         .and_then(|()| super::store::policy::maintain_while_index_owned(data_dir, index_lease));

@@ -157,7 +157,7 @@ fn write_hash_vector_index(path: &Path, record_count: usize) {
     let mut writer = VectorIndex::create_with_revision(
         path,
         embedder.id(),
-        crate::indexer::semantic::HASH_VECTOR_SPACE_REVISION,
+        crate::search_defaults::HASH_VECTOR_SPACE_REVISION,
         embedder.dimension(),
         frankensearch::index::Quantization::F16,
     )
@@ -296,7 +296,8 @@ fn stale_manifest_tier_is_refused_even_when_the_artifact_loads() {
 
     // Once the record matches the live database again, serving resumes.
     let current =
-        crate::indexer::lexical_storage_fingerprint_for_db(&db_path).expect("current fingerprint");
+        crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db(&db_path)
+            .expect("current fingerprint");
     let mut manifest = SemanticManifest::load_or_default(tmp.path()).expect("manifest");
     assert!(manifest.adopt_legacy_artifact(
         TierKind::Fast,
@@ -730,7 +731,8 @@ fn load_hash_context_prefers_current_complete_shards_over_monolithic_file() {
     let storage = FrankenStorage::open(&db_path).expect("create cass db");
     drop(storage);
     let db_fingerprint =
-        crate::indexer::lexical_storage_fingerprint_for_db(&db_path).expect("fingerprint cass db");
+        crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_db(&db_path)
+            .expect("fingerprint cass db");
 
     let embedder = HashEmbedder::default();
     write_hash_vector_index(&vector_index_path(tmp.path(), embedder.id()), 1);

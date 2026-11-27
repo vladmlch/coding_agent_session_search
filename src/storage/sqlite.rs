@@ -36,7 +36,7 @@ mod fts_rebuild;
 mod lexical_rebuild;
 mod omp_and_semantic_meta;
 mod open;
-mod open_and_locks;
+pub(crate) mod open_and_locks;
 mod orphan_fk_cleanup;
 mod reconcile_and_codebuff;
 mod schema_v1;
@@ -97,7 +97,10 @@ pub(crate) use source_and_historical_import::{
 };
 
 #[cfg(test)]
-pub(crate) use omp_and_semantic_meta::legacy_omp_analytics_pending;
+pub(crate) use omp_and_semantic_meta::{
+    LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY, LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
+    LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, legacy_omp_analytics_pending,
+};
 pub use omp_and_semantic_meta::{CURRENT_SCHEMA_VERSION, LegacyOmpReclassificationResult};
 pub(crate) use omp_and_semantic_meta::{
     MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION, SemanticIdentityTier,
@@ -156,4 +159,4 @@ pub use fts_rebuild::FtsEntry;
 // =============================================================================
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

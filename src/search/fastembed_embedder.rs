@@ -46,22 +46,9 @@ const MULTILINGUAL_MINILM_DIR_NAME: &str = "paraphrase-multilingual-MiniLM-L12-v
 const MULTILINGUAL_MINILM_EMBEDDER_ID: &str = "multilingual-minilm-384";
 const MINILM_DIMENSION: usize = 384;
 
-/// FSVI vector-space revision for the native MiniLM implementation.
-///
-/// The model revision alone is insufficient: pre-#308 ONNX and current native
-/// inference can share an embedder ID and dimension without producing an
-/// identical vector space. Persisting the engine generation prevents those
-/// same-shape vectors from being mixed silently. The CASS passage suffix also
-/// fences prefix-only indexes from the current bounded input representation;
-/// the model weights and their artifact revision are unchanged.
-pub const MINILM_VECTOR_SPACE_REVISION: &str =
-    "native-minilm-v1:c9745ed1d9f207416be6d2e6f8de32d1f16199bf:passages-v2";
-
-/// FSVI vector-space revision for the opt-in multilingual native model.
-///
-/// Includes the frozen Frankensearch artifact/execution-manifest fingerprint
-/// and the CASS input contract, not merely the shared 384-dimensional geometry.
-pub const MULTILINGUAL_MINILM_VECTOR_SPACE_REVISION: &str = "native-multilingual-minilm-v1:59160d9e43d396d05b4139c99f9feb7922da14868587fca7e33d379821a41405:passages-v2";
+pub use crate::search_defaults::{
+    MINILM_VECTOR_SPACE_REVISION, MULTILINGUAL_MINILM_VECTOR_SPACE_REVISION,
+};
 
 // Safetensors model file names: prefer an explicit f32 export, fall back to the
 // standard HuggingFace `model.safetensors`. The native embedder also needs

@@ -1,14 +1,13 @@
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(in crate::indexer) struct LexicalRebuildDbState {
-    pub(in crate::indexer) db_path: String,
-    pub(in crate::indexer) total_conversations: usize,
-    #[serde(default)]
-    pub(in crate::indexer) total_messages: usize,
-    pub(in crate::indexer) storage_fingerprint: String,
-}
+pub(crate) use crate::storage::lexical_checkpoint_io::{
+    LexicalRebuildDbState, lexical_rebuild_state_path,
+};
+pub use crate::storage::run_lock::IndexRunBusy;
+pub(crate) use crate::storage::run_lock::{
+    ArchiveAdmission, acquire_archive_write_lease, acquire_index_run_lock_with_archive_admission,
+    acquire_index_run_lock_with_job_kind,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -360,155 +359,18 @@ impl LexicalRebuildState {
     }
 }
 
-/// Contention on the canonical maintenance lock is an admission outcome, not
-/// an embedding or storage failure. Keep it typed so the daemon can retain an
-/// accepted job for retry without interpreting an arbitrary error message.
-#[derive(Debug, thiserror::Error)]
-#[error("another cass index process already holds {}", lock_path.display())]
-pub struct IndexRunBusy {
-    pub(in crate::indexer) lock_path: PathBuf,
-}
-
-pub(in crate::indexer) fn acquire_archive_write_lease(
-    db_path: &Path,
-) -> Result<archive_lease::ArchiveWriteLease> {
-    match archive_lease::ArchiveWriteLease::try_acquire(db_path).with_context(|| {
-        format!(
-            "acquiring canonical archive writer lease for {}",
-            db_path.display()
-        )
-    })? {
-        archive_lease::ArchiveLeaseAttempt::Acquired(lease) => Ok(lease),
-        archive_lease::ArchiveLeaseAttempt::Busy(lock_path) => {
-            Err(IndexRunBusy { lock_path }.into())
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(in crate::indexer) enum ArchiveAdmission {
-    Writable,
-    DataDirOnly,
-}
-
 #[cfg(test)]
 pub(in crate::indexer) fn acquire_index_run_lock(
     data_dir: &Path,
     db_path: &Path,
     mode: SearchMaintenanceMode,
 ) -> Result<IndexRunLockGuard> {
-    acquire_index_run_lock_with_job_kind(
+    crate::storage::run_lock::acquire_index_run_lock_with_job_kind(
         data_dir,
         db_path,
         mode,
         maintenance_job_kind_for_mode(mode),
     )
-}
-
-pub(in crate::indexer) fn acquire_index_run_lock_with_job_kind(
-    data_dir: &Path,
-    db_path: &Path,
-    mode: SearchMaintenanceMode,
-    job_kind: SearchMaintenanceJobKind,
-) -> Result<IndexRunLockGuard> {
-    acquire_index_run_lock_with_archive_admission(
-        data_dir,
-        db_path,
-        mode,
-        job_kind,
-        ArchiveAdmission::Writable,
-    )
-}
-
-pub(in crate::indexer) fn acquire_index_run_lock_with_archive_admission(
-    data_dir: &Path,
-    db_path: &Path,
-    mode: SearchMaintenanceMode,
-    job_kind: SearchMaintenanceJobKind,
-    archive_admission: ArchiveAdmission,
-) -> Result<IndexRunLockGuard> {
-    fs::create_dir_all(data_dir)
-        .with_context(|| format!("creating cass data directory {}", data_dir.display()))?;
-    let lock_path = data_dir.join("index-run.lock");
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .with_context(|| format!("opening index-run lock file {}", lock_path.display()))?;
-
-    // std's File::try_lock reports contention as WouldBlock on every platform;
-    // fs2 surfaced Windows contention as raw ERROR_LOCK_VIOLATION, so a second
-    // `cass index` there got a generic error instead of the index-busy (exit 7)
-    // contract that error_chain_indicates_active_cass_index keys on
-    // (2l1b0.74). Same flock/LockFileEx lock, so fs2 holders still exclude it.
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            return Err(IndexRunBusy { lock_path }.into());
-        }
-        Err(std::fs::TryLockError::Error(err)) => {
-            return Err(err)
-                .with_context(|| format!("acquiring index-run lock {}", lock_path.display()));
-        }
-    }
-
-    let archive_path = if db_path.is_absolute() {
-        db_path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .context("resolving the archive writer path")?
-            .join(db_path)
-    };
-    // Do not publish this attempt as an active owner until both leases are
-    // held. If archive admission fails, dropping `file` releases the data-dir
-    // lock without changing either owner's metadata or opening the database.
-    let archive_write_lease = match archive_admission {
-        ArchiveAdmission::Writable => Some(acquire_archive_write_lease(&archive_path)?),
-        ArchiveAdmission::DataDirOnly => None,
-    };
-    let db_path = archive_write_lease.as_ref().map_or_else(
-        || {
-            archive_lease::canonical_database_path(&archive_path)
-                .unwrap_or_else(|_| archive_path.clone())
-        },
-        |lease| lease.database_path().to_path_buf(),
-    );
-    let now_ms = FrankenStorage::now_millis();
-    let mut guard = IndexRunLockGuard {
-        file,
-        archive_write_lease,
-        _path: lock_path,
-        started_at_ms: now_ms,
-        updated_at_ms: now_ms,
-        // cass#258: seed with `now` so the very first `read_search_maintenance_snapshot`
-        // call after `acquire_index_run_lock` sees a populated cursor.
-        // Forward progress will refresh this on every `write_metadata`
-        // / `set_mode` call and every per-batch atomic progress bump (F4).
-        last_progress_at_ms: now_ms,
-        // F4: indexer-thread mailbox the heartbeat folds into the on-disk
-        // payload. Seed with `now_ms` so a stall-detector that fires
-        // before the first bump cannot false-positive on `0`.
-        last_progress_at_ms_atomic: Arc::new(AtomicI64::new(now_ms)),
-        db_path,
-        archive_path,
-        job_id: String::new(),
-        job_kind,
-        metadata_write_lock: Arc::new(Mutex::new(())),
-    };
-    guard.job_id = format!(
-        "{}-{}-{}",
-        guard.job_kind.as_lock_value(),
-        guard.started_at_ms,
-        std::process::id()
-    );
-    guard.write_metadata(mode)?;
-    Ok(guard)
-}
-
-pub(in crate::indexer) fn lexical_rebuild_state_path(index_path: &Path) -> PathBuf {
-    index_path.join(".lexical-rebuild-state.json")
 }
 
 pub(in crate::indexer) fn lexical_rebuild_equivalence_evidence_path(index_path: &Path) -> PathBuf {

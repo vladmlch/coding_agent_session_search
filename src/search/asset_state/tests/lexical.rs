@@ -1111,8 +1111,9 @@ fn inspect_lexical_assets_primes_fingerprint_cache_for_skip_open_health() {
 
     let db_path = temp.path().join("agent_search.db");
     let storage = FrankenStorage::open(&db_path).expect("open canonical archive");
-    let fingerprint = crate::indexer::lexical_storage_fingerprint_for_storage(&storage)
-        .expect("compute storage fingerprint");
+    let fingerprint =
+        crate::storage::archive_fingerprint::lexical_storage_fingerprint_for_storage(&storage)
+            .expect("compute storage fingerprint");
     storage.close().expect("close storage");
 
     let checkpoint_json = serde_json::json!({
@@ -1202,4 +1203,310 @@ fn inspect_lexical_assets_primes_fingerprint_cache_for_skip_open_health() {
         primed_health.fingerprint.matches_current_db_fingerprint,
         Some(true)
     );
+}
+
+#[test]
+#[serial_test::serial]
+fn legacy_omp_reclassification_preserves_one_canonical_conversation() -> anyhow::Result<()> {
+    use crate::franken_sync::compat::{
+        ConnectionExt as FrankenConnectionExt, ParamValue, RowExt as FrankenRowExt,
+    };
+    use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+    use crate::sources::provenance::LOCAL_SOURCE_ID;
+    use crate::storage::sqlite::{
+        LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY,
+        LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
+        LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, LegacyOmpReclassificationResult,
+        SqliteStorage, legacy_omp_analytics_pending, tests::set_env_var,
+    };
+
+    let dir = tempfile::TempDir::new()?;
+    let _pi_sessions = set_env_var("PI_SESSIONS_DIR", "");
+    let _omp_sessions = set_env_var("PI_CODING_AGENT_SESSION_DIR", "");
+    let _shared_agent = set_env_var("PI_CODING_AGENT_DIR", "");
+    let _omp_archive = set_env_var("CASS_OMP_DATA_ROOT", "");
+    let _config_dir = set_env_var("PI_CONFIG_DIR", "");
+    let _profile = set_env_var("OMP_PROFILE", "");
+    let _legacy_profile = set_env_var("PI_PROFILE", "");
+    let _xdg = set_env_var("XDG_DATA_HOME", "");
+    let db_path = dir.path().join("test.db");
+    let storage = SqliteStorage::open(&db_path)?;
+    let pi_agent_id = storage.ensure_agent(&Agent {
+        id: None,
+        slug: "pi_agent".into(),
+        name: "Pi Agent".into(),
+        version: None,
+        kind: AgentKind::Cli,
+    })?;
+    let mut conversation = Conversation {
+        id: None,
+        agent_slug: "pi_agent".into(),
+        workspace: None,
+        external_id: Some("-projects-cass/legacy-omp".into()),
+        title: Some("Legacy OMP".into()),
+        source_path: dir
+            .path()
+            .join("home/.omp/profiles/work/agent/sessions/-projects-cass/legacy-omp.jsonl"),
+        started_at: Some(1_700_000_000_000),
+        ended_at: Some(1_700_000_001_000),
+        approx_tokens: None,
+        metadata_json: serde_json::json!({"source":"pi_agent"}),
+        messages: vec![Message {
+            id: None,
+            idx: 0,
+            role: MessageRole::Agent,
+            author: Some("openrouter/stealth/ox-alpha".into()),
+            created_at: Some(1_700_000_001_000),
+            content: "legacy OMP answer".into(),
+            extra_json: serde_json::json!({"message":{"model":"openrouter/stealth/ox-alpha"}}),
+            snippets: Vec::new(),
+        }],
+        source_id: LOCAL_SOURCE_ID.into(),
+        origin_host: None,
+    };
+    storage.insert_conversations_batched(&[(pi_agent_id, None, &conversation)])?;
+
+    let legacy_token_agent_id: i64 = storage.raw().query_row_map(
+        "SELECT agent_id FROM token_usage LIMIT 1",
+        &[] as &[ParamValue],
+        |row| row.get_typed(0),
+    )?;
+    assert_eq!(legacy_token_agent_id, pi_agent_id);
+    let legacy_metrics_slug: String = storage.raw().query_row_map(
+        "SELECT agent_slug FROM message_metrics LIMIT 1",
+        &[] as &[ParamValue],
+        |row| row.get_typed(0),
+    )?;
+    assert_eq!(legacy_metrics_slug, "pi_agent");
+    let legacy_message_id = storage
+        .max_message_id()?
+        .expect("legacy OMP fixture should contain one message");
+    storage.set_last_embedded_message_id(legacy_message_id)?;
+    for tier in [SemanticIdentityTier::Fast, SemanticIdentityTier::Quality] {
+        assert!(!storage.semantic_identity_rebuild_required(tier)?);
+    }
+
+    assert_eq!(
+        storage.reclassify_legacy_omp_conversations()?,
+        LegacyOmpReclassificationResult {
+            conversations_reclassified: 1,
+            lexical_rebuild_required: true,
+            analytics_rebuild_required: true,
+        }
+    );
+    assert_eq!(
+        storage.get_last_embedded_message_id()?,
+        None,
+        "agent/source identity changes must invalidate the rowid-only semantic watermark"
+    );
+    for tier in [SemanticIdentityTier::Fast, SemanticIdentityTier::Quality] {
+        assert!(
+            storage.semantic_identity_rebuild_required(tier)?,
+            "each semantic tier must fail closed until its Pi-era doc ids are republished"
+        );
+    }
+    assert_eq!(
+        storage.reclassify_legacy_omp_conversations()?,
+        LegacyOmpReclassificationResult {
+            conversations_reclassified: 0,
+            lexical_rebuild_required: true,
+            analytics_rebuild_required: true,
+        }
+    );
+
+    let conversations = storage.list_conversations(10, 0)?;
+    assert_eq!(conversations.len(), 1);
+    assert_eq!(conversations[0].agent_slug, "omp");
+    assert_eq!(conversations[0].metadata_json["source"], "omp");
+    assert_eq!(
+        conversations[0].metadata_json["profile"], "work",
+        "the structural OMP profile must survive legacy Pi ownership and remote-safe migration"
+    );
+    let omp_agent_id: i64 = storage.raw().query_row_map(
+        "SELECT id FROM agents WHERE slug = 'omp'",
+        &[] as &[ParamValue],
+        |row| row.get_typed(0),
+    )?;
+    let token_agent_id: i64 = storage.raw().query_row_map(
+        "SELECT agent_id FROM token_usage LIMIT 1",
+        &[] as &[ParamValue],
+        |row| row.get_typed(0),
+    )?;
+    assert_eq!(token_agent_id, omp_agent_id);
+    let metrics_slug: String = storage.raw().query_row_map(
+        "SELECT agent_slug FROM message_metrics LIMIT 1",
+        &[] as &[ParamValue],
+        |row| row.get_typed(0),
+    )?;
+    assert_eq!(
+        metrics_slug, "pi_agent",
+        "canonical identity migration must not block on the deferred analytics rebuild"
+    );
+
+    // The lexical publish can finish while an operator explicitly defers
+    // analytics. A retry must retain only the analytics work; otherwise
+    // every startup would repeat the expensive authoritative lexical
+    // rebuild that already published successfully.
+    let mut canonical = storage.list_conversations(10, 0)?.remove(0);
+    canonical.messages = storage.fetch_messages(canonical.id.unwrap())?;
+    let lexical_path = dir.path().join("omp-lexical");
+    let mut lexical = crate::search::tantivy::TantivyIndex::open_or_create(&lexical_path)?;
+    let packet = crate::model::conversation_packet::ConversationPacket::from_canonical_replay(
+        &canonical,
+        crate::model::conversation_packet::ConversationPacketProvenance::local(),
+    );
+    lexical.add_messages_from_packet(&packet, None, canonical.id, |_| Ok(()))?;
+    lexical.commit()?;
+    drop(lexical);
+    let published_manifest = std::fs::read(lexical_path.join("MANIFEST"))?;
+    storage.mark_legacy_omp_lexical_publish_complete()?;
+    assert!(legacy_omp_analytics_pending(storage.raw())?);
+    assert_eq!(
+        storage.reclassify_legacy_omp_conversations()?,
+        LegacyOmpReclassificationResult {
+            conversations_reclassified: 0,
+            lexical_rebuild_required: false,
+            analytics_rebuild_required: true,
+        }
+    );
+    let progress_events = std::cell::Cell::new(0_usize);
+    let heartbeat_events = std::cell::Cell::new(0_usize);
+    let record_progress = |_processed: i64, _total: i64| {
+        progress_events.set(progress_events.get().saturating_add(1));
+    };
+    let record_heartbeat = || {
+        heartbeat_events.set(heartbeat_events.get().saturating_add(1));
+    };
+    let stop_after_metrics = std::cell::Cell::new(false);
+    let stop_progress = |processed: i64, total: i64| {
+        if processed > 0 && processed == total {
+            stop_after_metrics.set(true);
+        }
+    };
+    let stop_control = || -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !stop_after_metrics.get(),
+            "planted stop before token rollups"
+        );
+        Ok(())
+    };
+    let cancelled = storage
+        .rebuild_legacy_omp_analytics_with_progress(
+            Some(&stop_progress),
+            Some(&record_heartbeat),
+            Some(&stop_control),
+        )
+        .expect_err("finishing message metrics must not certify remaining analytics phases");
+    assert!(format!("{cancelled:#}").contains("planted stop before token rollups"));
+    let pending = storage.reclassify_legacy_omp_conversations()?;
+    assert!(!pending.lexical_rebuild_required);
+    assert!(pending.analytics_rebuild_required);
+    assert!(legacy_omp_analytics_pending(storage.raw())?);
+    assert_eq!(
+        std::fs::read(lexical_path.join("MANIFEST"))?,
+        published_manifest
+    );
+    let unknown_phases = std::cell::Cell::new(0_usize);
+    let resumed_progress = |processed: i64, total: i64| {
+        record_progress(processed, total);
+        if processed == 0 && total == 0 {
+            unknown_phases.set(unknown_phases.get() + 1);
+        }
+    };
+    let _ = storage.rebuild_legacy_omp_analytics_with_progress(
+        Some(&resumed_progress),
+        Some(&record_heartbeat),
+        None,
+    )?;
+    assert_eq!(
+        unknown_phases.get(),
+        2,
+        "non-message phases must revoke the completed message denominator"
+    );
+    assert!(
+        progress_events.get() >= 2,
+        "message-metrics rebuild must report start and committed progress"
+    );
+    assert!(
+        heartbeat_events.get() >= 2,
+        "token and daily rollup phases must keep the index watchdog alive"
+    );
+    let rebuilt_metrics_slug: String = storage.raw().query_row_map(
+        "SELECT agent_slug FROM message_metrics LIMIT 1",
+        &[] as &[ParamValue],
+        |row| row.get_typed(0),
+    )?;
+    assert_eq!(rebuilt_metrics_slug, "omp");
+    assert!(!legacy_omp_analytics_pending(storage.raw())?);
+    assert_eq!(
+        std::fs::read(lexical_path.join("MANIFEST"))?,
+        published_manifest
+    );
+    for cursor_key in [
+        LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY,
+        LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
+        LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY,
+    ] {
+        let cursor_rows: i64 = storage.raw().query_row_map(
+            "SELECT COUNT(*) FROM meta WHERE key = ?1",
+            &[ParamValue::from(cursor_key)],
+            |row| row.get_typed(0),
+        )?;
+        assert_eq!(
+            cursor_rows, 0,
+            "completed analytics must atomically retire cursor {cursor_key}"
+        );
+    }
+    assert!(storage.semantic_identity_rebuild_required(SemanticIdentityTier::Fast)?);
+    assert!(storage.semantic_identity_rebuild_required(SemanticIdentityTier::Quality)?);
+    storage.complete_semantic_identity_rebuild(SemanticIdentityTier::Fast)?;
+    assert!(!storage.semantic_identity_rebuild_required(SemanticIdentityTier::Fast)?);
+    assert!(
+        storage.semantic_identity_rebuild_required(SemanticIdentityTier::Quality)?,
+        "republishing the fast tier must not bless stale quality-tier doc ids"
+    );
+    storage.complete_semantic_identity_rebuild(SemanticIdentityTier::Quality)?;
+    assert!(!storage.semantic_identity_rebuild_required(SemanticIdentityTier::Quality)?);
+    assert_eq!(
+        storage.reclassify_legacy_omp_conversations()?,
+        LegacyOmpReclassificationResult::default()
+    );
+
+    // A historical import can add legacy rows after the marker was
+    // completed. Routine startup keeps trusting the marker, while the
+    // import-specific path must deliberately recheck the new archive data.
+    conversation.external_id = Some("-projects-cass/imported-legacy-omp".into());
+    conversation.title = Some("Imported legacy OMP".into());
+    conversation.source_path = dir
+        .path()
+        .join("backup/.omp/agent/sessions/-projects-cass/imported-legacy-omp.jsonl");
+    storage.insert_conversations_batched(&[(pi_agent_id, None, &conversation)])?;
+    let imported_message_id = storage
+        .max_message_id()?
+        .expect("historical OMP fixture should contain messages");
+    storage.set_last_embedded_message_id(imported_message_id)?;
+    assert_eq!(
+        storage.reclassify_legacy_omp_conversations()?,
+        LegacyOmpReclassificationResult::default(),
+        "the normal startup fast path should continue to trust a completed marker"
+    );
+    assert_eq!(
+        storage.reclassify_legacy_omp_conversations_after_historical_import()?,
+        LegacyOmpReclassificationResult {
+            conversations_reclassified: 1,
+            lexical_rebuild_required: true,
+            analytics_rebuild_required: true,
+        }
+    );
+    assert_eq!(storage.get_last_embedded_message_id()?, None);
+    assert!(storage.semantic_identity_rebuild_required(SemanticIdentityTier::Fast)?);
+    assert!(storage.semantic_identity_rebuild_required(SemanticIdentityTier::Quality)?);
+    let conversations = storage.list_conversations(10, 0)?;
+    assert_eq!(conversations.len(), 2);
+    assert!(
+        conversations
+            .iter()
+            .all(|conversation| conversation.agent_slug == "omp")
+    );
+    Ok(())
 }

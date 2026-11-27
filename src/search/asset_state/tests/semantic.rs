@@ -138,7 +138,7 @@ fn inspect_search_assets_fails_semantic_closed_when_identity_marker_is_unreadabl
     let mut writer = crate::search::vector_index::VectorIndex::create_with_revision(
         &vector_path,
         embedder.id(),
-        crate::indexer::semantic::HASH_VECTOR_SPACE_REVISION,
+        crate::search_defaults::HASH_VECTOR_SPACE_REVISION,
         embedder.dimension(),
         frankensearch::index::Quantization::F16,
     )

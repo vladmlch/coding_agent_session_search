@@ -7,6 +7,7 @@
 
 use std::fs::{self, Metadata, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, ensure};
 use same_file::Handle;
@@ -14,6 +15,15 @@ use serde::Serialize;
 
 use crate::search::tantivy::expected_index_dir;
 use crate::storage::sqlite::FrankenStorage;
+
+pub type ArchiveLexicalRepairHook = fn(&Path, &Path) -> Result<usize>;
+
+static ARCHIVE_LEXICAL_REPAIR_HOOK: OnceLock<ArchiveLexicalRepairHook> = OnceLock::new();
+
+#[doc(hidden)]
+pub fn register_archive_lexical_repair_hook(hook: ArchiveLexicalRepairHook) {
+    let _ = ARCHIVE_LEXICAL_REPAIR_HOOK.set(hook);
+}
 
 const MAX_MAINTENANCE_DEPTH: usize = 64;
 
@@ -282,6 +292,20 @@ impl ArchiveIndexPlan {
     /// On error the restored database is retained; callers must report failure,
     /// not undo canonical recovery or claim that search is ready.
     pub fn rebuild(&self) -> Result<ArchiveIndexReceipt> {
+        self.rebuild_with(|database, data_dir| {
+            let hook = ARCHIVE_LEXICAL_REPAIR_HOOK.get().copied().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "archive lexical repair hook not registered; call coding_agent_search::ensure_runtime_hooks_registered() at entry"
+                )
+            })?;
+            hook(database, data_dir)
+        })
+    }
+
+    pub fn rebuild_with<F>(&self, repair: F) -> Result<ArchiveIndexReceipt>
+    where
+        F: FnOnce(&Path, &Path) -> Result<usize>,
+    {
         self.validate_maintenance_layout()?;
         let metadata = std::fs::symlink_metadata(&self.database)
             .context("inspect restored canonical database before lexical rebuild")?;
@@ -294,16 +318,12 @@ impl ArchiveIndexPlan {
         storage
             .close_without_checkpoint()
             .context("close recovered archive admission without checkpointing")?;
-        let result = crate::indexer::repair_lexical_index_from_canonical_db_for_search(
-            &self.database,
-            &self.data_dir,
-            None,
-        )
-        .context("rebuild lexical search from the restored canonical archive")?;
+        let indexed_documents = repair(&self.database, &self.data_dir)
+            .context("rebuild lexical search from the restored canonical archive")?;
         Ok(ArchiveIndexReceipt {
             data_dir: self.data_dir.clone(),
             index_path: expected_index_dir(&self.data_dir),
-            indexed_documents: result.indexed_docs,
+            indexed_documents,
             source: "canonical_archive",
             provider_scan_performed: false,
             semantic_assets_built: false,

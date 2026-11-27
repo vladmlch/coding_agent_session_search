@@ -64,7 +64,7 @@ pub fn maintain_before_index(data_dir: &Path) -> Result<RawMirrorMaintenanceRepo
 /// instead of attempting to lock the same file through a second handle.
 pub(crate) fn maintain_while_index_owned(
     data_dir: &Path,
-    index_lease: &crate::indexer::IndexRunLockGuard,
+    index_lease: &crate::storage::run_lock::IndexRunLockGuard,
 ) -> Result<RawMirrorMaintenanceReport> {
     let Some(policy) = automatic_retention_policy_from_env()? else {
         return Ok(RawMirrorMaintenanceReport::default());
@@ -270,7 +270,7 @@ fn maintain_with_index_lease(
     data_dir: &Path,
     policy: &RawMirrorAutomaticRetention,
     now: i64,
-    index_lease: Option<&crate::indexer::IndexRunLockGuard>,
+    index_lease: Option<&crate::storage::run_lock::IndexRunLockGuard>,
 ) -> Result<RawMirrorMaintenanceReport> {
     if policy.keep_latest == 0 || policy.safety_hold_down_ms < 0 {
         anyhow::bail!("invalid automatic raw-mirror retention policy");

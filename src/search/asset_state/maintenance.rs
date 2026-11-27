@@ -1,74 +1,14 @@
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub enum SearchMaintenanceMode {
-    Index,
-    WatchStartup,
-    Watch,
-    WatchOnce,
-}
-
-impl SearchMaintenanceMode {
-    pub fn as_lock_value(self) -> &'static str {
-        match self {
-            Self::Index => "index",
-            Self::WatchStartup => "watch_startup",
-            Self::Watch => "watch",
-            Self::WatchOnce => "watch_once",
-        }
-    }
-
-    pub fn parse_lock_value(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "index" => Some(Self::Index),
-            "watch_startup" => Some(Self::WatchStartup),
-            "watch" => Some(Self::Watch),
-            "watch_once" => Some(Self::WatchOnce),
-            _ => None,
-        }
-    }
-
-    pub fn watch_active(self) -> bool {
-        matches!(self, Self::WatchStartup | Self::Watch)
-    }
-
-    pub fn rebuild_active(self) -> bool {
-        !matches!(self, Self::Watch)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub enum SearchMaintenanceJobKind {
-    LexicalRefresh,
-    SemanticAcquire,
-    SemanticRebuild,
-    AnalyticsRebuild,
-}
-
-impl SearchMaintenanceJobKind {
-    pub fn as_lock_value(self) -> &'static str {
-        match self {
-            Self::LexicalRefresh => "lexical_refresh",
-            Self::SemanticAcquire => "semantic_acquire",
-            Self::SemanticRebuild => "semantic_rebuild",
-            Self::AnalyticsRebuild => "analytics_rebuild",
-        }
-    }
-
-    pub fn parse_lock_value(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "lexical_refresh" => Some(Self::LexicalRefresh),
-            "semantic_acquire" => Some(Self::SemanticAcquire),
-            "semantic_rebuild" => Some(Self::SemanticRebuild),
-            "analytics_rebuild" => Some(Self::AnalyticsRebuild),
-            _ => None,
-        }
-    }
-}
+pub use crate::search_defaults::{SearchMaintenanceJobKind, SearchMaintenanceMode};
+pub use crate::storage::run_lock::{
+    clear_index_run_lock_metadata_sidecar, index_run_lock_metadata_sidecar_path,
+    index_run_lock_path, windows_lock_conflict, write_index_run_lock_metadata_sidecar,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SearchMaintenanceSnapshot {
@@ -85,88 +25,11 @@ pub struct SearchMaintenanceSnapshot {
     pub orphaned: bool,
 }
 
-pub fn index_run_lock_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("index-run.lock")
-}
-
-pub fn index_run_lock_metadata_sidecar_path(lock_path: &Path) -> PathBuf {
-    lock_path.with_file_name("index-run.lock.meta")
-}
-
-pub fn write_index_run_lock_metadata_sidecar(lock_path: &Path, contents: &str) -> Result<()> {
-    let sidecar_path = index_run_lock_metadata_sidecar_path(lock_path);
-    let mut sidecar = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&sidecar_path)
-        .with_context(|| {
-            format!(
-                "opening index-run lock metadata sidecar {}",
-                sidecar_path.display()
-            )
-        })?;
-    sidecar.write_all(contents.as_bytes()).with_context(|| {
-        format!(
-            "writing index-run lock metadata sidecar {}",
-            sidecar_path.display()
-        )
-    })?;
-    sidecar.flush().with_context(|| {
-        format!(
-            "flushing index-run lock metadata sidecar {}",
-            sidecar_path.display()
-        )
-    })?;
-    sidecar.sync_all().with_context(|| {
-        format!(
-            "syncing index-run lock metadata sidecar {}",
-            sidecar_path.display()
-        )
-    })
-}
-
-pub fn clear_index_run_lock_metadata_sidecar(lock_path: &Path) -> Result<()> {
-    let sidecar_path = index_run_lock_metadata_sidecar_path(lock_path);
-    let sidecar = match OpenOptions::new()
-        .truncate(true)
-        .write(true)
-        .open(&sidecar_path)
-    {
-        Ok(sidecar) => sidecar,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!(
-                    "opening index-run lock metadata sidecar {}",
-                    sidecar_path.display()
-                )
-            });
-        }
-    };
-    sidecar.sync_all().with_context(|| {
-        format!(
-            "syncing cleared index-run lock metadata sidecar {}",
-            sidecar_path.display()
-        )
-    })
-}
-
 fn read_capped_metadata_from_path(path: &Path, max_len: u64) -> std::io::Result<String> {
     let file = OpenOptions::new().read(true).open(path)?;
     let mut raw = String::new();
     (&file).take(max_len).read_to_string(&mut raw)?;
     Ok(raw)
-}
-
-#[cfg(windows)]
-pub fn windows_lock_conflict(err: &std::io::Error) -> bool {
-    matches!(err.raw_os_error(), Some(32 | 33))
-}
-
-#[cfg(not(windows))]
-pub fn windows_lock_conflict(_err: &std::io::Error) -> bool {
-    false
 }
 
 /// Pure-read maintenance probe (gh#422): search-triggered refresh decisions

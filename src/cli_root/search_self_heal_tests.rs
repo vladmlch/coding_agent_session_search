@@ -38,7 +38,7 @@ use tracing::{info, warn};
 #[allow(unused_imports)]
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-include!("../search/gh494_repair_tests.rs");
+include!("gh494_repair_tests.rs");
 
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
 use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
@@ -760,7 +760,7 @@ fn search_self_heal_refreshes_stale_checkpoint_when_live_index_matches_db() {
     .expect("search self-heal should refresh checkpoint");
     assert_eq!(repair.action, "refreshed-checkpoint");
 
-    let checkpoint = crate::indexer::load_lexical_rebuild_checkpoint(&index_path)
+    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
         .expect("load repaired checkpoint")
         .expect("checkpoint present");
     assert_eq!(checkpoint.schema_hash, crate::search::tantivy::SCHEMA_HASH);
@@ -808,7 +808,7 @@ fn search_self_heal_rebuilds_when_checkpoint_references_different_db() {
     assert_eq!(repair.action, "rebuilt-from-canonical-db");
     assert_eq!(repair.indexed_docs, Some(1));
 
-    let checkpoint = crate::indexer::load_lexical_rebuild_checkpoint(&index_path)
+    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
         .expect("load rebuilt checkpoint")
         .expect("checkpoint present");
     assert!(stored_path_identity_matches(&checkpoint.db_path, &db_path));
@@ -1297,7 +1297,7 @@ fn search_self_heal_defers_missing_checkpoint_when_index_is_readable() {
     assert_eq!(repair.indexed_docs, None);
 
     assert!(
-        crate::indexer::load_lexical_rebuild_checkpoint(&index_path)
+        crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
             .expect("load checkpoint")
             .is_none(),
         "foreground search should not synthesize unverifiable checkpoint metadata"
@@ -1406,7 +1406,7 @@ fn search_self_heal_replaces_corrupt_live_artifact_for_empty_db() {
     crate::search::tantivy::validate_searchable_index_contract(&index_path)
         .expect("empty repaired lexical artifact contract");
 
-    let checkpoint = crate::indexer::load_lexical_rebuild_checkpoint(&index_path)
+    let checkpoint = crate::storage::lexical_checkpoint_io::load_lexical_rebuild_checkpoint(&index_path)
         .expect("load empty repair checkpoint")
         .expect("checkpoint present");
     assert!(checkpoint.completed);

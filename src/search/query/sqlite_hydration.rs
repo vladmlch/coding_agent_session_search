@@ -315,26 +315,7 @@ pub(in crate::search::query) fn semantic_doc_component_id_from_db(raw: Option<i6
 // SQL Placeholder Builder (Opt 4.5: Pre-sized String Buffers)
 // ============================================================================
 
-/// Render rowids as a literal SQL list (`1,2,3`) for an `IN (...)` over an
-/// `INTEGER PRIMARY KEY`.
-///
-/// Integer literals avoid bind-variable count limits and allow direct
-/// primary-key `IN` list seeks across SQLite hydration chunks at the full
-/// chunk size. The ids come from cass's own index (never from user text)
-/// and `i64`'s `Display` emits only an optional `-` and ASCII digits, so
-/// embedding them cannot form SQL.
-pub fn sql_rowid_literal_list(ids: &[i64]) -> String {
-    let mut out = String::with_capacity(ids.len().saturating_mul(8));
-    for (idx, id) in ids.iter().enumerate() {
-        if idx > 0 {
-            out.push(',');
-        }
-        // `write!` into a String cannot fail.
-        use std::fmt::Write as _;
-        let _ = write!(out, "{id}");
-    }
-    out
-}
+pub use crate::storage::lexical_checkpoint_io::sql_rowid_literal_list;
 
 /// Build a comma-separated list of SQL placeholders with pre-allocated capacity.
 ///
