@@ -1194,7 +1194,7 @@ fn doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place()
         || {
             fs::create_dir_all(&legacy_data_dir).expect("data dir");
             fs::copy(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
+                util::ws_paths_1b::workspace_root()
                     .join("tests/fixtures/gh503/legacy_fts_config_shadow.db"),
                 &legacy_db_path,
             )

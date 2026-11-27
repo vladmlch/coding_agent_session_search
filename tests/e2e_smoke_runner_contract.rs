@@ -5,12 +5,12 @@
 //!
 //! This contract test file pins the smoke runner's surface.
 
-use std::path::PathBuf;
+mod ws_paths_1b;
 
 #[test]
 fn smoke_runner_script_exists_and_is_readable() -> std::io::Result<()> {
     tracing::info!(target: "8m208_test", check = "script_present");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1b::workspace_root()
         .join("scripts")
         .join("tests")
         .join("run_e2e_smoke.sh");
@@ -23,7 +23,7 @@ fn smoke_runner_script_exists_and_is_readable() -> std::io::Result<()> {
 #[test]
 fn smoke_runner_script_is_executable() {
     tracing::info!(target: "8m208_test", check = "script_executable");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1b::workspace_root()
         .join("scripts")
         .join("tests")
         .join("run_e2e_smoke.sh");
@@ -40,7 +40,7 @@ fn smoke_runner_script_is_executable() {
 #[test]
 fn smoke_runner_uses_local_cargo_for_cargo_invocations() {
     tracing::info!(target: "8m208_test", check = "uses_local_cargo");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1b::workspace_root()
         .join("scripts")
         .join("tests")
         .join("run_e2e_smoke.sh");
@@ -54,7 +54,7 @@ fn smoke_runner_uses_local_cargo_for_cargo_invocations() {
 #[test]
 fn smoke_runner_emits_structured_summary() {
     tracing::info!(target: "8m208_test", check = "structured_summary");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1b::workspace_root()
         .join("scripts")
         .join("tests")
         .join("run_e2e_smoke.sh");
@@ -69,7 +69,7 @@ fn smoke_runner_emits_structured_summary() {
 #[test]
 fn smoke_runner_provides_failure_repro_hint() {
     tracing::info!(target: "8m208_test", check = "repro_hint");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = ws_paths_1b::workspace_root()
         .join("scripts")
         .join("tests")
         .join("run_e2e_smoke.sh");

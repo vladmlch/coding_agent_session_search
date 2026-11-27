@@ -6,8 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
+mod ws_paths_1b;
+
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    ws_paths_1b::workspace_root()
 }
 
 fn read_doc(root: &Path, relative_path: &str) -> String {

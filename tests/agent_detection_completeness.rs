@@ -13,6 +13,8 @@ use coding_agent_search::indexer::get_connector_factories;
 use std::collections::HashSet;
 use std::path::Path;
 
+mod ws_paths_1b;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -370,11 +372,21 @@ fn collect_non_test_rs_files(manifest_dir: &Path, dir: &Path, out: &mut Vec<std:
 }
 
 fn lib_split_production_files() -> Vec<std::path::PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src_dir = manifest_dir.join("src");
-    let mut files = vec![src_dir.join("lib.rs")];
-    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
-        collect_non_test_rs_files(manifest_dir, &src_dir.join(subdir), &mut files);
+    let root = ws_paths_1b::workspace_root();
+    let root_src = root.join("src");
+    let mut files = Vec::new();
+    for src_dir in ws_paths_1b::workspace_source_dirs(&root) {
+        if src_dir == root_src {
+            let lib_rs = src_dir.join("lib.rs");
+            if lib_rs.is_file() {
+                files.push(lib_rs);
+            }
+            for subdir in ["cli_root", "lib_doctor", "cli_app"] {
+                collect_non_test_rs_files(&root, &src_dir.join(subdir), &mut files);
+            }
+        } else {
+            collect_non_test_rs_files(&root, &src_dir, &mut files);
+        }
     }
     files
 }

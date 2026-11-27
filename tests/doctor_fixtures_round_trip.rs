@@ -17,12 +17,12 @@
 //! doctor undo` invocations once dispatch is wired.
 
 use std::fs;
-use std::path::PathBuf;
+
+mod ws_paths_1b;
 
 #[test]
 fn fixture_layout_one_subdir_per_fm() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let fixtures = PathBuf::from(manifest_dir)
+    let fixtures = ws_paths_1b::workspace_root()
         .join("tests")
         .join("doctor_fixtures");
 
@@ -48,8 +48,7 @@ fn fixture_layout_one_subdir_per_fm() {
 
 #[test]
 fn fixture_readme_exists_with_round_trip_contract() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let readme = PathBuf::from(manifest_dir)
+    let readme = ws_paths_1b::workspace_root()
         .join("tests")
         .join("doctor_fixtures")
         .join("README.md");

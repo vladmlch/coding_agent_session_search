@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
+mod ws_paths_1b;
+
 const TOOL_TEXT: &str = "bm-li42 · File the vetted Claude Code harness bugs upstream";
 const ASSISTANT_TEXT: &str = "lexical-rebuild-state\nlane status\n19:12:59 tick 6";
 const WRONG_TEXT: &str = "[Tool: Read - unrelated-tool-result.txt]";
@@ -239,7 +241,9 @@ fn pretty_printed_json_is_not_treated_as_a_message_numbered_file() {
 
 #[test]
 fn quickstart_does_not_feed_search_ordinals_to_raw_line_flags() {
-    let reference = include_str!("../docs/reference/QUICK_REFERENCE.md");
+    let reference_path = ws_paths_1b::workspace_root().join("docs/reference/QUICK_REFERENCE.md");
+    let reference = std::fs::read_to_string(&reference_path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", reference_path.display()));
     let quickstart = reference.split("## TL;DR").next().unwrap();
     for command in ["view", "expand"] {
         let line = quickstart

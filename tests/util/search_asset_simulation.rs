@@ -658,7 +658,7 @@ fn persistent_artifact_root(scenario: &str) -> PathBuf {
     static NEXT_ARTIFACT_ID: AtomicU64 = AtomicU64::new(0);
 
     let artifact_id = NEXT_ARTIFACT_ID.fetch_add(1, Ordering::Relaxed);
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    super::ws_paths_1b::workspace_root()
         .join("test-results")
         .join("search_asset_simulation")
         .join(format!("{:03}-{}", artifact_id, sanitize_label(scenario)))

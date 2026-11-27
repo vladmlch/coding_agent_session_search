@@ -648,9 +648,7 @@ fn validated_external_run_id() -> std::io::Result<Option<String>> {
 }
 
 fn e2e_output_root() -> std::io::Result<PathBuf> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let manifest_dir = super::ws_paths_1b::workspace_root();
     let root = manifest_dir.join("test-results").join("e2e");
     Ok(match validated_external_run_id()? {
         Some(run_id) => root.join("runs").join(run_id),
@@ -1424,11 +1422,7 @@ impl E2eCommandEnvironment {
     fn new(artifacts: &E2eArtifactPaths) -> Self {
         let trace_test_id = artifacts
             .dir
-            .strip_prefix(
-                dotenvy::var("CARGO_MANIFEST_DIR")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|_| PathBuf::from(".")),
-            )
+            .strip_prefix(super::ws_paths_1b::workspace_root())
             .unwrap_or(&artifacts.dir)
             .to_string_lossy()
             .to_string();
@@ -1697,9 +1691,7 @@ impl FailureDump {
     }
 
     fn dump_dir() -> std::io::Result<PathBuf> {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let manifest_dir = super::ws_paths_1b::workspace_root();
         Ok(manifest_dir.join("test-results").join("failure_dumps"))
     }
 
@@ -2216,9 +2208,7 @@ pub fn check_metric_regression(
 }
 
 fn baselines_path() -> std::io::Result<PathBuf> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let manifest_dir = super::ws_paths_1b::workspace_root();
     Ok(manifest_dir.join("test-results").join("baselines.json"))
 }
 

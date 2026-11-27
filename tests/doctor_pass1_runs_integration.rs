@@ -16,23 +16,26 @@
 
 use std::fs;
 
+mod ws_paths_1b;
+
 #[test]
 fn doctor_pass1_smoke_module_layout_is_present() {
     // The on-disk artifact layout assertion: the four new module source files
     // exist in src/. We assert the layout by reading the project tree from the
-    // CARGO_MANIFEST_DIR — this is a regression detector for accidental file
+    // workspace root — this is a regression detector for accidental file
     // moves in a future refactor.
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let root = ws_paths_1b::workspace_root();
     for module in [
         "doctor_runs.rs",
         "doctor_chokepoint.rs",
         "doctor_undo.rs",
         "doctor_robot_docs.rs",
     ] {
-        let p = format!("{manifest_dir}/src/{module}");
+        let p = ws_paths_1b::resolve_workspace_source(&root, &format!("src/{module}"));
         assert!(
-            std::path::Path::new(&p).is_file(),
-            "expected {p} to exist; module layout regressed"
+            p.is_file(),
+            "expected {} to exist; module layout regressed",
+            p.display()
         );
     }
 }
@@ -41,8 +44,12 @@ fn doctor_pass1_smoke_module_layout_is_present() {
 fn doctor_pass1_robot_docs_topic_is_in_handbook() {
     // The robot-docs topic body must continue to mention the canonical new
     // subcommand spellings (per FM-cli_robot-robot-docs-topic-missing).
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let body = fs::read_to_string(format!("{manifest_dir}/src/doctor_robot_docs.rs")).unwrap();
+    let root = ws_paths_1b::workspace_root();
+    let body = fs::read_to_string(ws_paths_1b::resolve_workspace_source(
+        &root,
+        "src/doctor_robot_docs.rs",
+    ))
+    .unwrap();
     for needle in [
         "cass doctor ls",
         "cass doctor undo",
@@ -64,8 +71,12 @@ fn doctor_pass1_chokepoint_rejects_path_outside_data_dir() {
     // we read the source and assert the canonical refusal pattern is wired.
     // Full behavioral assertions live in the in-crate unit tests (which have
     // access to the pub(crate) APIs).
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let body = fs::read_to_string(format!("{manifest_dir}/src/doctor_chokepoint.rs")).unwrap();
+    let root = ws_paths_1b::workspace_root();
+    let body = fs::read_to_string(ws_paths_1b::resolve_workspace_source(
+        &root,
+        "src/doctor_chokepoint.rs",
+    ))
+    .unwrap();
     assert!(
         body.contains("PathOutOfScope"),
         "chokepoint must declare a PathOutOfScope error variant"
@@ -84,8 +95,12 @@ fn doctor_pass1_chokepoint_rejects_path_outside_data_dir() {
 fn doctor_pass1_undo_walks_actions_in_reverse() {
     // The pass-1 undo contract: walks actions.jsonl in reverse, verifies hashes,
     // refuses on mismatch. Smoke-check the source for the canonical idioms.
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let body = fs::read_to_string(format!("{manifest_dir}/src/doctor_undo.rs")).unwrap();
+    let root = ws_paths_1b::workspace_root();
+    let body = fs::read_to_string(ws_paths_1b::resolve_workspace_source(
+        &root,
+        "src/doctor_undo.rs",
+    ))
+    .unwrap();
     assert!(
         body.contains("AfterHashMismatch"),
         "undo must declare an AfterHashMismatch error variant for tamper detection"
@@ -99,8 +114,12 @@ fn doctor_pass1_undo_walks_actions_in_reverse() {
 #[test]
 fn doctor_pass1_runs_jsonl_is_append_only() {
     // The actions.jsonl contract: append-only; readers tolerate bad lines.
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let body = fs::read_to_string(format!("{manifest_dir}/src/doctor_runs.rs")).unwrap();
+    let root = ws_paths_1b::workspace_root();
+    let body = fs::read_to_string(ws_paths_1b::resolve_workspace_source(
+        &root,
+        "src/doctor_runs.rs",
+    ))
+    .unwrap();
     assert!(
         body.contains("OpenOptions::new"),
         "runs must use OpenOptions for append-only semantics"
@@ -123,7 +142,7 @@ fn doctor_pass1_workspace_artifacts_referenced_in_playbook() {
     // entries. If either is missing, downstream Phase 8/9 work breaks.
     let workspace = format!(
         "{}/../coding_agent_session_search__doctor_workspace",
-        env!("CARGO_MANIFEST_DIR")
+        ws_paths_1b::workspace_root().display()
     );
     let playbook = format!("{workspace}/playbook.md");
     if !std::path::Path::new(&playbook).is_file() {

@@ -22,6 +22,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+mod ws_paths_1b;
+
 /// Directory naming prefix for connector test fixtures.
 /// Using "fixture-" instead of "mock-" to clearly indicate real test data.
 pub const FIXTURE_PREFIX: &str = "fixture-";
@@ -73,7 +75,9 @@ pub fn setup_connector_test_with_projects(agent_name: &str) -> (TempDir, PathBuf
 /// # Returns
 /// The destination path if copy succeeded.
 pub fn copy_fixture(fixture_path: &str, dest_path: &Path) -> std::io::Result<PathBuf> {
-    let src = PathBuf::from("tests/fixtures").join(fixture_path);
+    let src = ws_paths_1b::workspace_root()
+        .join("tests/fixtures")
+        .join(fixture_path);
     if let Some(parent) = dest_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -83,18 +87,20 @@ pub fn copy_fixture(fixture_path: &str, dest_path: &Path) -> std::io::Result<Pat
 
 /// Load a fixture file and return its contents.
 pub fn load_fixture(fixture_path: &str) -> std::io::Result<String> {
-    let path = PathBuf::from("tests/fixtures").join(fixture_path);
+    let path = ws_paths_1b::workspace_root()
+        .join("tests/fixtures")
+        .join(fixture_path);
     fs::read_to_string(path)
 }
 
 /// Absolute path to the real embedding model fixture directory.
 pub fn embedder_fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(EMBEDDER_MODEL_FIXTURE_DIR)
+    ws_paths_1b::workspace_root().join(EMBEDDER_MODEL_FIXTURE_DIR)
 }
 
 /// Absolute path to the real reranker model fixture directory.
 pub fn reranker_fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(RERANKER_MODEL_FIXTURE_DIR)
+    ws_paths_1b::workspace_root().join(RERANKER_MODEL_FIXTURE_DIR)
 }
 
 /// Verify SHA256 checksums for the real model fixture bundle.
