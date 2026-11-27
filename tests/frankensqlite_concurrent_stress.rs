@@ -5,7 +5,7 @@
 //!
 //! Bead: coding_agent_session_search-2tax6
 
-use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt, TransactionExt};
+use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
 use coding_agent_search::franken_sync::params as fparams;
 use coding_agent_search::franken_sync::{Connection, FrankenError, TransactionBehavior};
 use coding_agent_search::storage::sqlite::{

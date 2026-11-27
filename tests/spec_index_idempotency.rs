@@ -175,7 +175,7 @@ fn conversation_count(envelope: &Value) -> Result<i64, Box<dyn Error>> {
 
 fn archive_totals(data_dir: &Path) -> Result<(usize, usize), Box<dyn Error>> {
     let db_path = data_dir.join("agent_search.db");
-    let conn = open_with_flags(&db_path.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = open_with_flags(db_path.to_string_lossy(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let conversations: i64 =
         conn.query_row_map("SELECT COUNT(*) FROM conversations", &[], |row| {
             row.get_typed(0)

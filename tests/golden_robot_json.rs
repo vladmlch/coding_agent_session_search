@@ -3060,7 +3060,7 @@ fn regenerate_search_demo_data_schema_v1_fixture() {
     }
 
     {
-        let conn = FrankenConnection::open(staging_db.to_string_lossy().into_owned())
+        let conn = FrankenConnection::open(staging_db.to_string_lossy())
             .expect("reopen staging db to finalize single-file image");
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .expect("checkpoint staging db");

@@ -81,7 +81,7 @@ fn schema_objects_live_inside_the_same_canonical_db() -> Result<()> {
     // Authorized writer path: initialize the extension profile before the
     // strict read-only archive is ever opened (bridge child is spawned but
     // has not touched the DB yet — the first exchange opens it lazily).
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     schema::ensure_schema(&writer)?;
 
     let objects = viewer_objects(&writer)?;
@@ -151,7 +151,7 @@ fn schema_objects_live_inside_the_same_canonical_db() -> Result<()> {
 #[test]
 fn schema_revisions_singleton_and_extension_version() -> Result<()> {
     let mut bridge = BridgeHarness::empty()?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     schema::ensure_schema(&writer)?;
 
     let rows = writer.query(
@@ -195,7 +195,7 @@ fn schema_annotations_tags_facts_roundtrip_nullable_typed() -> Result<()> {
     let mut bridge = BridgeHarness::with_conversations(&[FixtureConversation::repeated(
         1, "local", "fixture", 3,
     )])?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     schema::ensure_schema(&writer)?;
 
     writer.execute_with_params(
@@ -271,7 +271,7 @@ fn schema_annotations_tags_facts_roundtrip_nullable_typed() -> Result<()> {
 #[test]
 fn schema_engine_capability_probe() -> Result<()> {
     let mut bridge = BridgeHarness::empty()?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     schema::ensure_schema(&writer)?;
 
     // FK declaration must be visible in the catalog even if the engine does
@@ -314,7 +314,7 @@ fn schema_requires_canonical_base_and_rolls_back_cleanly() -> Result<()> {
     // creating orphan extension tables.
     let temp = tempfile::tempdir()?;
     let db = temp.path().join("empty.db");
-    let writer = Connection::open(db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(db.to_string_lossy())?;
     let refused = schema::ensure_schema(&writer);
     ensure!(
         refused.is_err(),
@@ -340,7 +340,7 @@ fn facts_parent_evidence_backfill_for_pre_v3_rows() -> Result<()> {
         FixtureConversation::repeated(1, "local", "fixture", 2),
         FixtureConversation::repeated(2, "local", "fixture", 2),
     ])?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
 
     // Simulate a pre-v3 archive honestly: the v2 table shape (no
     // `parent_external_id` column), a v2 version marker, and a facts row
@@ -449,7 +449,7 @@ fn facts_fixup_never_self_parents() -> Result<()> {
         FixtureConversation::repeated(1, "local", "fixture", 2),
         FixtureConversation::repeated(2, "local", "fixture", 2),
     ])?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     schema::ensure_schema(&writer)?;
 
     // Conversation 1's own external_id is "fixture-1" — its facts row
@@ -516,7 +516,7 @@ fn facts_parent_delete_trigger_repairs_resolved_child_link() -> Result<()> {
         FixtureConversation::repeated(3, "local", "fixture", 2),
         FixtureConversation::repeated(4, "local", "fixture", 2),
     ])?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     schema::ensure_schema(&writer)?;
     // Resolved links: child 2 -> parent 1, child 4 -> parent 3.
     for (child_id, parent_id) in [(2_i64, 1_i64), (4_i64, 3_i64)] {
@@ -584,7 +584,7 @@ fn facts_parent_delete_trigger_repairs_resolved_child_link() -> Result<()> {
 /// this base; every other fixup fixture wraps it in `ensure_schema`. The
 /// caller owns the db path (a test-scoped tempdir join).
 fn fixup_base_db(db_path: &Path) -> Result<Connection> {
-    let conn = Connection::open(db_path.to_string_lossy().into_owned())?;
+    let conn = Connection::open(db_path.to_string_lossy())?;
     conn.execute_batch(
         "CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE);
          CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT NOT NULL, host_label TEXT);
@@ -1460,7 +1460,7 @@ fn schema_init_extensions_flag_uses_authorized_writer_then_exits() -> Result<()>
         .status()?;
     ensure!(status.success(), "--init-extensions failed: {status}");
 
-    let reader = Connection::open(db.to_string_lossy().into_owned())?;
+    let reader = Connection::open(db.to_string_lossy())?;
     let objects = viewer_objects(&reader)?;
     ensure!(
         objects.contains(&("table".to_owned(), "viewer_annotations".to_owned())),
@@ -1589,7 +1589,7 @@ fn revisions_observer_triggers_catch_external_canonical_writers() -> Result<()> 
     let hello = bridge.exchange(json!({"op":"hello","id":1}))?;
     ensure!(hello["result"]["generation"]["canonical_revision"] == 0);
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer
         .execute("UPDATE messages SET content='mutated text' WHERE conversation_id=1 AND idx=0")?;
     drop(writer);
@@ -1607,7 +1607,7 @@ fn revisions_observer_triggers_catch_external_canonical_writers() -> Result<()> 
         "canonical writes must not move the other logical revisions: {generation}"
     );
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute(
         "INSERT INTO messages (conversation_id,idx,role,content) VALUES (1,2,'agent','appended')",
     )?;
@@ -1638,7 +1638,7 @@ fn revisions_same_values_rewrite_is_not_a_content_update() -> Result<()> {
             == 0
     );
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("UPDATE messages SET content=content WHERE conversation_id=1")?;
     writer
         .execute("UPDATE conversations SET title=title,metadata_json=metadata_json WHERE id=1")?;
@@ -1706,7 +1706,7 @@ fn revisions_same_values_rewrite_is_not_a_content_update() -> Result<()> {
     }
 
     // A genuinely changed served column still bumps through the same lane.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("UPDATE conversations SET title='new title' WHERE id=1")?;
     drop(writer);
     let status = bridge.exchange(json!({"op":"status","id":4}))?;
@@ -1819,7 +1819,7 @@ fn revisions_authorized_writer_accepts_only_narrow_annotation_ops() -> Result<()
 
     // The persisted state matches the last accepted patch, and exactly one
     // annotation_revision bump committed per accepted patch.
-    let reader = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let reader = Connection::open(bridge.db.to_string_lossy())?;
     let row = reader.query_row(
         "SELECT is_pinned,custom_title,notes,revision FROM viewer_annotations WHERE conversation_id=1",
     )?;
@@ -1916,7 +1916,7 @@ fn revisions_external_write_can_never_serve_stale_canonical() -> Result<()> {
     ensure!(first["result"]["row"]["title"] == "fixture");
     let token = first["result"]["catalog_revision"].clone();
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("UPDATE conversations SET title='externally mutated' WHERE id=1")?;
     drop(writer);
 
@@ -1975,7 +1975,7 @@ fn revisions_engine_trigger_semantics_probe() -> Result<()> {
     // rewrites while genuine column changes still bump — across connections.
     let temp = tempfile::tempdir()?;
     let db = temp.path().join("probe.db");
-    let writer = Connection::open(db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(db.to_string_lossy())?;
     writer.execute_batch(
         "CREATE TABLE base (id INTEGER PRIMARY KEY, a TEXT, b INTEGER);
          CREATE TABLE bumps (n INTEGER NOT NULL);
@@ -2088,7 +2088,7 @@ fn list_fixture_a() -> Vec<SeedConversation> {
 
 /// Seed annotation + tag for conv 4 and move conv 2's tail timestamp.
 fn seed_annotations(bridge: &BridgeHarness) -> Result<()> {
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute(
         "INSERT INTO viewer_annotations (conversation_id,is_pinned,revision) VALUES (4,1,1)",
     )?;
@@ -2627,7 +2627,7 @@ fn list_sessions_classification_filters() -> Result<()> {
         .collect::<Vec<_>>();
     let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
     init_extensions(&bridge)?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     for (id, is_subagent, category, coverage) in [
         (1_i64, 0_i64, Some("bugfix"), "complete"),
         (2, 1, Some("refactor"), "complete"),
@@ -2711,7 +2711,7 @@ fn list_sessions_items_carry_persisted_facts_and_parent_public_id() -> Result<()
         .collect::<Vec<_>>();
     let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
     init_extensions(&bridge)?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     // conv2 is the proven child of conv1; conv3 keeps only a facts row with
     // a known-zero payload (a measured zero must stay a zero on the wire).
     writer.execute_with_params(
@@ -3022,7 +3022,7 @@ fn list_sessions_page_cut_matches_enriched_bytes() -> Result<()> {
 
     // Many tags per row: the post-cut overlay serializes them into every
     // emitted item, the bytes the pre-enrichment budget never counted.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     for id in 1..=ROWS {
         for tag in 0..TAGS_PER_ROW {
             writer.execute_with_params(
@@ -3133,7 +3133,7 @@ fn list_sessions_query_plan_audit() -> Result<()> {
     init_extensions(&bridge)?;
     seed_annotations(&bridge)?;
 
-    let connection = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let connection = Connection::open(bridge.db.to_string_lossy())?;
     for (label, filters, sort, pin_first) in [
         (
             "default browse",
@@ -3285,7 +3285,7 @@ struct ScaleSortRow {
 /// back to `ended_at`/`started_at` activity, every 23rd is fully unknown,
 /// and a third of the rows carry no workspace (project unknown).
 fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
-    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(db.to_string_lossy())?;
     conn.execute("BEGIN IMMEDIATE")?;
     conn.execute(
         "INSERT OR IGNORE INTO sources (id,kind,created_at,updated_at) \
@@ -3385,7 +3385,7 @@ fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
 /// the maintenance lane exercised at scale (the migration backfill covers
 /// the canonical columns; these writes cover the trigger path).
 fn seed_sort_scale_extensions(db: &Path, count: usize) -> Result<()> {
-    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(db.to_string_lossy())?;
     conn.execute("BEGIN IMMEDIATE")?;
     let insert = conn.prepare(
         "INSERT INTO viewer_session_facts \
@@ -3429,7 +3429,7 @@ fn seed_sort_scale_extensions(db: &Path, count: usize) -> Result<()> {
 }
 
 fn load_scale_sort_rows(db: &Path) -> Result<Vec<ScaleSortRow>> {
-    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(db.to_string_lossy())?;
     let mut rows = Vec::new();
     for row in conn.query(
         "SELECT conversation_id, is_pinned, \
@@ -3597,7 +3597,7 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
     );
 
     // ---- plan audit at scale: every supported sort walks its index ------
-    let connection = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let connection = Connection::open(bridge.db.to_string_lossy())?;
     for (sort, expected_index) in [
         (None, "idx_viewer_sort_activity_desc"),
         (Some("updated_asc"), "idx_viewer_sort_activity_asc"),
@@ -3756,7 +3756,7 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
     eprintln!("50k walk: init {init_ms}ms, keyset page latency {second_ms:?}");
 
     // ---- keyset order scan at scale stays on the composite index -------
-    let connection2 = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let connection2 = Connection::open(bridge.db.to_string_lossy())?;
     let planned = query::planned_page_sql(
         &connection2,
         &protocol::ListFilters::default(),
@@ -3796,7 +3796,7 @@ fn list_sessions_sort_index_scaling_evidence() -> Result<()> {
         let init_ms = init_start.elapsed().as_millis();
         seed_sort_scale_extensions(&bridge.db, count)?;
 
-        let connection = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        let connection = Connection::open(bridge.db.to_string_lossy())?;
         let planned = query::planned_page_sql(
             &connection,
             &protocol::ListFilters::default(),
@@ -3855,7 +3855,7 @@ fn list_sessions_browse_refuses_unresolved_tie_keys() -> Result<()> {
     init_extensions(&bridge)?;
     seed_annotations(&bridge)?;
 
-    let conn = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(bridge.db.to_string_lossy())?;
     conn.execute(
         "UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL \
          WHERE conversation_id = 3",
@@ -3938,7 +3938,7 @@ fn list_sessions_sort_mirrors_pin_canonical_and_facts_changes() -> Result<()> {
 
     // Canonical timestamp edit: the conversations trigger moves the row
     // inside created_desc (and never touches the verified tie).
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("UPDATE conversations SET started_at = 9_999 WHERE id = 3")?;
     let page = bridge.exchange(json!({
         "op":"list_sessions","sort":"created_desc","limit":10}))?;
@@ -3988,7 +3988,7 @@ fn list_sessions_stale_extension_profile_refused() -> Result<()> {
     // silently degrading to a full-candidate sort.
     let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
     init_extensions(&bridge)?;
-    let conn = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(bridge.db.to_string_lossy())?;
     conn.execute("UPDATE viewer_meta SET value = '4' WHERE key = 'extension_schema_version'")?;
     drop(conn);
     let refused = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
@@ -4019,7 +4019,7 @@ fn list_sessions_agent_delete_invalidates_tie_keys() -> Result<()> {
     ensure!(page["ok"] == true, "baseline browse must serve: {page}");
     ensure!(item_ids(&page) == [4, 5, 2, 1, 3], "{page}");
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     match writer.execute("DELETE FROM agents WHERE slug = 'gemini'") {
         Ok(_) => {
             // The v6 trigger returned every gemini-owned row's persisted
@@ -4091,7 +4091,7 @@ fn list_sessions_agent_delete_invalidates_tie_keys() -> Result<()> {
 #[test]
 fn ingest_profile_guard_converges_pending_sort_ties() -> Result<()> {
     let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
 
     // The pre-fix upgrade state honestly: the profile installs (sort rows
     // backfilled, every tie pending — triggers cannot compute a verified
@@ -4230,7 +4230,7 @@ fn detail_fixture() -> Vec<SeedConversation> {
 /// provider record shapes this task exercises. Seeded BEFORE
 /// `--init-extensions` so the canonical-observer triggers stay quiet.
 fn seed_detail_extras(bridge: &BridgeHarness) -> Result<()> {
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     for (idx, extra) in [
         (
             0_i64,
@@ -4275,7 +4275,7 @@ fn seed_detail_extras(bridge: &BridgeHarness) -> Result<()> {
 /// extension profile exists). `viewer_*` and `snippets` writes are not
 /// canonical-observed, so `canonical_revision` stays at its seeded value.
 fn seed_detail_overlays(bridge: &BridgeHarness) -> Result<()> {
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "INSERT INTO viewer_session_facts \
          (conversation_id,extractor_version,source_revision,coverage_state,coverage_detail_json,\
@@ -4494,7 +4494,7 @@ fn details_summary_carries_metrics_half_and_null_without_facts() -> Result<()> {
     seed_detail_extras(&bridge)?;
     init_extensions(&bridge)?;
     seed_detail_overlays(&bridge)?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     coding_agent_search::viewer_extensions::facts::ensure_metrics_schema(&writer)?;
     writer.execute_with_params(
         "INSERT INTO viewer_session_metrics \
@@ -4814,7 +4814,7 @@ fn details_tool_output_revision_and_evidence() -> Result<()> {
 
     // A canonical write invalidates the previously bound revision; the new
     // generation serves the new bytes, never the stale coordinate.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute(
         "UPDATE messages SET content='mutated output' WHERE conversation_id=1 AND idx=2",
     )?;
@@ -4982,7 +4982,7 @@ fn details_tool_output_image_only_parts_stay_available() -> Result<()> {
         "image_url":{"url":"data:image/png;base64,MADEUP"}}]
     });
     {
-        let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        let writer = Connection::open(bridge.db.to_string_lossy())?;
         writer.execute_with_params(
             "UPDATE messages SET extra_bin = NULL, extra_json = ?1 \
              WHERE conversation_id = 1 AND idx = 2",
@@ -5023,7 +5023,7 @@ fn details_tool_output_image_only_parts_stay_available() -> Result<()> {
 fn analytics_engine_json1_strftime_probe() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let db = temp.path().join("probe.db");
-    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(db.to_string_lossy())?;
     let json_each = conn
         .query("SELECT j.key, j.value FROM json_each('{\"a\":2}') j")
         .ok()
@@ -5079,7 +5079,7 @@ fn analytics_engine_json1_strftime_probe() -> Result<()> {
 ///   5  claude_code  projA dir   90004000   NO facts row (pending) — unknown metrics
 ///   6  codex        projB dir   190008000  retries=5, churn a.rs:2 + b.rs:6
 fn analytics_fixture(bridge: &BridgeHarness) -> Result<()> {
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     for (id, started, ended, activity) in [
         (1_i64, Some(500_i64), Some(8_000_i64), 1_000_i64),
         (2, Some(2_000), Some(6_000), 3_000),
@@ -5375,7 +5375,7 @@ fn analytics_dashboard_aggregates_and_nullable_unknowns() -> Result<()> {
         total_sessions_in_cells == 4,
         "NULL activity excluded: {cells:?}"
     );
-    let conn = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(bridge.db.to_string_lossy())?;
     // conv1+conv2 share one bucket (same local hour); conv5/6 land in
     // their own buckets. Bucket identity is probed through the same
     // strftime expression — the session/cost/token sums are independent.
@@ -5803,7 +5803,7 @@ fn classification_coverage_reflects_relationship_evidence_only() -> Result<()> {
         .collect::<Vec<_>>();
     let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
     init_extensions(&bridge)?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     // conv1: known root verdict, unrelated scopes partial.
     // conv2: known subagent verdict, unrelated scopes unavailable.
     // conv3: no verdict, unrelated scopes partial — genuinely uncertain.
@@ -5920,7 +5920,7 @@ fn dashboard_classification_complete_with_known_verdicts_and_partial_coverage() 
         .collect::<Vec<_>>();
     let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
     init_extensions(&bridge)?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     for (id, is_subagent, coverage) in [(1_i64, 0_i64, "partial"), (2, 1, "unavailable")] {
         writer.execute_with_params(
             "INSERT INTO viewer_session_facts \
@@ -6032,7 +6032,7 @@ fn analytics_query_plan_audit() -> Result<()> {
     let mut bridge = BridgeHarness::with_seed(&analytics_seeds(&workspace_a, &workspace_b), &[])?;
     init_extensions(&bridge)?;
     analytics_fixture(&bridge)?;
-    let connection = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let connection = Connection::open(bridge.db.to_string_lossy())?;
 
     const FROM: &str = "FROM conversations c \
         LEFT JOIN conversation_tail_state t ON t.conversation_id = c.id \
@@ -6132,7 +6132,7 @@ fn analytics_metrics_publish_nullable_and_atomic() -> Result<()> {
     let mut bridge =
         BridgeHarness::with_seed(&analytics_seeds(&workspace, "/data/projects/beta"), &[])?;
     init_extensions(&bridge)?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
 
     use coding_agent_search::viewer_extensions::facts::{
         CoverageEntry, FactPublication, SessionHealth,
@@ -6462,7 +6462,7 @@ fn backfill_fixture() -> Result<BackfillFixture> {
 /// The `--init-extensions` authorized pass, in-process: additive schema then
 /// canonical observers — exactly `viewer_bridge::init_extensions`.
 fn install_extensions(db: &std::path::Path) -> Result<Connection> {
-    let connection = Connection::open(db.to_string_lossy().into_owned())?;
+    let connection = Connection::open(db.to_string_lossy())?;
     schema::ensure_schema(&connection)?;
     revisions::ensure_observers(&connection)?;
     Ok(connection)
@@ -6709,7 +6709,7 @@ fn backfill_viewer_extensions_flag_repairs_preexisting_archive() -> Result<()> {
         &[],
     )?;
     init_extensions(&bridge)?;
-    let reader = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let reader = Connection::open(bridge.db.to_string_lossy())?;
     ensure!(
         count(&reader, "SELECT COUNT(*) FROM viewer_session_facts")? == 0,
         "--init-extensions alone must leave extension tables empty (the gap)"
@@ -6732,7 +6732,7 @@ fn backfill_viewer_extensions_flag_repairs_preexisting_archive() -> Result<()> {
         "--backfill-viewer-extensions failed: {status}"
     );
 
-    let reader = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let reader = Connection::open(bridge.db.to_string_lossy())?;
     ensure!(
         count(&reader, "SELECT COUNT(*) FROM viewer_session_facts")? == 2,
         "backfill must populate facts for every canonical conversation"
@@ -6760,7 +6760,7 @@ fn backfill_viewer_extensions_flag_repairs_preexisting_archive() -> Result<()> {
         .stderr(Stdio::inherit())
         .status()?;
     ensure!(status.success(), "idempotent re-run failed: {status}");
-    let reader = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let reader = Connection::open(bridge.db.to_string_lossy())?;
     let canon: i64 = reader
         .query_row("SELECT canonical_revision FROM viewer_revisions WHERE id = 1")?
         .get_typed(0)?;
@@ -6956,7 +6956,7 @@ fn seed_claude_session(
 }
 
 fn ingest_conn(fixture: &IngestFixture) -> Result<Connection> {
-    Ok(Connection::open(fixture.db.to_string_lossy().into_owned())?)
+    Ok(Connection::open(fixture.db.to_string_lossy())?)
 }
 
 /// The canonical id of the fixture conversation — resolved from committed
@@ -8090,7 +8090,7 @@ fn sqlite_sort_index_capability_probe() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("sort-probe-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let db = dir.join("probe.db");
-    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    let conn = Connection::open(db.to_string_lossy())?;
     conn.execute(
         "CREATE TABLE vs (
             conversation_id INTEGER PRIMARY KEY,
@@ -8446,7 +8446,7 @@ fn meta_token_probe_earns_and_denies_the_fast_path() -> Result<()> {
     let mut strict = reader::StrictArchive::open(&db_path)?;
     let rev1 = strict.observe()?;
     let original_mtime = std::fs::metadata(&db_path)?.modified()?;
-    let writer = Connection::open(db_path.to_string_lossy().into_owned())?;
+    let writer = Connection::open(db_path.to_string_lossy())?;
     writer.execute("UPDATE conversations SET title = 'bbbb' WHERE id = 1")?;
     writer.close()?;
     let file = std::fs::OpenOptions::new().write(true).open(&db_path)?;
@@ -8618,7 +8618,7 @@ fn hard_backstop_still_kills_a_genuinely_stuck_request() -> Result<()> {
 
 /// Seed a `viewer_session_facts` row carrying `first_prompt` for one session.
 fn seed_first_prompt(bridge: &BridgeHarness, conversation_id: i64, prompt: &str) -> Result<()> {
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "INSERT INTO viewer_session_facts \
          (conversation_id, extractor_version, source_revision, coverage_state, first_prompt) \
@@ -8683,7 +8683,7 @@ fn list_sessions_oversized_title_lists_with_bounded_preview() -> Result<()> {
     let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
     init_extensions(&bridge)?;
     let huge_len = 1_200_000_i64;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE conversations SET title=?1 WHERE id=3",
         &param_slice_to_values(params!["t".repeat(huge_len as usize)]),
@@ -8716,7 +8716,7 @@ fn list_sessions_annotation_overflow_still_refuses_typed() -> Result<()> {
     init_extensions(&bridge)?;
     // Annotations are never truncated: a note alone past the row profile keeps
     // the strict typed refusal instead of silently cutting user text.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "INSERT INTO viewer_annotations (conversation_id,is_pinned,notes,revision) \
          VALUES (4,0,?1,1)",
@@ -8742,7 +8742,7 @@ fn list_annotations_reads_annotations_without_summary_text() -> Result<()> {
     seed_annotations(&bridge)?; // pin + tag on conv 4
     // A huge first prompt must not break the annotations-only collection read.
     seed_first_prompt(&bridge, 2, &"x".repeat(1_365_611))?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute(
         "INSERT INTO viewer_annotations (conversation_id,is_pinned,custom_title,notes,revision) \
          VALUES (2,0,'big prompt session','a note',1)",
@@ -8790,7 +8790,7 @@ fn list_annotations_reads_annotations_without_summary_text() -> Result<()> {
 fn list_annotations_paginates_and_refuses_annotation_overflow() -> Result<()> {
     let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
     init_extensions(&bridge)?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     for id in [1_i64, 2, 3] {
         writer.execute_with_params(
             "INSERT INTO viewer_annotations (conversation_id,is_pinned,notes,revision) \
@@ -8809,7 +8809,7 @@ fn list_annotations_paginates_and_refuses_annotation_overflow() -> Result<()> {
     ensure!(second["result"]["next_cursor"].is_null());
 
     // An annotation alone past the row profile refuses typed (never cut).
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE viewer_annotations SET notes=?1 WHERE conversation_id=1",
         &param_slice_to_values(params!["n".repeat(600 * 1024)]),

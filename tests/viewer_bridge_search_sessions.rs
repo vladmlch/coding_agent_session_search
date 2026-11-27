@@ -299,7 +299,7 @@ fn gold_seed(fixture: &[GoldSession], db: &Path) -> Result<Connection> {
     // Extension profile + overlays (facts, annotations, tags) must commit
     // BEFORE region publication: `meta:*` rows and the subagents scope
     // derive from exactly these tables.
-    let writer = Connection::open(db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(db.to_string_lossy())?;
     schema::ensure_schema(&writer)?;
     // S1 annotations: notes/tags/pin/custom title (chat-scope blocks).
     writer.execute(
@@ -898,7 +898,7 @@ fn search_sessions_mid_index_write_expires_cursor() -> Result<()> {
     let mut bridge = gold_harness()?;
     // Canonical observers make a second connection's commit bump
     // `canonical_revision` — the generation every search cursor binds.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     revisions::ensure_observers(&writer)?;
     drop(writer);
 
@@ -918,7 +918,7 @@ fn search_sessions_mid_index_write_expires_cursor() -> Result<()> {
     // commit. (A bare new-conversation insert without a completed fact
     // pass would honestly refuse `data_unavailable` BEFORE the cursor is
     // even decoded — unknown evidence is never silently admitted.)
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("UPDATE conversations SET title='mid index retitle' WHERE id=1")?;
     drop(writer);
 
@@ -1821,7 +1821,7 @@ fn search_sessions_annotation_edit_converges_region_docs() -> Result<()> {
 #[test]
 fn search_sessions_large_universe_stays_honest() -> Result<()> {
     let mut bridge = gold_harness()?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     // Explicit-id batched VALUES inserts — deterministic, no same-table
     // INSERT…SELECT scan. 128 batches × 512 rows = 65_536 synthetic
     // sessions (>50k) on top of the seven gold ones. The canonical
@@ -1936,7 +1936,7 @@ fn search_sessions_notes_only_edit_converges_meta_regions() -> Result<()> {
     assert_members(&page, &[1])?;
 
     // The marks row converged back to `published` inside the write op.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let marks = writer.query(
         "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
          WHERE conversation_id = 1",
@@ -2352,7 +2352,7 @@ fn search_regions_stale_queue_retires_shrunk_session_chunks() -> Result<()> {
 
     // The shrink: two messages dropped, the survivor's body replaced —
     // the shape a reindex of a truncated session file produces.
-    let writer = Connection::open(db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(db.to_string_lossy())?;
     writer.execute("DELETE FROM messages WHERE conversation_id = 8 AND idx > 0")?;
     writer.execute_with_params(
         "UPDATE messages SET content = ?1 WHERE conversation_id = 8 AND idx = 0",
@@ -3086,7 +3086,7 @@ fn region_derivation_anchors_large_session_in_linear_time() -> Result<()> {
             );
         }
     }
-    let writer = Connection::open(db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(db.to_string_lossy())?;
 
     let mut durations = Vec::new();
     for session in &fixture {
@@ -3195,7 +3195,7 @@ fn search_sessions_replaced_archive_inode_rebinds_converge_lane() -> Result<()> 
     let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
     ensure!(annotations["ok"] == true, "{annotations}");
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let marks = writer
         .query("SELECT docs_state FROM viewer_search_region_marks WHERE conversation_id = 1")?;
     ensure!(marks.len() == 1, "marks row present: {marks:?}");
@@ -3238,7 +3238,7 @@ fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()
     // held it fails, latching the debt. This op folds nothing.
     let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
     ensure!(annotations["ok"] == true, "{annotations}");
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let marks = writer
         .query("SELECT docs_state FROM viewer_search_region_marks WHERE conversation_id = 1")?;
     ensure!(
@@ -3287,7 +3287,7 @@ fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()
 /// `search_sessions` evaluates the new manifest — the same post-spawn
 /// mutation lane the large-universe honesty test uses.
 fn set_facts_coverage(bridge: &BridgeHarness, id: i64, state: &str, detail: Value) -> Result<()> {
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE viewer_session_facts SET coverage_state=?1, coverage_detail_json=?2 \
          WHERE conversation_id=?3",
@@ -4294,7 +4294,7 @@ fn search_sessions_agy_synthetic_call_ids_answer_strict_tool_predicates() -> Res
     // Replace the seeded fixture-complete row with the REAL manifest the
     // ingest generation computes, so the strict lane evaluates exactly
     // what a real ingest would publish.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let agy = sessions.pop().expect("the antigravity session");
     let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
         &writer,
@@ -4390,7 +4390,7 @@ fn search_sessions_devin_archived_invocations_answer_strict_file_predicates() ->
     sessions.push(devin_archived_invocations_session());
     let mut bridge = gold_harness_full(&sessions, &[])?;
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let devin = sessions.pop().expect("the devin session");
     let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
         &writer,
@@ -4499,7 +4499,7 @@ fn search_sessions_codex_exec_command_without_rendered_status_blocks_strict() ->
     sessions.push(codex_exec_command_no_rendered_status_session());
     let mut bridge = gold_harness_full(&sessions, &[])?;
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let codex = sessions.pop().expect("the codex session");
     let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
         &writer,
@@ -4696,7 +4696,7 @@ fn search_sessions_codex_rendered_exit_trailer_answers_strict_predicates() -> Re
     sessions.push(codex_wait_agent_session());
     let mut bridge = gold_harness_full(&sessions, &[])?;
 
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let wait = sessions.pop().expect("the wait_agent session");
     let failed = sessions.pop().expect("the exit-1 session");
     let ok = sessions.pop().expect("the exit-0 session");
@@ -4787,7 +4787,7 @@ fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
     let mut bridge = gold_harness_full(&sessions, &[])?;
 
     // Replace the seeded fixture-complete row with the real manifest.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     let agy = sessions.pop().expect("the antigravity session");
     let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
         &writer,
@@ -4987,7 +4987,7 @@ fn search_sessions_bare_term_finds_deep_window_prefix_occurrence() -> Result<()>
     // Legacy lane: stale conversation 8's marks row so the marks gate falls
     // the whole query back to the per-region enumeration, and the same bare
     // term must still find the deep region document.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE viewer_search_region_marks SET region_version=?1 \
          WHERE conversation_id=8",
@@ -5151,7 +5151,7 @@ fn search_sessions_fast_path_cursor_walk_equals_one_shot() -> Result<()> {
 #[test]
 fn search_sessions_fast_path_marks_pending_refuses() -> Result<()> {
     let mut bridge = gold_harness()?;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
 
     // docs_state pending: S1's session documents are not converged. S1 has
     // no quux witness, so its pending inventory gap is the honest Unknown
@@ -5196,7 +5196,7 @@ fn search_sessions_fast_path_marks_pending_refuses() -> Result<()> {
     // session docs. The query must not trust them: it falls back to the
     // legacy region lane, answers today's exact member set, and receipts
     // the lane that ran.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE viewer_search_region_marks SET docs_state='published', region_version=?1 \
          WHERE conversation_id=1",
@@ -5221,7 +5221,7 @@ fn search_sessions_fast_path_marks_pending_refuses() -> Result<()> {
     );
 
     // A missing marks row (never published) is the same pending gap.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("DELETE FROM viewer_search_region_marks WHERE conversation_id=1")?;
     drop(writer);
     let page = search(&mut bridge, json!({"query":"quux"}))?;
@@ -5420,7 +5420,7 @@ fn search_sessions_fast_path_stale_generation_cursor_refused() -> Result<()> {
     // Canonical observers make a second connection's commit bump
     // `canonical_revision` (the same mechanics as the legacy mid-index
     // test).
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     revisions::ensure_observers(&writer)?;
     drop(writer);
 
@@ -5440,7 +5440,7 @@ fn search_sessions_fast_path_stale_generation_cursor_refused() -> Result<()> {
 
     // Mid-index: a guarded conversations-UPDATE on a SECOND connection
     // bumps canonical_revision inside its commit.
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("UPDATE conversations SET title='fast path retitle' WHERE id=1")?;
     drop(writer);
 
@@ -5542,7 +5542,7 @@ fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
     // exactly what was read, and `region_load_mode` names the strategy.
     // A zero-hit or deeper page never pays for sessions it did not emit.
     let structural_rows: i64 = {
-        let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        let writer = Connection::open(bridge.db.to_string_lossy())?;
         writer
             .query_row("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id IN (1,2)")?
             .get_typed(0)?
@@ -5563,7 +5563,7 @@ fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
     // (S6 is outside the default browse universe), the mode names the
     // fallback and the reason names its cause.
     let expected_rows: i64 = {
-        let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        let writer = Connection::open(bridge.db.to_string_lossy())?;
         writer
             .query_row("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id != 6")?
             .get_typed(0)?
@@ -6239,7 +6239,7 @@ fn search_sessions_oversized_title_lists_with_bounded_preview() -> Result<()> {
     let mut bridge = gold_harness()?;
     // One session whose title is >1 MiB must not stall or refuse the page.
     let huge_len = 1_200_006_i64;
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute_with_params(
         "UPDATE conversations SET title=?1 WHERE id=1",
         &param_slice_to_values(params![format!("{} alpha", "t".repeat(1_200_000))]),

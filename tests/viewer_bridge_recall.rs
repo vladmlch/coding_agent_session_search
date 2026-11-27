@@ -132,7 +132,7 @@ fn canonical_commit_between_raw_pages_cannot_masquerade_as_one_snapshot() -> Res
     let first = bridge.exchange(json!({"op":"rank_begin","query":"needle"}))?;
     assert_eq!(first["ok"], true);
     let token = first["result"]["next_cursor"].clone();
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let writer = Connection::open(bridge.db.to_string_lossy())?;
     writer.execute("UPDATE conversations SET title='changed' WHERE id=1")?;
     drop(writer);
     let changed = bridge.exchange(json!({"op":"rank_next","cursor":token,"max_hits":1}))?;

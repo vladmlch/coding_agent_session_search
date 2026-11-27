@@ -129,7 +129,7 @@ mod tests {
         let engine = ExportEngine::new(&source_path, &output_path, filter);
         engine.execute(|_, _| {}, None)?;
 
-        let conn = FrankenConnection::open(output_path.to_string_lossy().into_owned())?;
+        let conn = FrankenConnection::open(output_path.to_string_lossy())?;
         Ok((conn, output_path))
     }
 

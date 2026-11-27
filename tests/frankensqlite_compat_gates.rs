@@ -327,7 +327,7 @@ fn sqlite_existing_schema_only_reopens_large_archive_without_truncation() {
             let payload = format!("{id:08}:{}", "x".repeat(PAYLOAD_BYTES.saturating_sub(9)));
             conn.execute_with_params(
                 "INSERT INTO archive_rows(id, payload) VALUES (?1, ?2)",
-                &[SqliteValue::Integer(id), SqliteValue::Text(payload.into())],
+                &[SqliteValue::Integer(id), SqliteValue::Text(payload)],
             )
             .expect("insert large fixture row");
         }
@@ -398,7 +398,7 @@ fn sqlite_existing_schema_only_reopens_large_archive_without_truncation() {
                 .expect("query reopened large archive sentinel");
             assert_eq!(rows.len(), 1, "missing sentinel row {id}");
             let expected = SqliteValue::Text(
-                format!("{id:08}:{}", "x".repeat(PAYLOAD_BYTES.saturating_sub(9))).into(),
+                format!("{id:08}:{}", "x".repeat(PAYLOAD_BYTES.saturating_sub(9))),
             );
             assert_eq!(
                 rows.first().and_then(|row| row.get(0)),
@@ -1300,7 +1300,7 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
                 continue;
             }
             if let SqliteValue::Text(_) = bound[0] {
-                bound[0] = SqliteValue::Text(format!("ingest_receipt:{probe_id}").into());
+                bound[0] = SqliteValue::Text(format!("ingest_receipt:{probe_id}"));
             } else {
                 bound[0] = SqliteValue::Integer(probe_id);
             }
@@ -1664,8 +1664,7 @@ fn gate1_fts5_bulk_insert_performance() {
         conn.execute_with_params(
             "INSERT INTO perf_fts(content) VALUES (?1)",
             &[SqliteValue::Text(
-                format!("document number {i} with searchable content about rust programming")
-                    .into(),
+                format!("document number {i} with searchable content about rust programming"),
             )],
         )
         .unwrap();
