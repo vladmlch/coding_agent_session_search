@@ -39,6 +39,8 @@ use assert_cmd::Command;
 use serde_json::Value;
 use tempfile::TempDir;
 
+mod ws_paths_1d;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn test_error(message: impl Into<String>) -> Box<dyn Error> {
@@ -101,7 +103,7 @@ fn isolated_home() -> Result<IsolatedHome, Box<dyn Error>> {
 /// real file that produces deterministic line-count behavior for the
 /// out-of-range case.
 fn install_aider_fixture(iso: &IsolatedHome) -> Result<PathBuf, Box<dyn Error>> {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let src = ws_paths_1d::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("aider")

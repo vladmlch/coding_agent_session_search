@@ -45,6 +45,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 use walkdir::WalkDir;
 
+mod ws_paths_1d;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn test_error(message: impl Into<String>) -> Box<dyn Error> {
@@ -72,7 +74,7 @@ fn safe_fixture_destination(dst_root: &Path, rel: &Path) -> Result<PathBuf, Box<
 }
 
 fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let src = ws_paths_1d::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("search_demo_data");

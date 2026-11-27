@@ -26,6 +26,8 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
+mod ws_paths_1d;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn test_error(message: impl Into<String>) -> Box<dyn Error> {
@@ -77,41 +79,23 @@ fn documented_exit_codes() -> Result<BTreeSet<i32>, Box<dyn Error>> {
 
 /// Additional source files outside `src/lib.rs` and `src/{cli_root,lib_doctor,cli_app}/**`
 /// that construct `CliError { code: N, kind: .. }` or exit directly.
-const EXTRA_SOURCES: &[(&str, &str)] = &[
-    ("src/doctor.rs", include_str!("../src/doctor.rs")),
-    ("src/doctor_undo.rs", include_str!("../src/doctor_undo.rs")),
-    ("src/doctor_runs.rs", include_str!("../src/doctor_runs.rs")),
+const EXTRA_SOURCE_PATHS: &[&str] = &[
+    "src/doctor.rs",
+    "src/doctor_undo.rs",
+    "src/doctor_runs.rs",
     // `process::exit(70)` for the viewer-bridge hard deadline lives here.
-    (
-        "src/viewer_bridge/deadline.rs",
-        include_str!("../src/viewer_bridge/deadline.rs"),
-    ),
+    "src/viewer_bridge/deadline.rs",
     // `process::exit(70)` for the indexer checkpoint stall watchdog — the
     // cass-side "index stalled and aborted" emitter.
-    (
-        "src/indexer/checkpoint_deadline.rs",
-        include_str!("../src/indexer/checkpoint_deadline.rs"),
-    ),
+    "src/indexer/checkpoint_deadline.rs",
     // The read-only search service and its supervisors: `terminate(124)` for
     // the request deadline, `terminate(125)` for watchdog/monitor failure,
     // `terminate(126)` for the sampled resident-memory limit, plus the
     // CliError/`process::exit(125)` teardown paths in the session driver.
-    (
-        "src/search_service.rs",
-        include_str!("../src/search_service.rs"),
-    ),
-    (
-        "src/search_service/deadline.rs",
-        include_str!("../src/search_service/deadline.rs"),
-    ),
-    (
-        "src/search_service/memory.rs",
-        include_str!("../src/search_service/memory.rs"),
-    ),
-    (
-        "src/search_service/once.rs",
-        include_str!("../src/search_service/once.rs"),
-    ),
+    "src/search_service.rs",
+    "src/search_service/deadline.rs",
+    "src/search_service/memory.rs",
+    "src/search_service/once.rs",
 ];
 
 fn is_src_test_only(rel: &str) -> bool {
@@ -122,7 +106,7 @@ fn is_src_test_only(rel: &str) -> bool {
 }
 
 fn collect_non_test_rs_files(
-    manifest_dir: &std::path::Path,
+    workspace_root: &std::path::Path,
     dir: &std::path::Path,
     out: &mut Vec<(String, String)>,
 ) {
@@ -137,10 +121,10 @@ fn collect_non_test_rs_files(
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
-            collect_non_test_rs_files(manifest_dir, &path, out);
+            collect_non_test_rs_files(workspace_root, &path, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             let rel = path
-                .strip_prefix(manifest_dir)
+                .strip_prefix(workspace_root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
@@ -154,15 +138,16 @@ fn collect_non_test_rs_files(
 }
 
 fn scanned_sources() -> Vec<(String, String)> {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src_dir = manifest_dir.join("src");
-    let lib_src = std::fs::read_to_string(src_dir.join("lib.rs")).expect("read src/lib.rs");
+    let root = ws_paths_1d::workspace_root();
+    let lib_src = ws_paths_1d::read_workspace_source("src/lib.rs");
     let mut sources = vec![("src/lib.rs".to_string(), lib_src)];
-    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
-        collect_non_test_rs_files(manifest_dir, &src_dir.join(subdir), &mut sources);
+    for src_dir in ws_paths_1d::workspace_source_dirs() {
+        for subdir in ["cli_root", "lib_doctor", "cli_app"] {
+            collect_non_test_rs_files(&root, &src_dir.join(subdir), &mut sources);
+        }
     }
-    for (name, src) in EXTRA_SOURCES {
-        sources.push(((*name).to_string(), (*src).to_string()));
+    for rel in EXTRA_SOURCE_PATHS {
+        sources.push(((*rel).to_string(), ws_paths_1d::read_workspace_source(rel)));
     }
     sources
 }
