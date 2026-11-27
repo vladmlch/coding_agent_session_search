@@ -3,7 +3,9 @@
 //! Batches are private until the whole stream and the persisted rows are proved.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Seek};
+use std::io::{self, BufRead, BufReader, Read};
+#[cfg(test)]
+use std::io::Seek;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
