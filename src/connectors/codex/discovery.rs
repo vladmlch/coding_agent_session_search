@@ -5,6 +5,7 @@
 //! inventory owns enumeration. This is not an atomic directory snapshot;
 //! discovered files still pass the existing admission and snapshot guards.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fs;
@@ -155,9 +156,9 @@ impl Inventory {
                 vec![root.path.clone()]
             } else {
                 let sessions = root.path.join("sessions");
-                let selected = match optional_metadata(&sessions) {
-                    Ok(Some(_)) => sessions,
-                    Ok(None) => root.path.clone(),
+                let selected: Cow<'_, Path> = match optional_metadata(&sessions) {
+                    Ok(Some(_)) => Cow::Owned(sessions),
+                    Ok(None) => Cow::Borrowed(root.path.as_path()),
                     Err(error) => {
                         self.record_failure(&sessions, error.into());
                         continue;

@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 
 use super::render::render_error;
 use super::types::{
@@ -98,10 +99,10 @@ pub(super) fn render_answer_pack_markdown(envelope: &RenderedAnswerPack) -> Stri
                 }
             }
             if let Some(conversation_id) = item.citation.conversation_id {
-                out.push_str(&format!(" conversation_id={conversation_id}"));
+                let _ = write!(out, " conversation_id={conversation_id}");
             }
             if let Some(message_index) = item.citation.message_index {
-                out.push_str(&format!(" message_index={message_index} (1-based)"));
+                let _ = write!(out, " message_index={message_index} (1-based)");
             }
             out.push_str("\n\n");
             // Preserve the complete prepared excerpt, including blank lines.

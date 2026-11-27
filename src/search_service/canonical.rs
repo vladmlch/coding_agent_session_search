@@ -425,9 +425,9 @@ fn read_window(
         );
         let role = role.context("canonical role must be text of at most 128 bytes")?;
         let role = if role.eq_ignore_ascii_case("agent") {
-            "assistant".to_string()
+            std::borrow::Cow::Borrowed("assistant")
         } else {
-            role
+            std::borrow::Cow::Owned(role)
         };
         content_bytes += length;
         *remaining_bytes -= length;

@@ -62,7 +62,11 @@ pub fn rerank_texts(
             .doc_id
             .parse::<usize>()
             .ok()
-            .filter(|index| *index < result.len() && score.doc_id == index.to_string())
+            .filter(|index| {
+                *index < result.len()
+                    && score.doc_id.bytes().all(|b| b.is_ascii_digit())
+                    && (score.doc_id == "0" || !score.doc_id.starts_with('0'))
+            })
             .ok_or_else(&invalid_output)?;
         if seen[index] || !score.score.is_finite() {
             return Err(invalid_output());

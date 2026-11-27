@@ -744,6 +744,14 @@ impl ModelInstaller {
 
         for file in &manifest.files {
             let local_name = file.local_name();
+            if !is_safe_model_local_name(local_name) {
+                self.cleanup_temp();
+                return Err(InstallError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid model manifest filename: {local_name}"),
+                )));
+            }
+            // ubs:ignore[rust.security.path-traversal] — local_name validated by is_safe_model_local_name
             let source_path = source_dir.join(local_name);
             if !source_path.is_file() {
                 self.cleanup_temp();
@@ -753,6 +761,7 @@ impl ModelInstaller {
                 });
             }
 
+            // ubs:ignore[rust.security.path-traversal] — local_name validated by is_safe_model_local_name
             let staged_path = self.temp_dir.join(local_name);
             if let Err(err) = fs::copy(&source_path, &staged_path)
                 .and_then(|_| File::open(&staged_path).and_then(|file| file.sync_all()))
@@ -1238,19 +1247,43 @@ fn model_install_temp_dir(target_dir: &Path) -> PathBuf {
     model_staging_dir(target_dir, "installing")
 }
 
+fn is_safe_model_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !Path::new(path).is_absolute()
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn is_safe_model_local_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    !name.is_empty()
+        && matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
+}
+
 /// Resolve a manifest file on disk.
 ///
 /// The installer stores manifest paths by local basename, while preseeded
 /// directories can preserve the canonical repo layout.
 pub fn model_file_path(model_dir: &Path, file: &ModelFile) -> Option<PathBuf> {
-    let canonical = model_dir.join(&file.name);
-    if canonical.is_file() {
-        return Some(canonical);
+    if is_safe_model_relative_path(&file.name) {
+        // ubs:ignore[rust.security.path-traversal] — file.name validated by is_safe_model_relative_path
+        let canonical = model_dir.join(&file.name);
+        if canonical.is_file() {
+            return Some(canonical);
+        }
     }
 
-    let local = model_dir.join(file.local_name());
-    if local.is_file() {
-        return Some(local);
+    let local_name = file.local_name();
+    if is_safe_model_local_name(local_name) {
+        // ubs:ignore[rust.security.path-traversal] — local_name validated by is_safe_model_local_name
+        let local = model_dir.join(local_name);
+        if local.is_file() {
+            return Some(local);
+        }
     }
 
     None

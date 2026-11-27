@@ -586,9 +586,9 @@ pub fn render_markdown(report: &QualityReport) -> String {
     );
     for q in &report.queries {
         let missing = if q.missing_refs.is_empty() {
-            "—".to_string()
+            std::borrow::Cow::Borrowed("—")
         } else {
-            q.missing_refs.join(",")
+            std::borrow::Cow::Owned(q.missing_refs.join(","))
         };
         let status = if q.passed { "pass" } else { "FAIL" };
         let _ = writeln!(
@@ -643,9 +643,9 @@ pub fn render_diff_markdown(diff: &RegressionDiff) -> String {
     let _ = writeln!(out, "| --- | --- | --- | --- | --- | --- |");
     for q in &diff.per_query {
         let missing = if q.newly_missing_refs.is_empty() {
-            "—".to_string()
+            std::borrow::Cow::Borrowed("—")
         } else {
-            q.newly_missing_refs.join(",")
+            std::borrow::Cow::Owned(q.newly_missing_refs.join(","))
         };
         let _ = writeln!(
             out,

@@ -188,6 +188,7 @@ impl SemanticIndexArtifact {
             if path.is_absolute() {
                 path
             } else {
+                // ubs:ignore[rust.security.path-traversal] — freezes caller-supplied relative path against current_dir
                 current_dir.join(path)
             }
         };

@@ -154,6 +154,7 @@ impl ArchiveIndexPlan {
             !relative.as_os_str().is_empty(),
             "lexical index cannot replace its data directory"
         );
+        // ubs:ignore[rust.security.path-traversal] — first component of strip_prefix(&self.data_dir)
         let root = self.data_dir.join(
             relative
                 .components()

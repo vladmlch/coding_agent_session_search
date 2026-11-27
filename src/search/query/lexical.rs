@@ -381,6 +381,7 @@ impl SearchClient {
         let epoch = self.reload_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         self.metrics.record_reload(elapsed);
         let current_generation = self.federated_generation_signature(readers);
+        // ubs:ignore[rust.security.constant-time-compare] — compares non-secret u64 shard cache generation
         if cached_generation != current_generation {
             self.metrics
                 .record_cache_lookup(crate::daemon_runtime_state::CacheLookup {
@@ -412,6 +413,7 @@ impl SearchClient {
             // direct analogue of Tantivy's searcher generation id.
             shard.reader.keeper_generation().hash(&mut hasher);
         }
+        // ubs:ignore[rust.security.non-crypto-random] — non-cryptographic DefaultHasher key for shard generation cache
         hasher.finish()
     }
 
@@ -482,7 +484,7 @@ impl SearchClient {
             let mut unique_fallback_keys = Vec::with_capacity(fallback_keys.len());
             let mut seen = HashSet::with_capacity(fallback_keys.len());
             for key in fallback_keys {
-                if seen.insert(key.clone()) {
+                if seen.insert(key) {
                     unique_fallback_keys.push(key.clone());
                 }
             }
@@ -490,8 +492,8 @@ impl SearchClient {
             let mut unique_source_paths = Vec::with_capacity(unique_fallback_keys.len());
             let mut seen_source_paths = HashSet::with_capacity(unique_fallback_keys.len());
             for (_, source_path, _) in &unique_fallback_keys {
-                if seen_source_paths.insert(source_path.clone()) {
-                    unique_source_paths.push(source_path.clone());
+                if seen_source_paths.insert(source_path.as_str()) {
+                    unique_source_paths.push(source_path.as_str());
                 }
             }
 
@@ -511,7 +513,7 @@ impl SearchClient {
                 );
                 let params = chunk
                     .iter()
-                    .map(|source_path| ParamValue::from(source_path.clone()))
+                    .map(|source_path| ParamValue::from(*source_path))
                     .collect::<Vec<_>>();
                 let rows: Vec<(i64, String, String, String, String)> =
                     franken_query_map_collect_retry(conn, &sql, &params, |row| {
@@ -831,13 +833,13 @@ impl SearchClient {
                         && field_mask.preview_content_limit().is_none()
                         && stored_preview_is_complete_content(&pending.stored_preview)));
             let effective_content = if !pending.stored_content.is_empty() {
-                pending.stored_content.clone()
+                pending.stored_content
             } else if preview_satisfies_effective_content {
-                pending.stored_preview.clone()
+                pending.stored_preview
             } else if let Some(content) = hydrated_content {
                 content
             } else {
-                pending.stored_preview.clone()
+                pending.stored_preview
             };
             let snippet = if wants_snippet {
                 if let Some(snippet) = pending.stored_preview_snippet.clone() {
@@ -848,9 +850,7 @@ impl SearchClient {
                     // buffers — it reads the config and term weights and keeps
                     // no state between calls — so one generator serves every
                     // hit and the per-hit clone was pure allocation.
-                    let rendered = if !pending.stored_content.is_empty() {
-                        generator.snippet(&pending.stored_content)
-                    } else if !effective_content.is_empty() {
+                    let rendered = if !effective_content.is_empty() {
                         generator.snippet(&effective_content)
                     } else {
                         None
@@ -871,17 +871,17 @@ impl SearchClient {
             } else {
                 String::new()
             };
-            let content = if field_mask.needs_content() {
-                effective_content.clone()
-            } else {
-                String::new()
-            };
             let content_hash = stable_hit_hash(
                 &effective_content,
                 &pending.source_path,
                 pending.line_number,
                 pending.created_at,
             );
+            let content = if field_mask.needs_content() {
+                effective_content
+            } else {
+                String::new()
+            };
             let origin_kind = normalized_search_hit_origin_kind(
                 &pending.source_id,
                 pending.raw_origin_kind.as_deref(),

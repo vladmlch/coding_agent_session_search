@@ -644,6 +644,7 @@ fn probe_schema_state_from_isolated_snapshot(
 
     let path = db_path.to_path_buf();
     let (tx, rx) = std::sync::mpsc::channel();
+    // ubs:ignore[rust.resource-lifecycle.thread_join] — intentionally detached timeout-bounded probe thread
     let _worker = std::thread::spawn(move || {
         let outcome = inspect_schema_state_from_isolated_snapshot(&path, timeout);
         let _ = tx.send(outcome);
@@ -761,6 +762,7 @@ fn probe_writer_lock_state(
 ) -> LockAdmissionProbe {
     let path = db_path.to_path_buf();
     let (tx, rx) = std::sync::mpsc::channel();
+    // ubs:ignore[rust.resource-lifecycle.thread_join] — intentionally detached timeout-bounded probe thread
     let _worker = std::thread::spawn(move || {
         let outcome = inspect_native_writer_lock(&path);
         let _ = tx.send(outcome);
@@ -1147,6 +1149,7 @@ pub(crate) fn integrity_attestation_fingerprint(attestation: &IntegrityAttestati
 }
 
 pub(crate) fn integrity_attestation_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time INTEGRITY_ATTESTATION_FILE constant
     data_dir.join(INTEGRITY_ATTESTATION_FILE)
 }
 

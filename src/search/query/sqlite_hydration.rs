@@ -343,9 +343,9 @@ pub fn sql_rowid_literal_list(ids: &[i64]) -> String {
 ///
 /// # Examples
 /// ```ignore
-/// assert_eq!(sql_placeholders(0), "");
-/// assert_eq!(sql_placeholders(1), "?");
-/// assert_eq!(sql_placeholders(3), "?,?,?");
+/// assert_eq!(sql_placeholders(0), ""); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(sql_placeholders(1), "?"); // ubs:ignore[rust.panic.assert-macros] — doctest example
+/// assert_eq!(sql_placeholders(3), "?,?,?"); // ubs:ignore[rust.panic.assert-macros] — doctest example
 /// ```
 #[inline]
 pub fn sql_placeholders(count: usize) -> String {

@@ -541,6 +541,7 @@ fn semantic_tier_asset_state(
 }
 
 fn resolve_semantic_artifact_path(data_dir: &Path, recorded_path: &str) -> Option<PathBuf> {
+    // ubs:ignore[rust.security.path-traversal] — guarded by semantic_shard_artifact_path_is_safe
     semantic_shard_artifact_path_is_safe(recorded_path).then(|| data_dir.join(recorded_path))
 }
 

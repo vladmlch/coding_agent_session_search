@@ -125,7 +125,7 @@ pub(crate) fn quarantine_status(
     let mut source_missing_count = 0usize;
     let mut retryable_now = 0usize;
     // One representative per (cause, bucket) so the list stays bounded.
-    let mut reps: BTreeMap<(String, VersionBucket), RepresentativeEntry> = BTreeMap::new();
+    let mut reps: BTreeMap<(&str, VersionBucket), RepresentativeEntry> = BTreeMap::new();
 
     for entry in entries {
         let bucket = match entry.cass_version_at_quarantine.as_deref() {
@@ -145,12 +145,16 @@ pub(crate) fn quarantine_status(
             retryable_now += 1;
         }
 
-        *by_cause.entry(entry.last_reason.clone()).or_default() += 1;
+        if let Some(count) = by_cause.get_mut(&entry.last_reason) {
+            *count += 1;
+        } else {
+            by_cause.insert(entry.last_reason.clone(), 1);
+        }
         *by_version_bucket.entry(bucket).or_default() += 1;
         *by_schema_version.entry(entry.schema_version).or_default() += 1;
         *by_eligibility.entry(eligibility).or_default() += 1;
 
-        reps.entry((entry.last_reason.clone(), bucket))
+        reps.entry((entry.last_reason.as_str(), bucket))
             .or_insert_with(|| RepresentativeEntry {
                 conversation_id: entry.conversation_id.clone(),
                 schema_version: entry.schema_version,

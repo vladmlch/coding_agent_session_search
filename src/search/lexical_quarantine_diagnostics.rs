@@ -117,14 +117,14 @@ impl Report {
                 inventory.eligible_bytes
             ));
             for artifact in &inventory.artifacts {
-                let size = if artifact.size_complete {
-                    format!("{} bytes", artifact.size_bytes)
+                let size: std::borrow::Cow<'static, str> = if artifact.size_complete {
+                    std::borrow::Cow::Owned(format!("{} bytes", artifact.size_bytes))
                 } else {
-                    "unknown (scan incomplete)".to_owned()
+                    std::borrow::Cow::Borrowed("unknown (scan incomplete)")
                 };
-                let age = artifact.age_seconds.map_or_else(
-                    || "unknown/future".to_owned(),
-                    |seconds| format!("{seconds}s"),
+                let age: std::borrow::Cow<'static, str> = artifact.age_seconds.map_or_else(
+                    || std::borrow::Cow::Borrowed("unknown/future"),
+                    |seconds| std::borrow::Cow::Owned(format!("{seconds}s")),
                 );
                 lines.push(format!(
                     "  {:?}: {size}; age={age}; {:?}; {:?}",

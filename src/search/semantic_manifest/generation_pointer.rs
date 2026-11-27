@@ -125,6 +125,7 @@ impl SemanticCurrentPointerV1 {
         self.validate()?;
         let root = semantic_vector_root(data_dir);
         prepare_semantic_vector_root(data_dir, &root)?;
+        // ubs:ignore[rust.security.path-traversal] — joins compile-time SEMANTIC_CURRENT_POINTER_LOCK_FILENAME constant
         let lock_path = root.join(SEMANTIC_CURRENT_POINTER_LOCK_FILENAME);
         let lock_file = open_semantic_publish_lock(&root, &lock_path)?;
         lock_file
@@ -475,6 +476,7 @@ pub(in crate::search::semantic_manifest) fn load_manifest_selected_by_pointer(
     pointer.validate()?;
     let generation_dir = semantic_generations_root(data_dir).join(&pointer.generation_id);
     validate_existing_generation_directory(data_dir, &generation_dir)?;
+    // ubs:ignore[rust.security.path-traversal] — joins compile-time SEMANTIC_GENERATION_MANIFEST_FILENAME constant
     let manifest_path = generation_dir.join(SEMANTIC_GENERATION_MANIFEST_FILENAME);
     match fs::symlink_metadata(&manifest_path) {
         Ok(metadata) if metadata_is_link_or_reparse(&metadata) => {

@@ -16,11 +16,11 @@
 //!
 //! // Create origin for a local conversation
 //! let local_origin = Origin::local();
-//! assert_eq!(local_origin.source_id, LOCAL_SOURCE_ID);
+//! assert_eq!(local_origin.source_id, LOCAL_SOURCE_ID); // ubs:ignore[rust.panic.assert-macros] — doctest example
 //!
 //! // Create origin for a remote conversation
 //! let remote_origin = Origin::remote("work-laptop");
-//! assert!(remote_origin.is_remote());
+//! assert!(remote_origin.is_remote()); // ubs:ignore[rust.panic.assert-macros] — doctest example
 //! ```
 
 use serde::{Deserialize, Serialize};
