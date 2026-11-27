@@ -553,6 +553,7 @@ mod gh473_preflight {
                 .current_dir(dir.path())
                 .env(CHILD, expected)
                 .env_remove("CASS_INDEX_WRITER_BUSY_TIMEOUT_MS")
+                .env_remove("CASS_DEFER_LEXICAL_UPDATES")
                 .stdout(Stdio::from(std::fs::File::create(&stdout_path).unwrap()))
                 .stderr(Stdio::from(std::fs::File::create(&stderr_path).unwrap()));
             if let Some(value) = value {
