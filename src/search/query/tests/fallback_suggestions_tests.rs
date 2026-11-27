@@ -240,7 +240,7 @@ fn search_with_fallback_keeps_exact_hits_when_the_wildcard_retry_runs_out_of_fue
     // Many distinct terms over a few segments give the retry's
     // dictionary walk real work; one document holds the needle.
     for id in 0..400 {
-        let words = (0..16)
+        let words = (0..256)
             .map(|word| format!("filler{id}x{word}"))
             .collect::<Vec<_>>()
             .join(" ");
