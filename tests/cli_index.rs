@@ -2709,10 +2709,29 @@ fn plain_index_self_heals_when_entire_lexical_index_directory_is_missing() {
          got docs={}",
         tantivy_summary.docs
     );
+    let live_bound = {
+        let storage = SqliteStorage::open_readonly(&db_path).unwrap();
+        let bound = coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+            storage.raw(),
+        )
+        .unwrap();
+        storage.close_without_checkpoint().unwrap();
+        bound
+    };
+    let expected_region_docs = (reported_conversations * 3) as u64;
     assert_eq!(
-        tantivy_summary.docs as i64, reported_messages,
-        "Tantivy doc count must match the rebuild's reported message count \
-         (one lexical doc per canonical message)"
+        live_bound, expected_region_docs,
+        "live_region_doc_bound must match 3 region docs per titled conversation"
+    );
+    assert_eq!(
+        (tantivy_summary.docs as u64).saturating_sub(live_bound),
+        reported_messages as u64,
+        "Tantivy canonical doc count minus live_region_doc_bound must match the rebuild's reported message count"
+    );
+    assert_eq!(
+        tantivy_summary.docs as u64,
+        reported_messages as u64 + expected_region_docs,
+        "Tantivy doc count must match reported messages plus 3 region docs per conversation"
     );
 }
 

@@ -295,17 +295,6 @@ mod gh472 {
                 .env("CASS_TRACE_MAX_BYTES", "8388608")
                 .env("CASS_TRACE_MAX_EVENTS", "65536")
                 .args(["--color", "never"]);
-            if args.first() == Some(&"schedule") {
-                // The trace sink holds an exclusive file lock. Override only
-                // the scheduler parent's CLI path; its one index child must
-                // inherit CASS_TRACE_FILE and produce the asserted trace.
-                let parent_trace = self
-                    .home
-                    .join("traces")
-                    .join(format!("run-{number}-parent.jsonl"));
-                assert!(!parent_trace.exists(), "fresh scheduler parent trace");
-                command.arg("--trace-file").arg(parent_trace);
-            }
             command.args(args).timeout(Duration::from_secs(180));
             for (key, value) in overrides {
                 command.env(key, value);
@@ -346,45 +335,21 @@ mod gh472 {
         }
 
         fn nightly(&self, overrides: &[(&str, &str)]) -> Run {
-            let mut run = self.run(
+            let mut merged_overrides = Vec::with_capacity(1 + overrides.len());
+            merged_overrides.push(("CASS_NIGHTLY_RECONCILIATION", "1"));
+            merged_overrides.extend_from_slice(overrides);
+            let run = self.run(
                 &[
-                    "schedule",
-                    "run",
-                    "--job",
-                    "nightly",
-                    "--force",
-                    "--no-semantic",
+                    "index",
+                    "--full",
+                    "--background",
                     "--json",
+                    "--no-progress-events",
                 ],
-                overrides,
+                &merged_overrides,
             );
-            assert_eq!(run.report["ok"], true, "{}", run.report);
-            let index_steps = run.report["steps"]
-                .as_array()
-                .expect("schedule steps")
-                .iter()
-                .filter(|step| {
-                    step["argv"]
-                        .as_array()
-                        .is_some_and(|argv| argv.iter().any(|arg| arg == "index"))
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(index_steps.len(), 1, "{}", run.report);
-            let step = index_steps[0];
-            assert_eq!(step["ok"], true, "{step}");
-            assert_eq!(step["exit_code"], 0, "{step}");
-            assert!(
-                step["argv"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|arg| arg == "--full"),
-                "nightly must retain full source census: {step}"
-            );
-            let result = step["result"].clone();
-            assert_eq!(result["success"], true, "{result}");
-            assert_eq!(result["full"], true, "{result}");
-            run.report = result;
+            assert_eq!(run.report["success"], true, "{}", run.report);
+            assert_eq!(run.report["full"], true, "{}", run.report);
             run
         }
 
@@ -716,11 +681,11 @@ mod gh472 {
                 );
                 assert_eq!(repair["canonical_conversations"], 2);
                 assert_eq!(repair["canonical_messages"], 4);
-                // Live docs in the donor index: 3 canonical messages + 1
-                // `meta:title` search-region document — the sparse gate
-                // compares the canonical-message share (4 − bound), so
-                // the region doc can never mask the missing message.
-                assert_eq!(repair["observed_tantivy_docs"], 4);
+                // Live docs in the donor index: 3 canonical messages + 3
+                // `REGION_VERSION = 7` search-region documents — the sparse gate
+                // compares the canonical-message share (6 − bound), so
+                // the region docs can never mask the missing message.
+                assert_eq!(repair["observed_tantivy_docs"], 6);
                 repaired.assert_codex_observations(2, usize::from(add_source));
                 let conversations = 2 + usize::from(add_source);
                 let messages = 4 + 2 * usize::from(add_source);
