@@ -21,14 +21,78 @@ use coding_agent_search::search::fastembed_reranker::FastEmbedReranker;
 const CARGO_MANIFEST: &str = include_str!("../Cargo.toml");
 const BUILD_SCRIPT: &str = include_str!("../build.rs");
 
-#[test]
-fn retired_baseline_build_machinery_does_not_return() -> Result<(), String> {
-    if CARGO_MANIFEST.contains("\nsemantic = [") || CARGO_MANIFEST.contains("\nfastembed =") {
+fn check_manifest_baseline_contract(manifest_text: &str) -> Result<(), String> {
+    if manifest_text.contains("\nsemantic = [") || manifest_text.contains("\nfastembed =") {
         return Err(
             "semantic support must stay native and always compiled, not return as an ONNX-era Cargo feature"
                 .to_string(),
         );
     }
+    let manifest: toml::Table =
+        toml::from_str(manifest_text).map_err(|err| format!("parse Cargo.toml: {err}"))?;
+    if manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|features| features.contains_key("semantic"))
+    {
+        return Err(
+            "semantic support must stay native and always compiled, not return as an ONNX-era Cargo feature"
+                .to_string(),
+        );
+    }
+    let workspace_deps = manifest
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|ws| ws.get("dependencies"))
+        .and_then(toml::Value::as_table);
+    let deps = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table);
+    if workspace_deps.is_some_and(|table| table.contains_key("fastembed"))
+        || deps.is_some_and(|table| table.contains_key("fastembed"))
+    {
+        return Err(
+            "semantic support must stay native and always compiled, not return as an ONNX-era Cargo feature"
+                .to_string(),
+        );
+    }
+    let frankensearch_spec = match (
+        deps.and_then(|table| table.get("frankensearch")),
+        workspace_deps.and_then(|table| table.get("frankensearch")),
+    ) {
+        (Some(toml::Value::Table(dep)), Some(ws))
+            if dep.get("workspace").and_then(toml::Value::as_bool) == Some(true) =>
+        {
+            Some(ws)
+        }
+        (Some(dep), _) => Some(dep),
+        (None, Some(ws)) => Some(ws),
+        (None, None) => None,
+    };
+    if let Some(toml::Value::Table(spec)) = frankensearch_spec {
+        let mut features: Vec<&str> = spec
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .collect();
+        if let Some(toml::Value::Table(dep)) = deps.and_then(|table| table.get("frankensearch"))
+            && dep.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+            && let Some(extra) = dep.get("features").and_then(toml::Value::as_array)
+        {
+            features.extend(extra.iter().filter_map(toml::Value::as_str));
+        }
+        if !features.contains(&"native") {
+            return Err("frankensearch must keep the `native` feature enabled".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn retired_baseline_build_machinery_does_not_return() -> Result<(), String> {
+    check_manifest_baseline_contract(CARGO_MANIFEST)?;
     if BUILD_SCRIPT.contains("emit_platform_link_hints")
         || BUILD_SCRIPT.contains("rustc-link-lib=framework=CoreML")
         || BUILD_SCRIPT.contains("CARGO_FEATURE_SEMANTIC")
@@ -38,6 +102,21 @@ fn retired_baseline_build_machinery_does_not_return() -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[test]
+fn workspace_dependency_inheritance_preserves_native_feature_contract() -> Result<(), String> {
+    let ws_manifest = r#"
+[workspace]
+members = ["crates/cass-search"]
+
+[workspace.dependencies]
+frankensearch = { version = "=0.7.1", default-features = false, features = ["hash", "cass-compat", "quill", "ann", "native"] }
+
+[dependencies]
+frankensearch = { workspace = true }
+"#;
+    check_manifest_baseline_contract(ws_manifest)
 }
 
 #[test]

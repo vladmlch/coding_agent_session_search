@@ -1138,7 +1138,7 @@ mod tests {
     }
 
     fn test_data_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+        crate::subsystem_coverage_matrix::workspace_paths::workspace_root().join("tests/fixtures")
     }
 
     #[test]

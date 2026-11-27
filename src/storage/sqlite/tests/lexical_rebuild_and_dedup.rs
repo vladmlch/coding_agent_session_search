@@ -1380,7 +1380,7 @@ fn list_conversation_footprints_for_lexical_rebuild_tolerates_missing_tail_state
 
 #[test]
 fn list_conversation_footprints_for_lexical_rebuild_tolerates_legacy_search_demo_fixture() {
-    let fixture_db = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let fixture_db = crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("search_demo_data")

@@ -4,7 +4,8 @@ use std::error::Error as _;
 /// Copy model fixtures from tests/fixtures/models/ to the target directory.
 /// Copies model.onnx plus config files.
 fn copy_model_fixtures(target_dir: &Path) -> std::io::Result<()> {
-    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/models");
+    let fixture_dir = crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
+        .join("tests/fixtures/models");
     fs::create_dir_all(target_dir)?;
 
     // Copy model.onnx fixture (legacy placeholder, retained for tests that
@@ -101,7 +102,8 @@ fn test_check_model_installed_no_marker() {
     let tmp = tempfile::tempdir().unwrap();
     let model_dir = tmp.path().join("model");
     // Use fixture files instead of fake content - only copy model.onnx
-    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/models");
+    let fixture_dir = crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
+        .join("tests/fixtures/models");
     fs::create_dir_all(&model_dir).unwrap();
     fs::copy(fixture_dir.join("model.onnx"), model_dir.join("model.onnx")).unwrap();
     assert_eq!(

@@ -859,7 +859,7 @@ fn pinned_engine_deferred_open_matches_the_legacy_shadow_catalog_policy() {
     let dir = tempfile::TempDir::new().unwrap();
     let legacy_db = dir.path().join("legacy_agent_search.db");
     std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
+        crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
             .join("tests/fixtures/gh503/legacy_fts_config_shadow.db"),
         &legacy_db,
     )

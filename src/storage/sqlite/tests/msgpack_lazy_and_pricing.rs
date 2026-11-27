@@ -719,10 +719,13 @@ fn storage_source_forbids_manual_raw_connection_auto_trait_overrides() {
         }
     }
 
-    let manifest_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src_root = manifest_root.join("src");
+    let manifest_root = crate::subsystem_coverage_matrix::workspace_paths::workspace_root();
     let mut rs_files = Vec::new();
-    collect_rs_files(&src_root, &mut rs_files);
+    for src_root in
+        crate::subsystem_coverage_matrix::workspace_paths::workspace_source_dirs(&manifest_root)
+    {
+        collect_rs_files(&src_root, &mut rs_files);
+    }
 
     let forbidden = [
         ["unsafe impl ", "Send for"].concat(),

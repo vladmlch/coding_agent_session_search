@@ -16,38 +16,151 @@ use std::fmt::Write as _;
 use coding_agent_search::storage::sqlite::{CURRENT_SCHEMA_VERSION, FrankenStorage, SqliteStorage};
 use coding_agent_search::viewer_extensions::schema;
 
-#[test]
-fn rusqlite_is_pinned_production_dependency() {
-    let manifest: toml::Table =
-        toml::from_str(include_str!("../Cargo.toml")).expect("parse Cargo.toml");
-    let dependencies = manifest
+fn resolve_dependency_table_with_workspace(
+    manifest: &toml::Table,
+    key: &str,
+) -> Option<toml::Table> {
+    let ws_entry = manifest
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|ws| ws.get("dependencies"))
+        .and_then(toml::Value::as_table)
+        .and_then(|deps| deps.get(key))
+        .and_then(toml::Value::as_table);
+    let dep_entry = manifest
         .get("dependencies")
         .and_then(toml::Value::as_table)
-        .expect("Cargo.toml dependencies table");
+        .and_then(|deps| deps.get(key))
+        .and_then(toml::Value::as_table);
+
+    match (dep_entry, ws_entry) {
+        (Some(dep), Some(ws))
+            if dep.get("workspace").and_then(toml::Value::as_bool) == Some(true) =>
+        {
+            let mut merged = ws.clone();
+            for (k, v) in dep {
+                if k == "workspace" {
+                    continue;
+                }
+                if k == "features" {
+                    let mut combined = merged
+                        .get("features")
+                        .and_then(toml::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    if let Some(extra) = v.as_array() {
+                        for feat in extra {
+                            if !combined.contains(feat) {
+                                combined.push(feat.clone());
+                            }
+                        }
+                    }
+                    merged.insert("features".to_string(), toml::Value::Array(combined));
+                } else {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            Some(merged)
+        }
+        (Some(dep), _) => Some(dep.clone()),
+        (None, Some(ws)) => Some(ws.clone()),
+        (None, None) => None,
+    }
+}
+
+fn check_rusqlite_pinned_in_manifest(manifest: &toml::Table) {
+    let dependencies = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table);
+    let workspace_dependencies = manifest
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|ws| ws.get("dependencies"))
+        .and_then(toml::Value::as_table);
     assert!(
-        dependencies.contains_key("rusqlite"),
+        dependencies.is_some() || workspace_dependencies.is_some(),
+        "Cargo.toml must declare [dependencies] or [workspace.dependencies]"
+    );
+    let has_rusqlite = dependencies.is_some_and(|deps| deps.contains_key("rusqlite"))
+        || workspace_dependencies.is_some_and(|deps| deps.contains_key("rusqlite"));
+    assert!(
+        has_rusqlite,
         "rusqlite must be a direct production dependency"
     );
     let legacy_facade = concat!("franken", "sqlite");
     let legacy_engine = concat!("fsql", "ite");
     let legacy_types = concat!("fsql", "ite-types");
     for forbidden in [legacy_facade, legacy_engine, legacy_types] {
-        assert!(
-            !dependencies.contains_key(forbidden),
-            "{forbidden} must not appear in [dependencies]"
-        );
+        if let Some(deps) = dependencies {
+            assert!(
+                !deps.contains_key(forbidden),
+                "{forbidden} must not appear in [dependencies]"
+            );
+        }
+        if let Some(ws_deps) = workspace_dependencies {
+            assert!(
+                !ws_deps.contains_key(forbidden),
+                "{forbidden} must not appear in [workspace.dependencies]"
+            );
+        }
     }
 
     let dev_dependencies = manifest
         .get("dev-dependencies")
-        .and_then(toml::Value::as_table)
-        .expect("Cargo.toml dev-dependencies table");
-    for forbidden in ["rusqlite", legacy_facade, legacy_engine, legacy_types] {
+        .and_then(toml::Value::as_table);
+    if workspace_dependencies.is_none() {
         assert!(
-            !dev_dependencies.contains_key(forbidden),
-            "{forbidden} must not appear in [dev-dependencies]"
+            dev_dependencies.is_some(),
+            "Cargo.toml dev-dependencies table"
         );
     }
+    if let Some(dev_dependencies) = dev_dependencies {
+        for forbidden in ["rusqlite", legacy_facade, legacy_engine, legacy_types] {
+            assert!(
+                !dev_dependencies.contains_key(forbidden),
+                "{forbidden} must not appear in [dev-dependencies]"
+            );
+        }
+    }
+}
+
+#[test]
+fn rusqlite_is_pinned_production_dependency() {
+    let manifest: toml::Table =
+        toml::from_str(include_str!("../Cargo.toml")).expect("parse Cargo.toml");
+    check_rusqlite_pinned_in_manifest(&manifest);
+}
+
+#[test]
+fn rusqlite_workspace_dependency_inheritance_is_validated() {
+    let ws_manifest: toml::Table = toml::from_str(
+        r#"
+[workspace]
+members = ["crates/cass-storage"]
+
+[workspace.dependencies]
+rusqlite = { version = "=0.40.2", features = ["bundled", "modern_sqlite"] }
+
+[dependencies]
+rusqlite = { workspace = true }
+"#,
+    )
+    .expect("parse workspace manifest");
+    check_rusqlite_pinned_in_manifest(&ws_manifest);
+    let resolved = resolve_dependency_table_with_workspace(&ws_manifest, "rusqlite")
+        .expect("resolved rusqlite table");
+    assert_eq!(
+        resolved.get("version").and_then(toml::Value::as_str),
+        Some("=0.40.2")
+    );
+    let features: Vec<&str> = resolved
+        .get("features")
+        .and_then(toml::Value::as_array)
+        .expect("features array")
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(features, &["bundled", "modern_sqlite"]);
 }
 
 /// The SQLite engine resolves exclusively from crates.io `rusqlite =0.40.2`
@@ -68,11 +181,7 @@ fn sqlite_dependency_source_identity_is_exact_and_coherent() {
 
     let manifest: toml::Table =
         toml::from_str(include_str!("../Cargo.toml")).expect("parse Cargo.toml");
-    let dependency = manifest
-        .get("dependencies")
-        .and_then(toml::Value::as_table)
-        .and_then(|table| table.get("rusqlite"))
-        .and_then(toml::Value::as_table)
+    let dependency = resolve_dependency_table_with_workspace(&manifest, "rusqlite")
         .expect("missing structured rusqlite dependency entry");
     assert_eq!(
         dependency.get("version").and_then(toml::Value::as_str),

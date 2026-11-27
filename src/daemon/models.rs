@@ -237,12 +237,12 @@ mod tests {
     use super::*;
 
     fn test_data_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+        crate::subsystem_coverage_matrix::workspace_paths::workspace_root().join("tests/fixtures")
     }
 
     #[allow(dead_code)]
     fn model_fixture_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
             .join("tests/fixtures/models/xenova-paraphrase-minilm-l3-v2-int8")
     }
 

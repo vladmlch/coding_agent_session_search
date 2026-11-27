@@ -817,21 +817,19 @@ mod tests {
 
     #[test]
     fn golden_human_summaries() {
-        let golden_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/golden/human/readiness_summaries.txt"
-        );
+        let golden_path = crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
+            .join("tests/golden/human/readiness_summaries.txt");
         let rendered = render_golden_document();
 
         if std::env::var("UPDATE_GOLDENS").is_ok() {
-            if let Some(parent) = std::path::Path::new(golden_path).parent() {
+            if let Some(parent) = golden_path.parent() {
                 std::fs::create_dir_all(parent).expect("create golden dir");
             }
-            std::fs::write(golden_path, &rendered).expect("write golden");
+            std::fs::write(&golden_path, &rendered).expect("write golden");
             return;
         }
 
-        let expected = std::fs::read_to_string(golden_path).expect(
+        let expected = std::fs::read_to_string(&golden_path).expect(
             "missing golden tests/golden/human/readiness_summaries.txt — regenerate with \
              UPDATE_GOLDENS=1 (see AGENTS.md)",
         );

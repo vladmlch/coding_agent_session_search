@@ -114,7 +114,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn fastembed_fixture_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
             .join("tests/fixtures/models/xenova-ms-marco-minilm-l6-v2-int8")
     }
 

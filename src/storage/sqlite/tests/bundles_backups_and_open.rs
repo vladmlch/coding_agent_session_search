@@ -1185,7 +1185,7 @@ fn legacy_fts_config_shadow_fixture_open_insert_and_read_without_missing_index()
     use crate::sources::provenance::LOCAL_SOURCE_ID;
     use crate::storage::sqlite::SchemaRebuildRequired;
 
-    let fixture_db = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let fixture_db = crate::subsystem_coverage_matrix::workspace_paths::workspace_root()
         .join("tests")
         .join("fixtures")
         .join("gh503")

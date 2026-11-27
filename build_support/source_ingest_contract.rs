@@ -13,20 +13,34 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use toml::Value;
 
 const PRESENTATION_DIRECTORIES: &[&str] = &["src/html_export", "src/pages_assets"];
 const PRESENTATION_FILES: &[&str] = &["src/doctor_robot_docs.rs", "src/recipes_robot_docs.rs"];
 
+fn normalized_source_path(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    if matches!(components.next(), Some(Component::Normal(dir)) if dir == "crates")
+        && matches!(components.next(), Some(Component::Normal(_)))
+        && matches!(components.next(), Some(Component::Normal(src)) if src == "src")
+    {
+        let mut normalized = PathBuf::from("src");
+        normalized.extend(components);
+        return normalized;
+    }
+    path.to_path_buf()
+}
+
 fn presentation_only(path: &Path) -> bool {
+    let normalized = normalized_source_path(path);
     PRESENTATION_DIRECTORIES
         .iter()
-        .any(|directory| path.starts_with(directory))
+        .any(|directory| normalized.starts_with(directory))
         || PRESENTATION_FILES
             .iter()
-            .any(|file| path == Path::new(file))
+            .any(|file| normalized == Path::new(file))
 }
 
 fn input_error(path: &Path, error: io::Error) -> io::Error {
@@ -53,6 +67,27 @@ pub fn emit_contract(
         PathBuf::from("build.rs"),
     ]);
     let mut directories = vec![PathBuf::from("src"), PathBuf::from("build_support")];
+    let crates_rel = Path::new("crates");
+    let crates_abs = manifest_dir.join(crates_rel);
+    if crates_abs.is_dir() {
+        watch(crates_rel);
+        let crate_entries =
+            fs::read_dir(&crates_abs).map_err(|error| input_error(crates_rel, error))?;
+        for entry in crate_entries {
+            let entry = entry.map_err(|error| input_error(crates_rel, error))?;
+            let member_rel = crates_rel.join(entry.file_name());
+            let kind = entry
+                .file_type()
+                .map_err(|error| input_error(&member_rel, error))?;
+            if !kind.is_dir() {
+                continue;
+            }
+            let src_rel = member_rel.join("src");
+            if manifest_dir.join(&src_rel).is_dir() {
+                directories.push(src_rel);
+            }
+        }
+    }
     while let Some(directory) = directories.pop() {
         // Watching directories also notices newly added or removed producer
         // files. A presentation edit may rerun build.rs but keeps the digest.
@@ -240,9 +275,111 @@ fn emit_toml(update: &mut impl FnMut(&[u8]), value: &Value) {
     }
 }
 
+/// Collect `(name, version)` pairs for internal workspace crates under
+/// `crates/cass-*/Cargo.toml`, resolving `version.workspace = true` against the
+/// root manifest's `[workspace.package].version` (or `fallback_workspace_version`).
+#[allow(dead_code)]
+pub fn workspace_internal_packages(
+    manifest_dir: &Path,
+    fallback_workspace_version: Option<&str>,
+) -> BTreeSet<(String, String)> {
+    let mut packages = BTreeSet::new();
+    let crates_dir = manifest_dir.join("crates");
+    if !crates_dir.is_dir() {
+        return packages;
+    }
+    let root_workspace_version = fs::read_to_string(manifest_dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<Value>(&text).ok())
+        .and_then(|manifest| {
+            manifest
+                .get("workspace")
+                .and_then(|ws| ws.get("package"))
+                .and_then(|pkg| pkg.get("version"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| fallback_workspace_version.map(str::to_owned));
+
+    let Ok(entries) = fs::read_dir(&crates_dir) else {
+        return packages;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(dir_name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !dir_name.starts_with("cass-") {
+            continue;
+        }
+        let manifest_path = entry.path().join("Cargo.toml");
+        let Ok(manifest_text) = fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = toml::from_str::<Value>(&manifest_text) else {
+            continue;
+        };
+        let Some(package_table) = manifest.get("package").and_then(Value::as_table) else {
+            continue;
+        };
+        let Some(name) = package_table
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        let version = match package_table.get("version") {
+            Some(Value::String(version)) if !version.is_empty() => Some(version.clone()),
+            Some(Value::Table(table))
+                if table.get("workspace").and_then(Value::as_bool) == Some(true) =>
+            {
+                root_workspace_version.clone()
+            }
+            _ => None,
+        };
+        if let Some(version) = version {
+            packages.insert((name.to_string(), version));
+        }
+    }
+    packages
+}
+
+/// GH#426: the exact root package (and verified internal `crates/cass-*` workspace
+/// crates when supplied via `workspace_packages`) are the only source-less lock
+/// entries allowed. External `path` dependencies still block reuse.
+#[allow(dead_code)]
+pub fn dependency_blocks_reuse_with_workspace(
+    package_name: Option<&str>,
+    package_version: Option<&str>,
+    package_source: Option<&str>,
+    crate_name: &str,
+    crate_version: &str,
+    workspace_packages: &BTreeSet<(String, String)>,
+) -> bool {
+    if package_source.is_some() {
+        return false;
+    }
+    if package_name == Some(crate_name) && package_version == Some(crate_version) {
+        return false;
+    }
+    if let (Some(name), Some(version)) = (package_name, package_version)
+        && workspace_packages.contains(&(name.to_string(), version.to_string()))
+    {
+        return false;
+    }
+    true
+}
+
 /// GH#426: the exact root package is the only source-less lock entry allowed.
 /// Keep this predicate independent of TOML so its fail-closed behavior can be
 /// tested without compiling the application or resolving another dependency graph.
+#[allow(dead_code)]
 pub fn dependency_blocks_reuse(
     package_name: Option<&str>,
     package_version: Option<&str>,
@@ -250,8 +387,14 @@ pub fn dependency_blocks_reuse(
     crate_name: &str,
     crate_version: &str,
 ) -> bool {
-    package_source.is_none()
-        && !(package_name == Some(crate_name) && package_version == Some(crate_version))
+    dependency_blocks_reuse_with_workspace(
+        package_name,
+        package_version,
+        package_source,
+        crate_name,
+        crate_version,
+        &BTreeSet::new(),
+    )
 }
 
 #[cfg(test)]
@@ -688,5 +831,82 @@ checksum = "same-name-dependency"
         let error = emit_contract(&fixture.0, [], |_| {}, |_| {}).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert!(error.to_string().contains("Cargo.lock"));
+    }
+
+    #[test]
+    fn workspace_crates_src_and_presentation_exclusions_are_respected() {
+        let fixture = Fixture::new();
+        let original = fixture.stream(&[]);
+
+        for path in [
+            "crates/cass-pages/src/html_export/renderer.rs",
+            "crates/cass-pages/src/pages_assets/viewer.js",
+            "crates/cass-doctor/src/doctor_robot_docs.rs",
+            "crates/cass-cli/src/recipes_robot_docs.rs",
+        ] {
+            fixture.write(path, b"original presentation");
+            assert_eq!(fixture.stream(&[]), original, "added {path}");
+            fixture.write(path, b"changed presentation");
+            assert_eq!(fixture.stream(&[]), original, "edited {path}");
+        }
+
+        for path in [
+            "crates/cass-model/src/lib.rs",
+            "crates/cass-pages/src/html_exporter/parser.rs",
+            "crates/cass-pages/src/nested/html_export/renderer.rs",
+        ] {
+            let before = fixture.stream(&[]);
+            fixture.write(path, b"producer-v1");
+            assert_ne!(fixture.stream(&[]), before, "added {path}");
+            let after_add = fixture.stream(&[]);
+            fixture.write(path, b"producer-v2");
+            assert_ne!(fixture.stream(&[]), after_add, "edited {path}");
+        }
+    }
+
+    #[test]
+    fn workspace_internal_cass_crates_allow_source_none_while_external_path_deps_block_reuse() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "Cargo.toml",
+            b"[workspace]\nmembers = [\"crates/cass-model\", \"crates/cass-storage\"]\n\
+              [workspace.package]\nversion = \"0.11.0\"\n\
+              [package]\nname = \"coding-agent-search\"\nversion.workspace = true\n",
+        );
+        fixture.write(
+            "crates/cass-model/Cargo.toml",
+            b"[package]\nname = \"cass-model\"\nversion.workspace = true\n",
+        );
+        fixture.write(
+            "crates/cass-storage/Cargo.toml",
+            b"[package]\nname = \"cass-storage\"\nversion = \"0.11.0\"\n",
+        );
+        // Non-cass-* directory under crates/ must not be exempted.
+        fixture.write(
+            "crates/external-helper/Cargo.toml",
+            b"[package]\nname = \"external-helper\"\nversion = \"0.11.0\"\n",
+        );
+
+        let ws_packages = workspace_internal_packages(&fixture.0, Some("0.11.0"));
+        assert!(ws_packages.contains(&("cass-model".to_string(), "0.11.0".to_string())));
+        assert!(ws_packages.contains(&("cass-storage".to_string(), "0.11.0".to_string())));
+        assert!(!ws_packages.contains(&("external-helper".to_string(), "0.11.0".to_string())));
+
+        let blocks = |name, version, source| {
+            dependency_blocks_reuse_with_workspace(
+                name,
+                version,
+                source,
+                "coding-agent-search",
+                "0.11.0",
+                &ws_packages,
+            )
+        };
+        assert!(!blocks(Some("cass-model"), Some("0.11.0"), None));
+        assert!(!blocks(Some("cass-storage"), Some("0.11.0"), None));
+        assert!(blocks(Some("cass-model"), Some("0.10.0"), None));
+        assert!(blocks(Some("cass-unlisted"), Some("0.11.0"), None));
+        assert!(blocks(Some("external-helper"), Some("0.11.0"), None));
+        assert!(blocks(Some("franken-agent-detection"), Some("0.3.11"), None));
     }
 }

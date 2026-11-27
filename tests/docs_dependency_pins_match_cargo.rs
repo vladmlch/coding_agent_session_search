@@ -24,7 +24,50 @@ struct Pin {
     rev: Option<String>,
 }
 
-/// `[dependencies]` entries pinned to an exact version: key -> pin.
+/// Resolve a dependency entry (direct or inherited via `{ workspace = true }`)
+/// into an exact version pin when it pins `=<version>`.
+fn resolve_exact_pin(
+    key: &str,
+    spec: &toml::Value,
+    workspace_deps: Option<&toml::Table>,
+    patch_rev: &impl Fn(&str) -> Option<String>,
+) -> Option<Pin> {
+    let resolved = match spec {
+        toml::Value::Table(table)
+            if table.get("workspace").and_then(toml::Value::as_bool) == Some(true) =>
+        {
+            workspace_deps?.get(key)?
+        }
+        other => other,
+    };
+    let (version, rev) = match resolved {
+        toml::Value::String(version) => (version.as_str(), None),
+        toml::Value::Table(table) => (
+            table.get("version")?.as_str()?,
+            table.get("rev").and_then(toml::Value::as_str),
+        ),
+        _ => return None,
+    };
+    let exact = version.strip_prefix('=')?;
+    let package = match resolved {
+        toml::Value::Table(table) => table.get("package").and_then(toml::Value::as_str),
+        _ => None,
+    };
+    let rev = match rev {
+        Some(rev) => Some(rev.to_owned()),
+        None => package
+            .map(str::to_owned)
+            .or_else(|| Some(key.to_owned()))
+            .and_then(|package| patch_rev(&package)),
+    };
+    Some(Pin {
+        version: exact.trim().to_owned(),
+        rev,
+    })
+}
+
+/// `[dependencies]` (and `[workspace.dependencies]`) entries pinned to an exact
+/// version: key -> pin.
 fn exact_pins(manifest: &str) -> BTreeMap<String, Pin> {
     let manifest: toml::Table = manifest.parse().expect("Cargo.toml parses");
     let patches = manifest
@@ -40,40 +83,35 @@ fn exact_pins(manifest: &str) -> BTreeMap<String, Pin> {
             .and_then(toml::Value::as_str)
             .map(str::to_owned)
     };
-    let deps = manifest["dependencies"]
-        .as_table()
-        .expect("[dependencies] table");
-    deps.iter()
-        .filter_map(|(key, spec)| {
-            let (version, rev) = match spec {
-                toml::Value::String(version) => (version.as_str(), None),
-                toml::Value::Table(table) => (
-                    table.get("version")?.as_str()?,
-                    table.get("rev").and_then(toml::Value::as_str),
-                ),
-                _ => return None,
-            };
-            let exact = version.strip_prefix('=')?;
-            let package = match spec {
-                toml::Value::Table(table) => table.get("package").and_then(toml::Value::as_str),
-                _ => None,
-            };
-            let rev = match rev {
-                Some(rev) => Some(rev.to_owned()),
-                None => package
-                    .map(str::to_owned)
-                    .or_else(|| Some(key.clone()))
-                    .and_then(|package| patch_rev(&package)),
-            };
-            Some((
-                key.clone(),
-                Pin {
-                    version: exact.trim().to_owned(),
-                    rev,
-                },
-            ))
-        })
-        .collect()
+    let workspace_deps = manifest
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|ws| ws.get("dependencies"))
+        .and_then(toml::Value::as_table);
+    let deps = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table);
+    assert!(
+        deps.is_some() || workspace_deps.is_some(),
+        "[dependencies] or [workspace.dependencies] table must exist"
+    );
+
+    let mut pins = BTreeMap::new();
+    if let Some(ws_deps) = workspace_deps {
+        for (key, spec) in ws_deps {
+            if let Some(pin) = resolve_exact_pin(key, spec, workspace_deps, &patch_rev) {
+                pins.insert(key.clone(), pin);
+            }
+        }
+    }
+    if let Some(deps) = deps {
+        for (key, spec) in deps {
+            if let Some(pin) = resolve_exact_pin(key, spec, workspace_deps, &patch_rev) {
+                pins.insert(key.clone(), pin);
+            }
+        }
+    }
+    pins
 }
 
 /// Every mismatch between a doc's pin rows and the manifest, plus how many
@@ -191,4 +229,46 @@ fn a_stale_git_pin_row_is_reported() {
             pin.version
         )]
     );
+}
+
+#[test]
+fn workspace_inherited_pins_resolve_exact_versions_and_revs() {
+    let current = exact_pins(&read("Cargo.toml"));
+    let fad = &current["franken-agent-detection"];
+    let fad_rev = fad.rev.as_deref().expect("fad git rev");
+    let ws_manifest = format!(
+        r#"[workspace]
+members = ["crates/cass-model"]
+
+[workspace.dependencies]
+rusqlite = {{ version = "={rusqlite}", features = ["bundled", "modern_sqlite"] }}
+franken-agent-detection = {{ version = "={fad_ver}", git = "https://github.com/vladmlch/franken_agent_detection", rev = "{fad_rev}", features = ["connectors"] }}
+asupersync = {{ version = "={asupersync}", features = ["test-internals"] }}
+frankensearch = {{ version = "={frankensearch}", default-features = false, features = ["hash"] }}
+toon = {{ version = "={toon}", package = "tru" }}
+
+[dependencies]
+rusqlite = {{ workspace = true }}
+franken-agent-detection = {{ workspace = true }}
+asupersync = {{ workspace = true }}
+frankensearch = {{ workspace = true }}
+toon = {{ workspace = true }}
+"#,
+        rusqlite = current["rusqlite"].version,
+        fad_ver = fad.version,
+        fad_rev = fad_rev,
+        asupersync = current["asupersync"].version,
+        frankensearch = current["frankensearch"].version,
+        toon = current["toon"].version,
+    );
+    let ws_pins = exact_pins(&ws_manifest);
+    for doc in ["README.md", "AGENTS.md"] {
+        let (mismatches, checked) = pin_mismatches(&read(doc), &ws_pins);
+        assert!(
+            mismatches.is_empty(),
+            "{doc} disagrees with workspace-inherited manifest:\n{}",
+            mismatches.join("\n")
+        );
+        assert!(checked >= 5, "{doc}: only {checked} pin rows found");
+    }
 }

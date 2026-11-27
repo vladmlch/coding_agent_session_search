@@ -49,17 +49,52 @@ def contracts(source: str) -> dict[tuple[str, str], frozenset[str]]:
     return result
 
 
+def _extract_features(spec: dict, context: str) -> tuple[list[str] | None, str | None]:
+    features = spec.get("features", [])
+    if not isinstance(features, list) or any(not isinstance(item, str) for item in features):
+        return None, f"{context}: features must be a string array"
+    return features, None
+
+
 def check(source: str, manifest: dict) -> list[str]:
     errors = []
+    ws_deps = manifest.get("workspace", {}).get("dependencies", {})
     for (table, key), expected in contracts(source).items():
         spec = manifest.get(table, {}).get(key)
         if not isinstance(spec, dict):
             errors.append(f"[{table}].{key}: missing dependency table")
             continue
-        actual = spec.get("features", [])
-        if not isinstance(actual, list) or any(not isinstance(item, str) for item in actual):
-            errors.append(f"[{table}].{key}: features must be a string array")
-            continue
+        if spec.get("workspace") is True:
+            if not isinstance(ws_deps, dict) or key not in ws_deps:
+                errors.append(
+                    f"[{table}].{key}: workspace = true but missing [workspace.dependencies].{key}"
+                )
+                continue
+            ws_spec = ws_deps[key]
+            if isinstance(ws_spec, str):
+                ws_features = []
+            elif isinstance(ws_spec, dict):
+                ws_features, err = _extract_features(
+                    ws_spec, f"[workspace.dependencies].{key}"
+                )
+                if err is not None:
+                    errors.append(err)
+                    continue
+            else:
+                errors.append(
+                    f"[workspace.dependencies].{key}: dependency spec must be a string or table"
+                )
+                continue
+            local_features, err = _extract_features(spec, f"[{table}].{key}")
+            if err is not None:
+                errors.append(err)
+                continue
+            actual = list(ws_features) + list(local_features)
+        else:
+            actual, err = _extract_features(spec, f"[{table}].{key}")
+            if err is not None:
+                errors.append(err)
+                continue
         if set(actual) != expected:
             errors.append(
                 f"[{table}].{key}: missing={sorted(expected - set(actual))}; "

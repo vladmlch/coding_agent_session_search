@@ -33,6 +33,8 @@
 
 use serde::Serialize;
 
+pub mod workspace_paths;
+
 /// Stable schema version for the subsystem-coverage wire format.
 pub const SUBSYSTEM_COVERAGE_SCHEMA_VERSION: u32 = 1;
 
@@ -642,10 +644,10 @@ pub fn render_markdown() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::path::PathBuf;
 
-    fn repo_root() -> &'static Path {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
+    fn repo_root() -> PathBuf {
+        workspace_paths::workspace_root()
     }
 
     // --- the matrix covers every report subsystem, exactly once ------------
@@ -723,7 +725,7 @@ mod tests {
     #[test]
     fn every_cited_proof_artifact_exists_on_disk() {
         let root = repo_root();
-        let exists = |p: &str| root.join(p).exists();
+        let exists = |p: &str| workspace_paths::resolve_workspace_source_file(&root, p).exists();
         let mut missing = Vec::new();
         for row in subsystem_coverage_matrix().iter() {
             missing.extend(missing_artifacts(row, exists));
@@ -739,7 +741,7 @@ mod tests {
         let root = repo_root();
         for doc in PRECURSOR_DOCS.iter() {
             assert!(
-                root.join(doc).exists(),
+                workspace_paths::resolve_workspace_source_file(&root, doc).exists(),
                 "precursor doc {doc} must exist on disk"
             );
         }
