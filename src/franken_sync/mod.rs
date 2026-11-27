@@ -36,6 +36,7 @@ pub use crate::__cass_franken_params as params;
 #[cfg(not(target_arch = "wasm32"))]
 pub use compat_surface::BackupReport;
 pub use compat_surface::{compat, migrate};
+#[cfg(test)]
 pub(crate) use compat_surface::shutdown_driver;
 pub use connection::Connection;
 #[allow(unused_imports)]

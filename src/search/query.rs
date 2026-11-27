@@ -128,7 +128,7 @@ pub(in crate::search::query) use dispatch::levenshtein_distance;
 pub(in crate::search::query) use fusion::{
     FederatedRankedHit, FusedHit, HybridScore, SearchHitKey, cmp_fused_hit_desc,
     federated_rrf_score, hit_is_noise, merge_federated_ranked_hits, search_hit_key_doc_id,
-    should_try_wildcard_fallback, snippet_from_content, snippet_from_preview_without_full_content,
+    should_try_wildcard_fallback, snippet_from_preview_without_full_content,
     snippet_terms_for_query, stable_hit_hash, top_k_fused,
 };
 #[cfg(test)]

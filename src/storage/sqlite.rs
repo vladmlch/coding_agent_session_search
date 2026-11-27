@@ -85,7 +85,7 @@ pub(crate) use backup_and_integrity::{
 };
 #[cfg(test)]
 pub(crate) use backup_and_integrity::{
-    ensure_fts_consistency_via_rusqlite, materialize_fresh_fts_schema_via_rusqlite,
+    ensure_fts_consistency_via_rusqlite,
     rebuild_fts_via_rusqlite, recovery_conversation_row_from_lenient_columns,
     remove_database_files,
 };

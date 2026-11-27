@@ -159,7 +159,7 @@ enum Operation {
         #[arg(long)]
         allow_compatible_schema: bool,
         /// Rebuild lexical search from the restored DB, without scanning providers.
-        /// Output must be <existing-data-directory>/agent_search.db, and input
+        /// Output must be `<existing-data-directory>/agent_search.db`, and input
         /// must be outside that directory. The DB is retained if indexing fails.
         #[arg(long)]
         rebuild_index: bool,

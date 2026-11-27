@@ -35,11 +35,6 @@ pub(in crate::indexer) use serial_batch::{
     defer_lexical_updates_enabled, maybe_checkpoint_bulk_ingest_wal, with_ephemeral_writer,
     with_writer_retry, writer_retry_limit,
 };
-// Compat aliases for unowned wave-2.2 test callers (`gh473_tests.rs`, `preflight_watchdog_tests.rs`).
-pub(in crate::indexer) use serial_batch::{
-    with_writer_retry as with_concurrent_retry,
-    writer_retry_limit as begin_concurrent_retry_limit,
-};
 
 #[cfg(test)]
 use batch_map::{

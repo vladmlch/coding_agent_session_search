@@ -24,7 +24,7 @@ pub(in crate::storage::sqlite::tests) use super::fts_rebuild::{
     FTS_ENTRY_BATCH_MAX_CHARS, FTS_EXACT_ROWID_PROBE_CHUNK_SIZE, FTS5_BATCH_SIZE,
     FtsRebuildMessageRow, FtsRebuildPagePlan, arm_fts_page_after_plan_hook,
     arm_fts_page_diagnostics, arm_fts_rebuild_interruption, emit_fts_page_diagnostics,
-    fts_exact_rowid_probe_select_sql, path_to_string, plan_fts_rebuild_message_page, role_str,
+    fts_exact_rowid_probe_select_sql, path_to_string, plan_fts_rebuild_message_page,
 };
 pub(in crate::storage::sqlite::tests) use super::lexical_rebuild::truncate_lexical_rebuild_message_content;
 pub(in crate::storage::sqlite::tests) use super::omp_and_semantic_meta::{
@@ -46,12 +46,11 @@ pub(in crate::storage::sqlite::tests) use super::reconcile_and_codebuff::{
     provider_workspace_is_authoritative, replay_owns_provider_workspace,
 };
 pub(in crate::storage::sqlite::tests) use super::source_and_historical_import::{
-    HISTORICAL_RECOVERY_CORE_SCHEMA, HistoricalBatchEntry, HistoricalBatchImportTotals,
     historical_raw_json, historical_table_exists, json_value_size_hint,
     parse_historical_json_column, wrap_historical_raw_json,
 };
 pub(in crate::storage::sqlite::tests) use super::storage_core::{
-    AUTOCOMMIT_RETAIN_OFF_PRAGMAS, SNIPPETS_MESSAGE_ID_INDEX, disable_autocommit_retain,
+    AUTOCOMMIT_RETAIN_OFF_PRAGMAS, disable_autocommit_retain,
 };
 pub(in crate::storage::sqlite::tests) use super::tx_analytics_rollups::{
     TOKEN_DAILY_STATS_REBUILD_STAGE_TABLE, TokenDailyStatsRebuildCursor,
