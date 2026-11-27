@@ -601,14 +601,15 @@ pub fn project_session_structure(
 
     // --- part dedup + tool part ordinals ------------------------------------
     for step in &mut steps {
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut deduped = Vec::with_capacity(step.parts.len());
-        for mut part in std::mem::take(&mut step.parts) {
-            if seen.insert(std::mem::take(&mut part.signature)) {
-                deduped.push(part);
-            }
-        }
-        step.parts = deduped;
+        let keep: Vec<bool> = {
+            let mut seen: BTreeSet<&str> = BTreeSet::new();
+            step.parts
+                .iter()
+                .map(|part| seen.insert(part.signature.as_str()))
+                .collect()
+        };
+        let mut keep_iter = keep.into_iter();
+        step.parts.retain(|_| keep_iter.next().unwrap_or(false));
         let mut tool_ordinal = 0_i64;
         for part in &mut step.parts {
             if matches!(part.kind, "tool_call" | "tool_result") {
