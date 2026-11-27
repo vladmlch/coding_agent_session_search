@@ -5,6 +5,7 @@
 pub mod semantic_reclaim_cli;
 
 fn main() -> std::process::ExitCode {
+    coding_agent_search::ensure_runtime_hooks_registered();
     std::process::ExitCode::from(semantic_reclaim_cli::run_standalone(
         std::env::args_os().collect(),
     ))

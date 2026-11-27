@@ -221,6 +221,7 @@ fn command_uses_current_thread(command: Option<&coding_agent_search::Commands>) 
 }
 
 fn main() -> anyhow::Result<()> {
+    coding_agent_search::ensure_runtime_hooks_registered();
     // (cass #356) Restore the default SIGPIPE disposition so an early-exiting
     // pipe consumer (`cass ... --json | head`) terminates cass quietly with
     // the conventional 141 instead of panicking on EPIPE — which, under the

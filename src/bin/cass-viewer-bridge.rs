@@ -10,5 +10,6 @@
 mod viewer_bridge;
 
 fn main() -> std::process::ExitCode {
+    coding_agent_search::ensure_runtime_hooks_registered();
     viewer_bridge::run(std::env::args_os().collect())
 }

@@ -29,6 +29,7 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let args = Args::parse();
     let report = migrate(&MigrationOptions {
         data_dir: args.data_dir,

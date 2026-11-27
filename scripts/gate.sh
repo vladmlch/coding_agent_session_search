@@ -448,7 +448,7 @@ run_ubs_default_lanes() {
         ["src/indexer/semantic/shard_publication_tests.rs"]=1
         ["src/raw_mirror/policy_tests.rs"]=1
         ["src/raw_mirror/retention_tests.rs"]=1
-        ["src/search/gh494_repair_tests.rs"]=1
+        ["src/cli_root/gh494_repair_tests.rs"]=1
         ["src/search_service/mcp_refinement_evidence_tests.rs"]=1
     )
     while IFS= read -r -d '' path; do

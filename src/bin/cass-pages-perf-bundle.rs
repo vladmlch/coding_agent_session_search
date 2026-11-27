@@ -76,6 +76,7 @@ struct Args {
 }
 
 fn main() -> Result<()> {
+    coding_agent_search::ensure_runtime_hooks_registered();
     let args = Args::parse();
 
     let total_messages = if args.messages > 0 {

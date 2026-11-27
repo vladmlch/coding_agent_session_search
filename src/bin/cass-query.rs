@@ -400,6 +400,7 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
+    coding_agent_search::ensure_runtime_hooks_registered();
     match linux::run() {
         Ok(true) => std::process::ExitCode::SUCCESS,
         Ok(false) => std::process::ExitCode::from(1),
@@ -409,6 +410,7 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(not(target_os = "linux"))]
 fn main() -> std::process::ExitCode {
+    coding_agent_search::ensure_runtime_hooks_registered();
     eprintln!("cass-query requires Linux; ordinary cass search remains available.");
     std::process::ExitCode::from(2)
 }

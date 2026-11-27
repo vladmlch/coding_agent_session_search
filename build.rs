@@ -245,18 +245,21 @@ fn emit_source_ingest_contract(manifest_dir: &Path) {
     // The first package that disables reuse, named so `cass capabilities` can
     // tell an operator why (GH#426): a source build with a local path override
     // reparses every source on every incremental run.
+    let workspace_packages =
+        source_ingest_contract::workspace_internal_packages(manifest_dir, Some(&crate_version));
     let reuse_blocker = if packages.is_empty() {
         Some("Cargo.lock lists no packages".to_string())
     } else {
         packages
             .iter()
             .find(|package| {
-                source_ingest_contract::dependency_blocks_reuse(
+                source_ingest_contract::dependency_blocks_reuse_with_workspace(
                     package.get("name").and_then(Value::as_str),
                     package.get("version").and_then(Value::as_str),
                     package.get("source").and_then(Value::as_str),
                     &crate_name,
                     &crate_version,
+                    &workspace_packages,
                 )
             })
             .map(|package| {
@@ -574,11 +577,34 @@ fn validate_manifest_dependency_spec(
     contract: &DependencyContract,
     packaged_manifest: bool,
 ) {
-    let spec = inline_table(
+    let raw_spec = inline_table(
         table(manifest, contract.dep_table, "manifest root"),
         contract.dep_key,
         contract.dep_table,
     );
+    let workspace_spec = if raw_spec.get("workspace").and_then(Value::as_bool) == Some(true) {
+        for forbidden in ["version", "git", "rev", "path", "branch", "tag", "package"] {
+            if raw_spec.contains_key(forbidden) {
+                contract_error(
+                    contract,
+                    format!(
+                        "dependency `{}` in [{}] uses `workspace = true` and must not override `{forbidden}`",
+                        contract.dep_key, contract.dep_table
+                    ),
+                );
+            }
+        }
+        let workspace_table = table(manifest, "workspace", "manifest root");
+        let workspace_deps = inline_table(workspace_table, "dependencies", "[workspace]");
+        Some(inline_table(
+            workspace_deps,
+            contract.dep_key,
+            "[workspace.dependencies]",
+        ))
+    } else {
+        None
+    };
+    let spec = workspace_spec.unwrap_or(raw_spec);
 
     validate_manifest_dependency_version(spec, contract, packaged_manifest);
 
@@ -636,7 +662,10 @@ fn validate_manifest_dependency_spec(
         );
     }
 
-    let actual_features = feature_set(spec.get("features"));
+    let mut actual_features = feature_set(spec.get("features"));
+    if workspace_spec.is_some() {
+        actual_features.extend(feature_set(raw_spec.get("features")));
+    }
     let expected_features: BTreeSet<String> = contract
         .expected_features
         .iter()
@@ -653,8 +682,9 @@ fn validate_manifest_dependency_spec(
     }
 
     if let Some(expected_default_features) = contract.expected_default_features {
-        let actual_default_features = spec
+        let actual_default_features = raw_spec
             .get("default-features")
+            .or_else(|| spec.get("default-features"))
             .and_then(Value::as_bool)
             .unwrap_or(true);
         if actual_default_features != expected_default_features {

@@ -66,14 +66,23 @@ pub mod viewer_extensions;
 /// The CLI calls this after its command future completes so Windows tears down
 /// the runtimes before the CRT starts destroying thread-local storage.
 #[doc(hidden)]
-pub fn shutdown_thread_local_bridge_runtimes() -> bool {
-    let quill_shutdown = search::quill_bridge::shutdown_driver();
-    // SQLite connectors cache a separate runtime inside FAD. Drop it before
-    // Windows process teardown terminates its worker threads (GH #519).
-    // Evaluate every shutdown before combining results: a timeout in one
-    // bridge must not leave another runtime cached until process exit.
-    let fad_shutdown = franken_agent_detection::connectors::sqlite_sync::shutdown_driver();
-    quill_shutdown && fad_shutdown
+pub use search::quill_bridge::shutdown_thread_local_bridge_runtimes;
+
+pub fn ensure_runtime_hooks_registered() {
+    dependency_pin_correlation::build_metadata::BuildMetadata::register_idempotent(
+        dependency_pin_correlation::build_metadata::BuildMetadata {
+            ingest_contract: env!("CASS_SOURCE_INGEST_CONTRACT"),
+            ingest_reuse: env!("CASS_SOURCE_INGEST_REUSE") == "true",
+            ingest_reuse_blocker: env!("CASS_SOURCE_INGEST_REUSE_BLOCKER"),
+            build_commit: option_env!("CASS_BUILD_COMMIT"),
+            build_commit_date: option_env!("CASS_BUILD_COMMIT_DATE"),
+            git_sha: option_env!("VERGEN_GIT_SHA"),
+        },
+    );
+    search::archive_rebuild::register_archive_lexical_repair_hook(|db_path, data_dir| {
+        indexer::repair_lexical_index_from_canonical_db_for_search(db_path, data_dir, None)
+            .map(|outcome| outcome.indexed_docs)
+    });
 }
 
 pub(crate) mod cli_app;
@@ -119,12 +128,12 @@ use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub use cli_root::cli_types::{
-    AgentsAction, AggregateField, AggregationBucket, Aggregations, CliError, CliResult, ColorPref,
-    ConvExportFormat, DisplayFormat, FieldAggregation, ImportCommand, MappingsAction,
-    MirrorCommand, ModelsCommand, PagesDeployTarget, ProgressMode, ProgressResolved,
-    QuarantineCommand, RebuildProfileArg, RobotFormat, RobotTopic, SourcesCommand,
-    TimelineGrouping,
+    AgentsAction, AggregateField, AggregationBucket, Aggregations, ColorPref, ConvExportFormat,
+    DisplayFormat, FieldAggregation, ImportCommand, MappingsAction, MirrorCommand, ModelsCommand,
+    PagesDeployTarget, ProgressMode, ProgressResolved, QuarantineCommand, RebuildProfileArg,
+    RobotTopic, SourcesCommand, TimelineGrouping,
 };
+pub use model::cli_error::{CliError, CliResult, RobotFormat};
 pub use cli_root::commands::{Cli, Commands, InvocationInterpretation};
 pub use cli_root::entry::{ParsedCli, parse_cli, run, run_with_parsed, try_run_with_parsed_fast};
 pub use cli_root::search_filters::{SemanticSearchOptions, TimeFilter};
@@ -135,7 +144,7 @@ pub use cli_app::introspect::capabilities::{
     WorkflowCapability,
 };
 pub use cli_app::introspect::clap_schema::register_external_subcommands;
-pub use cli_app::paths::{default_data_dir, default_db_path, resolve_data_dir};
+pub use model::paths::{default_data_dir, default_db_path, resolve_data_dir};
 pub use cli_app::view_export::message_grouping::{
     AgentFormat, MessageClassification, classify_message, detect_agent_format,
     extract_correlation_id, group_messages_for_export,
@@ -143,28 +152,41 @@ pub use cli_app::view_export::message_grouping::{
 
 #[allow(unused_imports)]
 pub(crate) use cli_app::{
-    ViewWindow, cached_index_payload, canonical_followup_source_id, default_data_dir_with_source,
-    diagnostics_connector_paths, doctor_archive_wide_collectors_deferred_reason,
-    doctor_open_error_message_is_affirmative_corruption, extract_message_timestamp, extract_role,
-    extract_text_content, extract_text_content_without_tool_blocks, extract_tool_calls,
-    followup_source_is_local, format_as_markdown, is_fsqlite_runtime_lock_sidecar,
-    maybe_test_view_delay, normalized_provenance_origin_host, normalized_provenance_origin_kind,
+    ViewWindow, cached_index_payload, canonical_followup_source_id, diagnostics_connector_paths,
+    doctor_archive_wide_collectors_deferred_reason,
+    doctor_open_error_message_is_affirmative_corruption, extract_message_timestamp,
+    followup_source_is_local, is_fsqlite_runtime_lock_sidecar, maybe_test_view_delay,
+    normalized_provenance_origin_host, normalized_provenance_origin_kind,
     normalized_provenance_source_id, normalized_source_identity_sql_expr,
-    output_bounded_view_partial, run_doctor_impl, run_expand, run_view, smart_truncate,
-    strip_flattened_tool_call_lines, strip_tool_marker, validate_followup_source_id,
+    output_bounded_view_partial, run_doctor_impl, run_expand, run_view,
+    validate_followup_source_id,
+};
+#[allow(unused_imports)]
+pub(crate) use export::message_parse::{
+    extract_role, extract_text_content, extract_text_content_without_tool_blocks,
+    extract_tool_calls, format_as_markdown, smart_truncate, strip_flattened_tool_call_lines,
+    strip_tool_marker,
 };
 #[allow(unused_imports)]
 pub(crate) use cli_root::{
     DEFAULT_STALE_THRESHOLD_SECS, DoctorCandidateLiveInventory, DoctorCandidatePromotionReport,
-    WrapConfig, auto_refresh_is_scratch_data_dir, bounded_canonical_db_corruption_probe,
-    build_truth_table_for_data_dir, build_truth_table_from_state, cass_lexical_index_initialized,
-    cass_not_initialized, cass_not_initialized_recommended_action, cli_error_json_payload,
+    auto_refresh_is_scratch_data_dir, build_truth_table_for_data_dir,
+    build_truth_table_from_state, cass_lexical_index_initialized, cass_not_initialized,
+    cass_not_initialized_recommended_action, cli_error_json_payload,
     doctor_forensic_create_private_dir_all, doctor_now_ms, doctor_redacted_path,
     doctor_sqlite_sidecar_path, encode_structured_value, lexical_rebuild_progress_note,
-    maybe_test_search_worker_delay, normalize_path_identity, path_identities_match,
-    robot_format_from_env, run_read_only_search_worker, state_meta_json_for_health,
+    maybe_test_search_worker_delay, robot_format_from_env, run_read_only_search_worker,
+    state_meta_json_for_health,
+};
+#[allow(unused_imports)]
+pub(crate) use model::cli_error::WrapConfig;
+#[allow(unused_imports)]
+pub(crate) use model::paths::{
+    default_data_dir_with_source, normalize_path_identity, path_identities_match,
     stored_path_identity_matches,
 };
+#[allow(unused_imports)]
+pub(crate) use storage::sqlite::open_and_locks::bounded_canonical_db_corruption_probe;
 #[allow(unused_imports)]
 pub(crate) use lib_doctor::{
     DOCTOR_LEAKED_PAGES_REPAIR_BACKUP_MANIFEST_KIND, DoctorRuntimeSummaryInput,
@@ -423,18 +445,24 @@ fn lib_split_strip_cfg_test_items(source: &str) -> String {
 
 #[cfg(test)]
 pub(crate) fn lib_split_all_sources() -> Vec<(String, String)> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src_dir = manifest_dir.join("src");
+    let manifest_dir = crate::subsystem_coverage_matrix::workspace_paths::workspace_root();
     let mut files = Vec::new();
-    let lib_path = src_dir.join("lib.rs");
+    let lib_path = crate::subsystem_coverage_matrix::workspace_paths::resolve_workspace_source_file(
+        &manifest_dir,
+        "src/lib.rs",
+    );
     let lib_src = std::fs::read_to_string(&lib_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", lib_path.display()));
     files.push(("src/lib.rs".to_string(), lib_src));
     let mut subdirs = Vec::new();
-    for dir_name in ["cli_root", "lib_doctor", "cli_app"] {
-        let dir = src_dir.join(dir_name);
-        if dir.is_dir() {
-            lib_split_collect_rs_files(&dir, manifest_dir, &mut subdirs);
+    for src_dir in
+        crate::subsystem_coverage_matrix::workspace_paths::workspace_source_dirs(&manifest_dir)
+    {
+        for dir_name in ["cli_root", "lib_doctor", "cli_app"] {
+            let dir = src_dir.join(dir_name);
+            if dir.is_dir() {
+                lib_split_collect_rs_files(&dir, &manifest_dir, &mut subdirs);
+            }
         }
     }
     subdirs.sort_by(|a, b| a.0.cmp(&b.0));
