@@ -133,42 +133,9 @@ impl AnnotationPatch {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub struct Refusal {
-    pub kind: &'static str,
-    pub message: String,
-    /// Present only on refusals carrying an explicit retry verdict. A
-    /// `deadline_exceeded` refusal is load-proportional — the same
-    /// request may succeed under less load — so the envelope reports
-    /// `retryable: true`; every other refusal leaves the field absent
-    /// so its wire shape stays byte-identical.
-    pub retryable: Option<bool>,
-}
-
-/// Refusal kinds answered with `retryable: true` — mirrored into hello's
-/// `limits` so a client can discover retry semantics from the handshake
-/// instead of hardcoding kind names.
-pub const RETRYABLE_REFUSAL_KINDS: &[&str] = &["deadline_exceeded"];
-
-pub fn refuse(kind: &'static str, message: impl Into<String>) -> anyhow::Error {
-    Refusal {
-        kind,
-        message: message.into(),
-        retryable: None,
-    }
-    .into()
-}
-
-/// A refusal the client may honestly retry (see [`Refusal::retryable`]).
-pub fn refuse_retryable(kind: &'static str, message: impl Into<String>) -> anyhow::Error {
-    Refusal {
-        kind,
-        message: message.into(),
-        retryable: Some(true),
-    }
-    .into()
-}
+pub use coding_agent_search::viewer_extensions::identity::{
+    RETRYABLE_REFUSAL_KINDS, Refusal, refuse, refuse_retryable,
+};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

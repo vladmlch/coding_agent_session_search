@@ -7,7 +7,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-use crate::indexer::redact_secrets::{
+use crate::resource_plan::redact_secrets::{
     ANTHROPIC_API_KEY_PATTERN, AWS_ACCESS_KEY_PATTERN, AWS_SECRET_KEY_PATTERN,
     AWS_SESSION_TOKEN_PATTERN, BEARER_TOKEN_PATTERN, DATABASE_URL_PATTERN,
     GENERIC_SECRET_ASSIGNMENT_PATTERN, GITHUB_TOKEN_PATTERN, OPENAI_API_KEY_PATTERN,

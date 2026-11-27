@@ -117,7 +117,7 @@ pub fn render_privacy_exposure_fixture(fixture_id: &str, source: Option<&Value>)
 /// (absolute paths, emails, hostnames, env secret assignments). The
 /// raw value is never returned.
 fn redact_sample(raw: &str) -> String {
-    let stage1 = crate::indexer::redact_secrets::redact_text(raw).into_owned();
+    let stage1 = crate::resource_plan::redact_secrets::redact_text(raw).into_owned();
     crate::pages::redact::redact_swarm_text(&stage1)
 }
 

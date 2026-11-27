@@ -1,4 +1,4 @@
-#[path = "../src/indexer/memoization.rs"]
+#[path = "../src/resource_plan/memoization.rs"]
 mod memoization;
 
 use memoization::{ContentAddressedMemoCache, MemoContentHash, MemoKey, MemoLookup};

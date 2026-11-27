@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use crate::search::query::SearchHit;
 
 pub(crate) mod indexed;
+pub mod message_parse;
 pub(crate) mod projection;
 
 /// Sharing policy applied before raw or archived conversation data is rendered.
@@ -36,7 +37,7 @@ impl ExportPrivacy {
             return;
         }
         for message in messages {
-            let redacted = crate::indexer::redact_secrets::redact_json(message);
+            let redacted = crate::resource_plan::redact_secrets::redact_json(message);
             self.redaction_applied |= redacted != *message;
             *message = redacted;
         }
@@ -50,7 +51,7 @@ impl ExportPrivacy {
 
     pub(crate) fn redact_text(&mut self, text: &mut String) {
         if !self.include_secrets
-            && let Cow::Owned(redacted) = crate::indexer::redact_secrets::redact_text(text)
+            && let Cow::Owned(redacted) = crate::resource_plan::redact_secrets::redact_text(text)
         {
             *text = redacted;
             self.redaction_applied = true;
@@ -70,16 +71,7 @@ impl ExportPrivacy {
     }
 }
 
-/// Whole-message skill and hook injections excluded from handoffs and exports
-/// unless the caller explicitly opts in. Inspect the full message before any
-/// excerpt truncation so a retained suffix cannot hide its injection marker.
-pub(crate) fn is_skill_injection(content: &str) -> bool {
-    content.contains("Base directory for this skill:")
-        || content.contains("<system-reminder>")
-        || content.contains("The following skills are available for use with the Skill tool:")
-        || (content.contains("skillInjection:") && content.contains("matchedSkills"))
-        || content.contains("<!-- skillInjection:")
-}
+pub(crate) use crate::resource_plan::text_filters::is_skill_injection;
 
 /// Supported export formats
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

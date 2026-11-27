@@ -48,8 +48,8 @@ pub use derive_meta::derive_meta_regions;
 #[cfg(test)]
 use docs::pack_region_boundaries;
 pub use docs::{
-    RegionDocStamp, SessionScopeDoc, hydrate_region_text, region_doc_stage, region_docs,
-    region_docs_published_current, session_scope_cass_documents, session_scope_docs,
+    RegionDocSink, RegionDocStamp, SessionScopeDoc, hydrate_region_text, region_doc_stage,
+    region_docs, region_docs_published_current, session_scope_cass_documents, session_scope_docs,
     stage_region_docs, stamp_region_docs_published,
 };
 pub use publish::{publish_search_regions, replace_meta_regions};

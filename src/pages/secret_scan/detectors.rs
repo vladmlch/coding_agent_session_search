@@ -337,7 +337,7 @@ fn redact_report_slice(
     // Defense in depth: the shared ingestion redactor is the canonical
     // credential floor. The interval pass additionally covers custom
     // denylist and entropy matches, including secrets crossing slice edges.
-    crate::indexer::redact_secrets::redact_text(&redacted).into_owned()
+    crate::resource_plan::redact_secrets::redact_text(&redacted).into_owned()
 }
 
 pub(super) fn collect_context_redactions(

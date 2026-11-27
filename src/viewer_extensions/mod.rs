@@ -51,7 +51,9 @@
 //! keys, and a single end-of-run journal notify owned by the caller.
 pub mod backfill;
 pub mod changes;
+pub mod extra;
 pub mod facts;
+pub mod identity;
 pub mod projection;
 mod providers;
 pub mod schema;

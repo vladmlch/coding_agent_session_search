@@ -824,5 +824,5 @@ fn pump_loop(db: &Path, inbox: Receiver<TcpStream>, shutdown: Arc<AtomicBool>, p
     // Best-effort thread-local engine runtime teardown; the connection was
     // created on this thread so its driver lives here too.
     drop(connection);
-    let _ = coding_agent_search::shutdown_thread_local_bridge_runtimes();
+    let _ = coding_agent_search::search::quill_bridge::shutdown_thread_local_bridge_runtimes();
 }

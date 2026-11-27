@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 
-use crate::indexer::redact_secrets::redact_text;
+use crate::resource_plan::redact_secrets::redact_text;
 
 use super::types::RenderedRedaction;
 

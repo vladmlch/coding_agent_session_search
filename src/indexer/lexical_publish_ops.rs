@@ -1,9 +1,5 @@
 use super::*;
 use rayon::prelude::*;
-#[cfg(target_os = "linux")]
-use std::ffi::CString;
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStrExt;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -815,53 +811,9 @@ pub(in crate::indexer) fn recover_or_finalize_interrupted_lexical_publish_backup
 }
 
 #[cfg(target_os = "linux")]
-pub(in crate::indexer) fn path_to_cstring(path: &Path) -> Result<CString> {
-    CString::new(path.as_os_str().as_bytes()).with_context(|| {
-        format!(
-            "encoding filesystem path for Linux atomic lexical publish swap: {}",
-            path.display()
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-pub(crate) fn atomic_exchange_paths(left: &Path, right: &Path) -> Result<()> {
-    let left_c = path_to_cstring(left)?;
-    let right_c = path_to_cstring(right)?;
-    // SAFETY: both paths are valid NUL-terminated C strings that outlive the
-    // call, AT_FDCWD is a valid dirfd, and renameat2 reads nothing else.
-    let result = unsafe {
-        linux_publish_swap::renameat2(
-            linux_publish_swap::AT_FDCWD,
-            left_c.as_ptr(),
-            linux_publish_swap::AT_FDCWD,
-            right_c.as_ptr(),
-            linux_publish_swap::RENAME_EXCHANGE,
-        )
-    };
-    if result == 0 {
-        return Ok(());
-    }
-
-    Err(std::io::Error::last_os_error()).with_context(|| {
-        format!(
-            "atomically exchanging lexical publish paths {} <-> {}",
-            left.display(),
-            right.display()
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn linux_atomic_exchange_is_unsupported(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause
-            .downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::raw_os_error)
-            == Some(linux_publish_swap::EINVAL)
-    })
-}
+pub(crate) use crate::resource_plan::fs_atomic::{
+    atomic_exchange_paths, linux_atomic_exchange_is_unsupported,
+};
 
 pub(in crate::indexer) struct LexicalRebuildFinalMergeArtifact {
     pub(in crate::indexer) publish_path: PathBuf,
