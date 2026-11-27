@@ -255,11 +255,11 @@ pub enum Commands {
         /// Filter by workspace path (can be specified multiple times)
         #[arg(long)]
         workspace: Vec<String>,
-        /// Max results. 0 = "no limit" but is auto-capped to a RAM-proportional ceiling
-        /// (1/16 of MemAvailable, clamped to [256 MiB, 16 GiB] of result-heap) so a single
-        /// query can't tie up the whole machine. Override with CASS_SEARCH_NO_LIMIT_CAP=<hits>
-        /// or CASS_SEARCH_NO_LIMIT_BYTES=<bytes>.
-        #[arg(long, default_value_t = 0)]
+        #[arg(
+            long,
+            default_value_t = 0,
+            help = "Max results. 0 = \"no limit\" but is auto-capped to a RAM-proportional ceiling (1/16 of MemAvailable, clamped to [256 MiB, 16 GiB] of result-heap) so a single query can't tie up the whole machine. Override with CASS_SEARCH_NO_LIMIT_CAP=<hits> or CASS_SEARCH_NO_LIMIT_BYTES=<bytes>"
+        )]
         limit: usize,
         /// Offset for pagination (start at Nth result)
         #[arg(long, default_value_t = 0)]
@@ -552,7 +552,9 @@ pub enum Commands {
         #[arg(long, visible_alias = "robot")]
         json: bool,
     },
-    /// Collapse pre-existing duplicate conversation rows (projects/<rel> vs <rel> external_id twins) created before the dedup fix
+    #[command(
+        about = "Collapse pre-existing duplicate conversation rows (projects/<rel> vs <rel> external_id twins) created before the dedup fix"
+    )]
     Dedup {
         /// Override data dir
         #[arg(long)]

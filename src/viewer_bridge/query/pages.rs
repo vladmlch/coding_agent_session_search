@@ -130,8 +130,8 @@ fn keyset_clause(
     let known_col = key.known_column();
     let cmp = if desc { "<" } else { ">" };
     let id_bind = bind(params, SqliteValue::Integer(cursor.id));
-    let tie_bind = bind(params, SqliteValue::Text(cursor.tie.clone().into()));
-    let tie_bind2 = bind(params, SqliteValue::Text(cursor.tie.clone().into()));
+    let tie_bind = bind(params, SqliteValue::Text(cursor.tie.clone()));
+    let tie_bind2 = bind(params, SqliteValue::Text(cursor.tie.clone()));
     // Rows behind a cursor position are `(key-part greater)` or
     // `(equal prefix AND greater tail)` — the same lexicographic split at
     // every level: pin, then knownness, then value, then tie, then rowid.
@@ -165,7 +165,7 @@ fn keyset_clause(
 
 fn sql_value(cursor: &Cursor) -> SqliteValue {
     match cursor.value.as_ref().expect("non-null cursor value") {
-        Value::String(text) => SqliteValue::Text(text.clone().into()),
+        Value::String(text) => SqliteValue::Text(text.clone()),
         other => SqliteValue::Integer(other.as_i64().expect("integer cursor value")),
     }
 }

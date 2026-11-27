@@ -148,12 +148,11 @@ fn values(cells: Vec<Cell>) -> Result<Vec<SqliteValue>> {
                 Cell::Real(bits) => SqliteValue::Float(f64::from_bits(
                     u64::from_str_radix(&bits, 16).map_err(|_| anyhow!("invalid REAL encoding"))?,
                 )),
-                Cell::Text(value) => SqliteValue::Text(value.into()),
+                Cell::Text(value) => SqliteValue::Text(value),
                 Cell::Blob(value) => SqliteValue::Blob(
                     STANDARD
                         .decode(value)
-                        .map_err(|_| anyhow!("invalid BLOB encoding"))?
-                        .into(),
+                        .map_err(|_| anyhow!("invalid BLOB encoding"))?,
                 ),
             })
         })
@@ -514,7 +513,7 @@ pub(super) fn restore_sequences(
         "logical archive AUTOINCREMENT table inventory does not match the canonical schema"
     );
     for sequence in expected {
-        let name = SqliteValue::Text(sequence.table.clone().into());
+        let name = SqliteValue::Text(sequence.table.clone());
         connection
             .execute_with_params(
                 "DELETE FROM sqlite_sequence WHERE name = ?1",
@@ -620,6 +619,7 @@ pub fn import_file_with_policy(
 /// Reopening its pathname could silently restore a different, valid archive.
 /// A descriptor alone does not prevent in-place changes, so require the
 /// inspected header and completion again before publishing or reporting a match.
+#[cfg(test)]
 pub(super) fn import_inspected_file(
     mut input: File,
     destination: &Path,
@@ -966,7 +966,7 @@ mod publication_tests {
         writer
             .execute_with_params(
                 "INSERT INTO messages VALUES (7, ?1)",
-                &[SqliteValue::Text(body.clone().into())],
+                &[SqliteValue::Text(body.clone())],
             )
             .unwrap();
         let expected = export::snapshot(&writer, "wal-publication".to_owned(), &mut io::sink())

@@ -713,7 +713,7 @@ pub(crate) fn verify_doctor_backup_record(
             // recovery instead of mutating `backup_dir`, and preserve `-wal` with
             // `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` via `close_without_checkpoint_in_place`.
             match open_franken_with_flags(
-                &db_path.to_string_lossy(),
+                db_path.to_string_lossy(),
                 FrankenOpenFlags::SQLITE_OPEN_READ_ONLY
                     | FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
             ) {
@@ -941,7 +941,7 @@ pub(crate) fn validate_doctor_backup_restore_candidate(
         )
     } else {
         crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
-            candidate_db_path.to_string_lossy().into_owned(),
+            candidate_db_path.to_string_lossy(),
         )
     }
     .map_err(|err| {
@@ -1670,7 +1670,7 @@ mod doc1_tests {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).expect("create_dir_all");
         }
-        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open");
+        let conn = FrankenConnection::open(db_path.to_string_lossy()).expect("open");
         conn.query("PRAGMA journal_mode = WAL;").expect("wal mode");
         conn.execute("PRAGMA wal_autocheckpoint = 0;")
             .expect("disable autocheckpoint");
@@ -1775,7 +1775,7 @@ mod doc1_tests {
         let staging_db = temp.path().join("staging.db");
 
         let conn =
-            FrankenConnection::open(staging_db.to_string_lossy().into_owned()).expect("open");
+            FrankenConnection::open(staging_db.to_string_lossy()).expect("open");
         conn.query("PRAGMA journal_mode = WAL;").expect("wal");
         conn.execute("PRAGMA wal_autocheckpoint = 0;")
             .expect("no autockpt");
@@ -1850,7 +1850,7 @@ mod doc1_tests {
 
         let writer_db_path = live_db.clone();
         let writer_thread = std::thread::spawn(move || {
-            let writer = FrankenConnection::open(writer_db_path.to_string_lossy().into_owned())
+            let writer = FrankenConnection::open(writer_db_path.to_string_lossy())
                 .expect("writer open");
             writer
                 .execute("PRAGMA wal_autocheckpoint = 0;")
@@ -1883,7 +1883,7 @@ mod doc1_tests {
         // `open_schema_only_with_wal_index_recovery` reads WAL snapshot consistently
         // and closes via `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` without truncating `-wal`.
         let mut reader1 = FrankenConnection::open_schema_only_with_wal_index_recovery(
-            live_db.to_string_lossy().into_owned(),
+            live_db.to_string_lossy(),
         )
         .expect("live WAL read-only open");
         reader1.execute("BEGIN DEFERRED;").expect("begin snapshot");
@@ -1920,7 +1920,7 @@ mod doc1_tests {
 
         // A new WAL-aware read-only connection sees commit 2 immediately.
         let mut reader2 = FrankenConnection::open_schema_only_with_wal_index_recovery(
-            live_db.to_string_lossy().into_owned(),
+            live_db.to_string_lossy(),
         )
         .expect("live WAL read-only open 2");
         let rows_after: Vec<(i64, String)> = reader2

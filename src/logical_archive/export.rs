@@ -432,7 +432,7 @@ pub(super) fn sequences(connection: &Connection, tables: &[Table]) -> Result<Vec
             .query_with_params(
                 "SELECT substr(sql, 1, 65537) FROM sqlite_master \
                  WHERE type = 'table' AND name = ?1 LIMIT 2",
-                &[SqliteValue::Text(table.name.clone().into())],
+                &[SqliteValue::Text(table.name.clone())],
             )
             .map_err(|error| {
                 source_failure(
@@ -557,10 +557,12 @@ fn row_limit(format_version: u32) -> Result<usize> {
     }
 }
 
+#[cfg(test)]
 pub fn cells(values: &[SqliteValue]) -> Result<Vec<Cell>> {
     cells_for_version(values, codec::CHUNKED_VERSION)
 }
 
+#[cfg(test)]
 fn cells_for_version(values: &[SqliteValue], format_version: u32) -> Result<Vec<Cell>> {
     let limit = row_limit(format_version)?;
     // Check payload lower bounds before cloning text or base64-expanding blobs.
@@ -746,7 +748,7 @@ pub(super) fn ordered_scan_sql(connection: &Connection, table: &Table) -> Result
             "SELECT CASE WHEN sql IS NOT NULL AND length(sql) <= 65536 \
              THEN instr(upper(sql), 'COLLATE') = 0 ELSE 0 END \
              FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 2",
-            &[SqliteValue::Text(table.name.clone().into())],
+            &[SqliteValue::Text(table.name.clone())],
         )
         .map_err(|error| {
             source_failure(
@@ -1089,7 +1091,7 @@ mod ordering_tests {
         for key in ["\0", "a\0z", "é"] {
             connection.execute_with_params(
                 "INSERT INTO binary_keys VALUES (?1, 'private body')",
-                &[SqliteValue::Text(key.to_owned().into())],
+                &[SqliteValue::Text(key.to_owned())],
             )?;
         }
         connection.execute("BEGIN")?;
@@ -1097,8 +1099,8 @@ mod ordering_tests {
             connection.execute_with_params(
                 "INSERT INTO large_keys VALUES (?1, ?2)",
                 &[
-                    SqliteValue::Text(format!("key-{index:06}").into()),
-                    SqliteValue::Text("private collection body ".repeat(16).into()),
+                    SqliteValue::Text(format!("key-{index:06}")),
+                    SqliteValue::Text("private collection body ".repeat(16)),
                 ],
             )?;
         }

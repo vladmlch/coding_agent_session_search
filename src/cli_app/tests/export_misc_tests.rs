@@ -561,7 +561,7 @@ mod legacy_source_filter_tests {
     }
 
     fn open_legacy_local_db_for_update(db_path: &Path) -> crate::franken_sync::Connection {
-        crate::franken_sync::Connection::open(db_path.to_string_lossy().to_string())
+        crate::franken_sync::Connection::open(db_path.to_string_lossy())
             .expect("open writable legacy source test db")
     }
 
@@ -774,7 +774,7 @@ mod legacy_source_filter_tests {
 
         let tmp = tempfile::tempdir().expect("temporary archive");
         let path = tmp.path().join("stats.db");
-        let writer = crate::franken_sync::Connection::open(path.to_string_lossy().into_owned())
+        let writer = crate::franken_sync::Connection::open(path.to_string_lossy())
             .expect("create archive");
         writer
             .execute("PRAGMA application_id = 0x43415353;")

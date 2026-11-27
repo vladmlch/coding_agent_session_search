@@ -212,7 +212,7 @@ pub(super) fn bind(params: &mut Vec<SqliteValue>, value: SqliteValue) -> String 
 }
 
 fn text(value: &str) -> SqliteValue {
-    SqliteValue::Text(value.to_owned().into())
+    SqliteValue::Text(value.to_owned())
 }
 
 /// Deferred SQL predicate carrying its own bound values so callers only bind

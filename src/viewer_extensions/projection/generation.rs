@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::franken_sync::{Connection, TransactionBehavior};
-use crate::franken_sync::compat::{ParamValue, RowExt, TransactionExt};
+use crate::franken_sync::compat::{ParamValue, RowExt};
 use crate::model::conversation_packet::ConversationPacket;
 use crate::model::types::Conversation;
 use crate::viewer_extensions::facts::{FactPublication, FactsDb, extract_session_facts};

@@ -69,7 +69,7 @@ pub mod kind {
     /// Lexical publication certification (Task 8): a real Quill commit
     /// sealed a manifest generation and
     /// [`certify_lexical_publication`](super::certify_lexical_publication)
-    /// persisted the versioned [`PublicationReceipt`] covering it.
+    /// persisted the versioned [`PublicationReceipt`](super::PublicationReceipt) covering it.
     /// `revision` binds the minted `lexical_generation` ordinal;
     /// `payload_json` carries the receipt itself.
     pub const INDEX_READY: &str = "index_ready";
@@ -154,7 +154,7 @@ fn journal_installed(connection: &Connection) -> Result<bool> {
 fn meta_int(connection: &Connection, key: &str) -> Result<Option<i64>> {
     let rows = connection.query_with_params(
         "SELECT value FROM viewer_meta WHERE key = ?1 LIMIT 1",
-        &[SqliteValue::Text(key.to_owned().into())],
+        &[SqliteValue::Text(key.to_owned())],
     )?;
     let Some(row) = rows.first() else {
         return Ok(None);
@@ -173,8 +173,8 @@ fn set_meta(connection: &Connection, key: &str, value: i64) -> Result<()> {
     connection.execute_with_params(
         "INSERT OR REPLACE INTO viewer_meta (key, value) VALUES (?1, ?2)",
         &[
-            SqliteValue::Text(key.to_owned().into()),
-            SqliteValue::Text(value.to_string().into()),
+            SqliteValue::Text(key.to_owned()),
+            SqliteValue::Text(value.to_string()),
         ],
     )?;
     Ok(())
@@ -353,10 +353,10 @@ pub fn append_change_event(
         "INSERT INTO viewer_change_log (kind, conversation_id, revision, payload_json, created_at_ms) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
         &[
-            SqliteValue::Text(event_kind.to_owned().into()),
+            SqliteValue::Text(event_kind.to_owned()),
             conversation_id.map_or(SqliteValue::Null, SqliteValue::Integer),
             SqliteValue::Integer(revision),
-            payload_json.map_or(SqliteValue::Null, |p| SqliteValue::Text(p.into())),
+            payload_json.map_or(SqliteValue::Null, SqliteValue::Text),
             SqliteValue::Integer(now_ms()),
         ],
     )?;
@@ -1013,7 +1013,7 @@ mod tests {
         storage.insert_conversation_tree(agent(&storage), None, &canned(1, "base", 1))?;
         let cursor = changes_since(storage.raw(), 0, 64)?.next_seq;
 
-        let writer = Connection::open(db.to_string_lossy().into_owned())?;
+        let writer = Connection::open(db.to_string_lossy())?;
         writer.execute("BEGIN IMMEDIATE")?;
         writer.execute(
             "INSERT INTO messages (conversation_id, idx, role, content) \
@@ -1027,7 +1027,7 @@ mod tests {
             "rollback must be invisible to the journal: {page:?}"
         );
 
-        let writer = Connection::open(db.to_string_lossy().into_owned())?;
+        let writer = Connection::open(db.to_string_lossy())?;
         writer.execute("UPDATE conversations SET source_path = source_path WHERE id = 1")?;
         drop(writer);
         let page = changes_since(storage.raw(), cursor, 64)?;
@@ -1122,7 +1122,7 @@ mod tests {
         // The journal event replays on a FRESH connection (a restarted
         // bridge) with the receipt as its payload and lexical_generation
         // as its bound revision.
-        let reader = Connection::open(db.to_string_lossy().into_owned())?;
+        let reader = Connection::open(db.to_string_lossy())?;
         let page = changes_since(&reader, 0, 64)?;
         let event = page
             .events
