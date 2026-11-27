@@ -88,10 +88,9 @@ impl BuildMetadata {
     /// registration panics immediately.
     pub fn register_idempotent(meta: BuildMetadata) {
         let existing = REGISTERED.get_or_init(|| meta);
-        assert_eq!(
-            *existing, meta,
-            "BuildMetadata::register_idempotent called with conflicting metadata"
-        );
+        if *existing != meta {
+            panic!("BuildMetadata::register_idempotent called with conflicting metadata");
+        }
     }
 
     /// Return the active build metadata.
