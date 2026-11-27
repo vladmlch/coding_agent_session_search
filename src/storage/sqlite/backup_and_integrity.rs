@@ -14,7 +14,9 @@ use crate::franken_sync::{
     compat::{ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt},
 };
 use crate::model::types::Conversation;
-use anyhow::{Context, Result, anyhow, bail};
+#[cfg(test)]
+use anyhow::anyhow;
+use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};

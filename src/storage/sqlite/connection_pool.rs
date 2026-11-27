@@ -156,6 +156,7 @@ impl FrankenOwnerConnection {
         Ok(Self(parking_lot::Mutex::new(conn)))
     }
 
+    #[cfg(test)]
     pub(super) fn open(
         path: impl Into<String>,
     ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
