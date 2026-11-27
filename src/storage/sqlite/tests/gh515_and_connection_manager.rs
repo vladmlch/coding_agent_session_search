@@ -1,5 +1,4 @@
 use super::*;
-use crate::franken_sync::compat::TransactionExt as FrankenTransactionExt;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -571,7 +570,7 @@ fn owner_open_in_memory_sync_and_open_sync_are_writable() {
 
 #[test]
 fn connection_manager_readers_on_wal_do_not_poison_concurrent_writers() {
-    use crate::franken_sync::compat::{ConnectionExt, RowExt};
+    use crate::franken_sync::compat::RowExt;
 
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("cm_wal_no_poison.db");

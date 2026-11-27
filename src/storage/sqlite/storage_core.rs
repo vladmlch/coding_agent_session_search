@@ -23,8 +23,7 @@ use super::schema_v1::{CASS_APPLICATION_ID, SCHEMA_V1_USER_VERSION};
 use crate::franken_sync::{
     Connection as FrankenConnection, FrankenError,
     compat::{
-        ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
-        RowExt as FrankenRowExt, Transaction as FrankenTransaction,
+        OpenFlags as FrankenOpenFlags, RowExt as FrankenRowExt, Transaction as FrankenTransaction,
         open_with_flags as open_franken_with_flags,
     },
 };
@@ -108,7 +107,7 @@ pub(crate) fn close_franken_in_place_with_busy_retry(
 
 /// Thread-affine storage owning the primary raw connection and any cached raw
 /// ephemeral writer. Moving it to another OS thread must remain a compile-time
-/// error; use [`FrankenOwnerConnection`] for cross-thread reads instead.
+/// error; use [`FrankenOwnerConnection`](super::connection_pool::FrankenOwnerConnection) for cross-thread reads instead.
 ///
 /// ```compile_fail
 /// use coding_agent_search::storage::sqlite::FrankenStorage;
@@ -1302,10 +1301,9 @@ impl FrankenStorage {
     }
 }
 
-pub(super) const SNIPPETS_MESSAGE_ID_INDEX: &str = "idx_snippets_message_id_local";
-
 /// True when `create_sql` is a non-partial index on `snippets` whose first
 /// key column is `message_id`.
+#[cfg(test)]
 pub(super) fn sql_indexes_snippets_message_id_first(create_sql: &str) -> bool {
     let normalized: String = create_sql
         .chars()
@@ -1313,40 +1311,6 @@ pub(super) fn sql_indexes_snippets_message_id_first(create_sql: &str) -> bool {
         .flat_map(char::to_lowercase)
         .collect();
     normalized.contains("onsnippets(message_id") && !normalized.contains(")where")
-}
-
-pub(super) fn ensure_snippets_message_id_index(conn: &FrankenConnection) -> Result<()> {
-    // Archives older than the `snippets` table's schema version have nothing
-    // to index: a repair pass that still created the index here failed the
-    // whole open with `no such table: main.snippets` (v13 fixture).
-    let table_exists = conn
-        .query(
-            "SELECT 1 FROM sqlite_master \
-             WHERE type = 'table' AND name = 'snippets' LIMIT 1;",
-        )
-        .with_context(|| "checking snippets table")?;
-    if table_exists.is_empty() {
-        return Ok(());
-    }
-    let rows = conn
-        .query(
-            "SELECT sql FROM sqlite_master \
-             WHERE type = 'index' AND tbl_name = 'snippets' AND sql IS NOT NULL;",
-        )
-        .with_context(|| "listing snippets indexes")?;
-    for row in &rows {
-        let sql: String = row
-            .get_typed(0)
-            .with_context(|| "reading snippets index sql")?;
-        if sql_indexes_snippets_message_id_first(&sql) {
-            return Ok(());
-        }
-    }
-    conn.execute(&format!(
-        "CREATE INDEX IF NOT EXISTS {SNIPPETS_MESSAGE_ID_INDEX} ON snippets(message_id);"
-    ))
-    .with_context(|| format!("creating {SNIPPETS_MESSAGE_ID_INDEX}"))?;
-    Ok(())
 }
 
 #[cfg(test)]

@@ -1407,7 +1407,7 @@ fn list_conversation_footprints_for_lexical_rebuild_tolerates_legacy_search_demo
     // already been regenerated on schema v1.
     {
         let reset_conn =
-            crate::franken_sync::Connection::open(staged_db.to_string_lossy().into_owned()).unwrap();
+            crate::franken_sync::Connection::open(staged_db.to_string_lossy()).unwrap();
         reset_conn
             .execute_batch(
                 "PRAGMA application_id = 0;
@@ -1429,7 +1429,7 @@ fn list_conversation_footprints_for_lexical_rebuild_tolerates_legacy_search_demo
     );
 
     let stamp_conn =
-        crate::franken_sync::Connection::open(staged_db.to_string_lossy().into_owned()).unwrap();
+        crate::franken_sync::Connection::open(staged_db.to_string_lossy()).unwrap();
     stamp_conn
         .execute_batch(
             "PRAGMA application_id = 1128354643;

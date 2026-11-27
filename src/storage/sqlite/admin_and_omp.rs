@@ -22,7 +22,7 @@ use crate::franken_sync::{
     SqliteValue, TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
-        RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
+        RowExt as FrankenRowExt,
     },
 };
 use crate::model::types::{Agent, AgentKind, Conversation};

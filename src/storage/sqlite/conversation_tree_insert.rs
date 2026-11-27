@@ -42,7 +42,7 @@ use super::tx_message_insert::{
 };
 use crate::franken_sync::{
     TransactionBehavior,
-    compat::{Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt},
+    compat::Transaction as FrankenTransaction,
 };
 use crate::model::types::Conversation;
 #[cfg(test)]

@@ -2,7 +2,7 @@ use super::*;
 use crate::franken_sync::SqliteValue;
 use crate::franken_sync::compat::{
     ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
-    RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
+    RowExt as FrankenRowExt,
 };
 use crate::sources::provenance::LOCAL_SOURCE_ID;
 use anyhow::{Context, Result};

@@ -28,7 +28,6 @@ macro_rules! __cass_franken_params {
         ),+] as &[$crate::franken_sync::compat::ParamValue]
     };
 }
-pub use crate::__cass_franken_params as params;
 
 // ---------------------------------------------------------------------------
 // Cancellation (TLS scope + interrupt-handle fan-out)

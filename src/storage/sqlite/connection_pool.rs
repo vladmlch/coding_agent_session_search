@@ -62,6 +62,7 @@ fn apply_owner_readonly_pragmas(
 #[derive(Debug)]
 pub struct FrankenOwnerConnection(pub(super) parking_lot::Mutex<crate::franken_sync::Connection>);
 
+#[cfg(test)]
 fn is_in_memory_sqlite_target(path: &str) -> bool {
     path.is_empty()
         || path == ":memory:"
@@ -74,7 +75,7 @@ impl FrankenOwnerConnection {
     ///
     /// Bypasses on-disk `archive_disposition` checks and `PRAGMA query_only = 1`
     /// so in-memory fixtures remain writable.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn open_in_memory_sync() -> std::result::Result<Self, crate::franken_sync::FrankenError>
     {
         let conn = crate::franken_sync::Connection::open(":memory:")?;
@@ -177,7 +178,7 @@ impl FrankenOwnerConnection {
         Ok(Self(parking_lot::Mutex::new(conn)))
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn open_sync(
         path: impl Into<String>,
     ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
@@ -229,6 +230,7 @@ impl FrankenOwnerConnection {
         self.0.lock().execute_with_params(sql, params)
     }
 
+    #[cfg(test)]
     pub(crate) fn execute_with_params_sync(
         &self,
         sql: &str,
@@ -244,6 +246,7 @@ impl FrankenOwnerConnection {
         self.0.lock().execute_batch(sql)
     }
 
+    #[cfg(test)]
     pub(crate) fn execute_batch_sync(
         &self,
         sql: &str,
@@ -273,28 +276,12 @@ impl FrankenOwnerConnection {
         self.0.lock().query_with_params(sql, params)
     }
 
-    pub(crate) fn query_with_params_sync(
-        &self,
-        sql: &str,
-        params: &[SqliteValue],
-    ) -> std::result::Result<Vec<FrankenRow>, crate::franken_sync::FrankenError> {
-        self.query_with_params(sql, params)
-    }
-
     pub fn query_row_with_params(
         &self,
         sql: &str,
         params: &[SqliteValue],
     ) -> std::result::Result<FrankenRow, crate::franken_sync::FrankenError> {
         self.0.lock().query_row_with_params(sql, params)
-    }
-
-    pub(crate) fn query_row_with_params_sync(
-        &self,
-        sql: &str,
-        params: &[SqliteValue],
-    ) -> std::result::Result<FrankenRow, crate::franken_sync::FrankenError> {
-        self.query_row_with_params(sql, params)
     }
 
     pub fn query_row_map<T, F>(
@@ -365,7 +352,7 @@ impl FrankenOwnerConnection {
 /// Lazy-opening wrapper for a thread-safe SQLite read connection.
 ///
 /// Constructing a `LazyFrankenDb` is cheap (no I/O).  The underlying
-/// raw connection is opened on its owner worker on the first call to [`get`].
+/// raw connection is opened on its owner worker on the first call to [`Self::get`].
 /// Subsequent calls return the cached connection.
 pub struct LazyFrankenDb {
     path: PathBuf,
@@ -444,7 +431,7 @@ impl LazyFrankenDb {
 
     /// Get the connection with a timeout, opening the database on first access.
     ///
-    /// Like [`get`] but spawns the open in a background thread and waits up to
+    /// Like [`Self::get`] but spawns the open in a background thread and waits up to
     /// `timeout` for it to complete. Returns `LazyDbError::FrankenOpenFailed`
     /// with a descriptive message if the timeout elapses. Fix for #128.
     pub fn get_with_timeout(
@@ -704,7 +691,7 @@ impl FrankenConnectionManager {
 
     /// Acquire a pooled writer connection tuned for parallel indexer batches.
     ///
-    /// Similar to [`writer`] but uses reduced cache size for short-lived
+    /// Similar to [`Self::writer`] but uses reduced cache size for short-lived
     /// batch inserts.
     pub fn concurrent_writer(&self) -> Result<WriterGuard<'_>> {
         self.writer_tokens

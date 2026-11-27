@@ -41,7 +41,7 @@ fn discover_historical_database_bundles_prefers_queryable_direct_bundles_first()
     let backups_dir = dir.path().join("backups");
     fs::create_dir_all(&backups_dir).unwrap();
     let smaller_healthy = backups_dir.join("agent_search.db.20260322T020200.bak");
-    let conn = FrankenConnection::open(smaller_healthy.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(smaller_healthy.to_string_lossy()).unwrap();
     conn.execute_batch(
         "CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_path TEXT);
          CREATE TABLE messages (
@@ -279,7 +279,7 @@ fn ensure_fts_consistency_via_rusqlite_catches_up_missing_rows() {
 
     rebuild_fts_via_rusqlite(&db_path).unwrap();
 
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     let conversation_id: i64 = conn
         .query_row_map("SELECT id FROM conversations LIMIT 1", fparams![], |row| {
             row.get_typed(0)
@@ -307,7 +307,7 @@ fn ensure_fts_consistency_via_rusqlite_catches_up_missing_rows() {
         }
     );
 
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     let auth_rows: i64 = conn
         .query_row_map(
             "SELECT COUNT(*) FROM fts_messages WHERE rowid = 2",
@@ -369,7 +369,7 @@ fn drop_recreate_repairs_corrupt_fts_shadow_structure() {
     // Corrupt the %_data structure record (rowid 10) via a fresh connection
     // (the FTS is still valid here, so the open succeeds).
     {
-        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
         let garbage = [0xFFu8; 12];
         conn.execute_compat(
             "UPDATE fts_messages_data SET block = ?1 WHERE id = ?2",
@@ -403,7 +403,7 @@ fn drop_recreate_repairs_corrupt_fts_shadow_structure() {
     );
 
     // The archive now opens normally and the rebuilt shadow is queryable.
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     let matches: i64 = conn
         .query_row_map(
             "SELECT COUNT(*) FROM fts_messages WHERE fts_messages MATCH 'needle'",
@@ -462,14 +462,14 @@ fn rebuild_fts_via_rusqlite_repopulates_empty_fts_shadow() {
         .unwrap();
     drop(storage);
 
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     conn.execute("DROP TABLE IF EXISTS fts_messages").unwrap();
     drop(conn);
 
     let inserted = rebuild_fts_via_rusqlite(&db_path).unwrap();
     assert_eq!(inserted, 1);
 
-    let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+    let conn = FrankenConnection::open(db_path.to_string_lossy()).unwrap();
     let schema_rows = franken_fts_schema_rows(&conn).unwrap();
     assert_eq!(
         schema_rows, 1,

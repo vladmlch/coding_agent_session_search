@@ -513,10 +513,10 @@ impl Connection {
         let Some(reg) = self.live_registration else {
             return;
         };
-        if let Some(raw) = self.inner.as_ref() {
-            if let Ok(mode) = raw.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)) {
-                update_live_wal_state(reg.id, mode.eq_ignore_ascii_case("wal"));
-            }
+        if let Some(raw) = self.inner.as_ref()
+            && let Ok(mode) = raw.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+        {
+            update_live_wal_state(reg.id, mode.eq_ignore_ascii_case("wal"));
         }
     }
 

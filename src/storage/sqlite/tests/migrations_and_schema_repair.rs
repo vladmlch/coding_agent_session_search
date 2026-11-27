@@ -287,7 +287,7 @@ fn fts_messages_integrity_reports_missing_shadow_tables() {
         conn.execute_batch("PRAGMA writable_schema = OFF;").unwrap();
     }
 
-    let conn = FrankenConnection::open(corrupt_db_path.to_string_lossy().to_string()).unwrap();
+    let conn = FrankenConnection::open(corrupt_db_path.to_string_lossy()).unwrap();
     let integrity = validate_fts_messages_integrity_for_connection(&conn)
         .expect_err("orphaned fts_messages schema should fail integrity validation")
         .downcast::<FtsMessagesIntegrityError>()
@@ -329,7 +329,7 @@ fn franken_storage_open_fresh_db_keeps_single_franken_fts_schema_row() {
         .expect("ensure FTS consistency after fresh open");
     drop(storage);
 
-    let c_reader = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+    let c_reader = FrankenConnection::open(db_path.to_string_lossy())
         .expect("open DB via SQLite for sqlite_master inspection");
     assert_eq!(
         franken_fts_schema_rows(&c_reader).unwrap(),

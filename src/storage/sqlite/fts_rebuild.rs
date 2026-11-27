@@ -132,6 +132,7 @@ impl FrankenStorage {
     }
 
     /// Compat wrapper retained for callers; delegates to [`Self::rebuild_fts_native`].
+    #[cfg(test)]
     pub(crate) fn rebuild_fts_via_frankensqlite(&self) -> Result<usize> {
         self.rebuild_fts_native()
     }

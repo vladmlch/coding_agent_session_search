@@ -6,9 +6,11 @@
 //! instead of trusting `Ok(_)`. Same rule as the indexer's
 //! `classify_final_wal_checkpoint`.
 
+#[cfg(test)]
 use crate::franken_sync::{Row, compat::RowExt};
 
 /// True only when nothing was busy and every logged frame was backfilled.
+#[cfg(test)]
 pub(super) fn truncate_status_is_complete(
     busy: i64,
     log_frames: i64,
@@ -19,6 +21,7 @@ pub(super) fn truncate_status_is_complete(
 
 /// Reads the `(busy, log, checkpointed)` status row. A missing or
 /// unreadable row is not proof of completion.
+#[cfg(test)]
 pub(super) fn truncate_rows_report_complete(rows: &[Row]) -> bool {
     let Some(row) = rows.first() else {
         return false;
@@ -50,8 +53,7 @@ mod tests {
     fn rows_for(sql: &str) -> Vec<Row> {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("rows.db");
-        let conn =
-            crate::franken_sync::Connection::open(path.to_string_lossy().into_owned()).unwrap();
+        let conn = crate::franken_sync::Connection::open(path.to_string_lossy()).unwrap();
         let rows = conn.query(sql).unwrap();
         conn.close().unwrap();
         rows

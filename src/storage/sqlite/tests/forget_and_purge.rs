@@ -1,10 +1,6 @@
 use super::*;
-use crate::franken_sync::{
-    Connection as FrankenConnection,
-    compat::{
-        ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-        TransactionExt as FrankenTransactionExt,
-    },
+use crate::franken_sync::compat::{
+    ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
 };
 use crate::sources::provenance::LOCAL_SOURCE_ID;
 use anyhow::{Context, Result};

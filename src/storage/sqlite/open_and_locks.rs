@@ -488,7 +488,7 @@ fn open_index_schema_connection_with_timeout_and_guard(
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(4);
     loop {
-        match FrankenConnection::open_existing_schema_only(path.to_string_lossy().to_string()) {
+        match FrankenConnection::open_existing_schema_only(path.to_string_lossy()) {
             Ok(conn) => {
                 apply_raw_writer_pragmas(&conn)?;
                 return Ok(conn);
@@ -539,13 +539,6 @@ pub(super) fn open_archive_writer_connection_with_guard(
     )?;
     apply_raw_writer_pragmas(&conn)?;
     Ok(conn)
-}
-
-#[allow(dead_code)]
-pub(super) fn open_archive_writer_connection(path: &Path) -> Result<FrankenConnection> {
-    const OPEN_RETRY_BUDGET: Duration = Duration::from_secs(30);
-    let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, OPEN_RETRY_BUDGET)?;
-    open_archive_writer_connection_with_guard(path, &_doctor_guard)
 }
 
 /// Whether the archive already carries the engine's completed schema
@@ -894,7 +887,7 @@ pub(super) fn check_schema_compatibility(
     path: &Path,
 ) -> std::result::Result<SchemaCheck, crate::franken_sync::FrankenError> {
     let mut conn =
-        FrankenConnection::open_schema_only_with_wal_index_recovery(&path.to_string_lossy())?;
+        FrankenConnection::open_schema_only_with_wal_index_recovery(path.to_string_lossy())?;
 
     let result = (|| {
         // Check if meta table exists

@@ -962,6 +962,7 @@ pub(super) fn read_backup_report(path: &Path) -> Result<BackupReport, FrankenErr
 
 /// Compatibility hook: the async driver is gone, so shutdown is a no-op.
 /// Kept because `src/lib.rs` and several test harnesses still call it.
+#[cfg(test)]
 pub(crate) fn shutdown_driver() -> bool {
     true
 }

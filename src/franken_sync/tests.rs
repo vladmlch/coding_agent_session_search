@@ -728,7 +728,7 @@ use std::time::{Duration, Instant};
     fn recompute_shm_checksums(shm_bytes: &mut [u8]) {
         let mut s0 = 0_u32;
         let mut s1 = 0_u32;
-        for pair in shm_bytes[..40].chunks_exact(8) {
+        for pair in shm_bytes[..40].as_chunks::<8>().0 {
             let x0 = u32::from_ne_bytes([pair[0], pair[1], pair[2], pair[3]]);
             let x1 = u32::from_ne_bytes([pair[4], pair[5], pair[6], pair[7]]);
             s0 = s0.wrapping_add(x0).wrapping_add(s1);
@@ -1221,7 +1221,7 @@ use std::time::{Duration, Instant};
         }
         // Simulate a 0-byte `-wal` + valid `sz_page=0, mx_frame=0` `-shm` written
         // by C SQLite `walIndexRecover` on `nSize == 0`.
-        std::fs::write(&wal_path, &[]).expect("create 0-byte wal");
+        std::fs::write(&wal_path, []).expect("create 0-byte wal");
         let mut shm = vec![0_u8; 32768];
         shm[0..4].copy_from_slice(&3_007_000_u32.to_ne_bytes());
         shm[12] = 1; // isInit

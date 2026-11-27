@@ -1,7 +1,6 @@
 use super::*;
 use crate::franken_sync::compat::{
     ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-    TransactionExt as FrankenTransactionExt,
 };
 use crate::model::types::{Agent, AgentKind};
 use crate::sources::provenance::LOCAL_SOURCE_ID;

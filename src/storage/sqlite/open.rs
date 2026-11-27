@@ -15,8 +15,8 @@
 //! database header (synchronized against `LIVE_DB_CONNECTIONS`) so it never
 //! has to open — and therefore never has to recover, checkpoint, or create
 //! `-wal`/`-shm` sidecars on — a refused archive. When a connection to that
-//! inode IS already live in-process, the probe never calls `fs::File::open`
-//! + `close()` on the live database file (which would drop POSIX `fcntl`
+//! inode IS already live in-process, the probe never calls `fs::File::open` and
+//! `close()` on the live database file (which would drop POSIX `fcntl`
 //! locks); instead it reads `PRAGMA application_id` / `PRAGMA user_version`
 //! through a strict read-only SQLite connection. `meta.schema_version` is
 //! probed only as best-effort diagnostic evidence through the facade's strict
@@ -303,7 +303,7 @@ fn read_meta_schema_version(conn: &FrankenConnection) -> Option<i64> {
 
 fn probe_meta_schema_version_in_place(path: &Path) -> Option<i64> {
     let conn = open_franken_with_flags(
-        &path.to_string_lossy(),
+        path.to_string_lossy(),
         compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
     )
     .ok()?;
@@ -610,16 +610,13 @@ mod tests {
                     let _ = probe.execute_batch("ROLLBACK");
                     println!("\nLOCK_PROBE=ACQUIRED");
                 }
-                Err(error)
-                    if matches!(
-                        error,
-                        crate::franken_sync::FrankenError::Busy
-                            | crate::franken_sync::FrankenError::BusyRecovery
-                            | crate::franken_sync::FrankenError::BusySnapshot { .. }
-                            | crate::franken_sync::FrankenError::DatabaseLocked { .. }
-                            | crate::franken_sync::FrankenError::LockFailed { .. }
-                    ) =>
-                {
+                Err(
+                    crate::franken_sync::FrankenError::Busy
+                    | crate::franken_sync::FrankenError::BusyRecovery
+                    | crate::franken_sync::FrankenError::BusySnapshot { .. }
+                    | crate::franken_sync::FrankenError::DatabaseLocked { .. }
+                    | crate::franken_sync::FrankenError::LockFailed { .. },
+                ) => {
                     println!("\nLOCK_PROBE=HELD_BY_PARENT");
                 }
                 Err(error) => panic!("unexpected child lock probe error: {error:?}"),

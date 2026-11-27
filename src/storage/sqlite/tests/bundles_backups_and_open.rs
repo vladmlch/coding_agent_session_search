@@ -995,7 +995,7 @@ fn dedicated_owner_readonly_open_reads_nonempty_wal_without_mutating_it() {
     let db_path = dir.path().join("dedicated-owner-dirty.db");
     {
         let mut conn =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+            crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
         conn.execute_batch(
             "PRAGMA application_id = 1128354643;
              PRAGMA user_version = 1;
@@ -1055,7 +1055,7 @@ fn gh422_strict_read_openers_do_not_create_lock_state_or_change_database_bundle(
     let db_path = dir.path().join("agent_search.db");
     {
         let conn =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+            crate::franken_sync::Connection::open(db_path.to_string_lossy()).unwrap();
         conn.execute_batch(
             "PRAGMA application_id = 1128354643;
              PRAGMA user_version = 1;",

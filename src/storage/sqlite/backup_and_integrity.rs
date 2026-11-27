@@ -1,15 +1,17 @@
 use super::batch_ingest::normalized_storage_source_parts;
 use super::connection_pool::FrankenOwnerConnection;
+#[cfg(test)]
 use super::omp_and_semantic_meta::CURRENT_SCHEMA_VERSION;
 use super::open_and_locks::retryable_franken_error;
+#[cfg(test)]
 use super::source_and_historical_import::historical_table_exists;
+#[cfg(test)]
 use super::storage_core::FrankenStorage;
+#[cfg(test)]
+use crate::franken_sync::compat::OptionalExtension as FrankenOptionalExtension;
 use crate::franken_sync::{
     Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
-    compat::{
-        ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
-        RowExt as FrankenRowExt,
-    },
+    compat::{ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt},
 };
 use crate::model::types::Conversation;
 use anyhow::{Context, Result, anyhow, bail};
@@ -73,7 +75,7 @@ pub(super) fn franken_read_metadata_compat(
 }
 
 /// One canonical `conversations` row as read by
-/// [`FrankenStorage::list_conversations_for_recovery`].
+/// [`FrankenStorage::list_conversations_for_recovery`](super::storage_core::FrankenStorage::list_conversations_for_recovery).
 #[derive(Debug)]
 pub enum RecoveryConversationRow {
     /// The row was readable, possibly after coercing content columns (title,
@@ -168,7 +170,7 @@ fn lenient_integer_column(
 }
 
 /// Map one row of the recovery listing (column order as in
-/// [`FrankenStorage::list_conversations_for_recovery`]) without letting a
+/// [`FrankenStorage::list_conversations_for_recovery`](super::storage_core::FrankenStorage::list_conversations_for_recovery)) without letting a
 /// schema/type disagreement fail the page.
 pub(crate) fn recovery_conversation_row_from_lenient_columns(
     row: &FrankenRow,
@@ -620,6 +622,7 @@ pub(crate) fn validate_fts_messages_integrity_for_async_connection(
     )
 }
 
+#[cfg(test)]
 pub(super) fn sqlite3_cli_launch_error(error: std::io::Error, action: &str) -> anyhow::Error {
     if error.kind() == std::io::ErrorKind::NotFound {
         anyhow::anyhow!(
@@ -632,17 +635,6 @@ pub(super) fn sqlite3_cli_launch_error(error: std::io::Error, action: &str) -> a
 }
 
 #[cfg(test)]
-pub(crate) fn materialize_fresh_fts_schema_via_rusqlite(db_path: &Path) -> Result<()> {
-    let storage = FrankenStorage::open(db_path).with_context(|| {
-        format!(
-            "opening sqlite db at {} for FTS materialization",
-            db_path.display()
-        )
-    })?;
-    storage.rebuild_fts_via_frankensqlite().map(|_| ())
-}
-
-#[cfg(test)]
 pub(crate) fn rebuild_fts_via_rusqlite(db_path: &Path) -> Result<usize> {
     let storage = FrankenStorage::open(db_path)
         .with_context(|| format!("opening sqlite db at {} for FTS rebuild", db_path.display()))?;
@@ -651,6 +643,7 @@ pub(crate) fn rebuild_fts_via_rusqlite(db_path: &Path) -> Result<usize> {
     Ok(inserted)
 }
 
+#[cfg(test)]
 pub(crate) fn ensure_fts_consistency_via_rusqlite(db_path: &Path) -> Result<FtsConsistencyRepair> {
     // Delegates to the FrankenStorage-native path; retains the historical
     // function name for test-site compatibility.
@@ -724,7 +717,7 @@ fn vacuum_into_backup_stage(
     stage_path: &Path,
 ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
     let mut conn =
-        FrankenConnection::open_schema_only_with_wal_index_recovery(&db_path.to_string_lossy())?;
+        FrankenConnection::open_schema_only_with_wal_index_recovery(db_path.to_string_lossy())?;
     let result = (|| {
         conn.execute(BACKUP_VACUUM_BUSY_TIMEOUT_PRAGMA)?;
         let path_str = stage_path.to_string_lossy();
@@ -1029,6 +1022,7 @@ pub fn cleanup_old_backups(db_path: &Path, keep_count: usize) -> Result<(), std:
     Ok(())
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct HistoricalDatabaseBundle {
     pub(super) root_path: PathBuf,
@@ -1038,24 +1032,13 @@ pub(crate) struct HistoricalDatabaseBundle {
     pub(super) probe: HistoricalBundleProbe,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct HistoricalBundleProbe {
     pub(super) schema_version: Option<i64>,
     pub(super) fts_schema_rows: Option<i64>,
     pub(super) fts_queryable: bool,
     pub(super) max_message_id: i64,
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SqliteDatabaseHealthProbe {
-    pub schema_version: Option<i64>,
-    pub quick_check_ok: bool,
-    pub fts_schema_rows: i64,
-    pub fts_queryable: bool,
-    pub message_count: i64,
-    pub max_message_id: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1234,6 +1217,7 @@ pub(super) fn is_backup_root_name(name: &str, prefix: &str) -> bool {
 // paths in `historical_bundle_root_paths`; deliberately NOT used by
 // `is_backup_root_name`, because the existing backup-rotation cleanup must
 // continue to sweep up any pre-existing orphan lock sidecars.
+#[cfg(test)]
 fn has_db_sidecar_suffix(name: &str) -> bool {
     const SIDECAR_SUFFIXES: &[&str] = &[
         "-wal",
@@ -1254,6 +1238,7 @@ fn has_db_sidecar_suffix(name: &str) -> bool {
     SIDECAR_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
 }
 
+#[cfg(test)]
 fn historical_bundle_root_paths(db_path: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let Some(parent) = db_path.parent() else {
@@ -1316,6 +1301,7 @@ fn historical_bundle_root_paths(db_path: &Path) -> Vec<PathBuf> {
     roots
 }
 
+#[cfg(test)]
 fn push_named_database_children(
     roots: &mut Vec<PathBuf>,
     canonical_db_path: &Path,
@@ -1335,6 +1321,7 @@ fn push_named_database_children(
     }
 }
 
+#[cfg(test)]
 fn file_mtime_ms(path: &Path) -> i64 {
     fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -1344,6 +1331,7 @@ fn file_mtime_ms(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn bundle_total_bytes(root_path: &Path) -> u64 {
     let mut total = fs::metadata(root_path).map(|meta| meta.len()).unwrap_or(0);
     for suffix in ["-wal", "-shm"] {
@@ -1353,6 +1341,7 @@ fn bundle_total_bytes(root_path: &Path) -> u64 {
     total
 }
 
+#[cfg(test)]
 pub(crate) fn discover_historical_database_bundles(
     db_path: &Path,
 ) -> Vec<HistoricalDatabaseBundle> {
@@ -1461,6 +1450,7 @@ pub(crate) fn discover_historical_database_bundles(
     bundles
 }
 
+#[cfg(test)]
 fn probe_historical_bundle(root_path: &Path) -> HistoricalBundleProbe {
     let Ok(conn) = open_historical_bundle_readonly(root_path) else {
         return HistoricalBundleProbe::default();
@@ -1491,6 +1481,7 @@ fn probe_historical_bundle(root_path: &Path) -> HistoricalBundleProbe {
     }
 }
 
+#[cfg(test)]
 fn historical_bundle_fts_queryable(root_path: &Path, fts_schema_rows: Option<i64>) -> bool {
     matches!(fts_schema_rows, Some(1))
         && FrankenStorage::open_readonly(root_path)
@@ -1503,12 +1494,14 @@ fn historical_bundle_fts_queryable(root_path: &Path, fts_schema_rows: Option<i64
             .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn historical_bundle_supports_direct_readonly(root_path: &Path) -> bool {
     open_historical_bundle_readonly(root_path)
         .and_then(|conn| historical_bundle_has_queryable_core_tables(&conn))
         .is_ok()
 }
 
+#[cfg(test)]
 fn probe_historical_table_reads(conn: &FrankenConnection, table: &str) -> Result<()> {
     if !historical_table_exists(conn, table)? {
         return Err(anyhow!(
@@ -1524,12 +1517,14 @@ fn probe_historical_table_reads(conn: &FrankenConnection, table: &str) -> Result
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn historical_bundle_has_queryable_core_tables(conn: &FrankenConnection) -> Result<()> {
     probe_historical_table_reads(conn, "conversations")?;
     probe_historical_table_reads(conn, "messages")?;
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn open_historical_bundle_readonly(root_path: &Path) -> Result<FrankenConnection> {
     let path_str = root_path.to_string_lossy();
     let conn = FrankenConnection::open_schema_only_with_wal_index_recovery(&*path_str)
@@ -1537,6 +1532,7 @@ pub(super) fn open_historical_bundle_readonly(root_path: &Path) -> Result<Franke
     Ok(conn)
 }
 
+#[cfg(test)]
 pub(super) fn read_meta_schema_version(conn: &FrankenConnection) -> Result<Option<i64>> {
     let version: Option<String> = conn
         .query_row_map(
@@ -1556,69 +1552,4 @@ pub(super) fn franken_fts_schema_rows(conn: &FrankenConnection) -> Result<i64> {
         |row| row.get_typed(0),
     )
     .context("counting sqlite_master rows for fts_messages")
-}
-
-#[cfg(test)]
-fn franken_fts_limit_probe(conn: &FrankenConnection) -> bool {
-    conn.query("SELECT COUNT(*) FROM fts_messages").is_ok()
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn probe_database_health(db_path: &Path) -> Result<SqliteDatabaseHealthProbe> {
-    let path_str = db_path.to_string_lossy();
-    let conn = FrankenConnection::open(path_str.as_ref()).with_context(|| {
-        format!(
-            "opening sqlite db at {} for database health probe",
-            db_path.display()
-        )
-    })?;
-    conn.execute_batch("PRAGMA busy_timeout = 30000;")
-        .with_context(|| {
-            format!(
-                "configuring busy timeout for database health probe at {}",
-                db_path.display()
-            )
-        })?;
-
-    let schema_version = read_meta_schema_version(&conn)?;
-    let quick_check_status: String = conn
-        .query_row_map("PRAGMA quick_check(1)", fparams![], |row| row.get_typed(0))
-        .with_context(|| format!("running PRAGMA quick_check(1) for {}", db_path.display()))?;
-    let quick_check_ok = quick_check_status.trim().eq_ignore_ascii_case("ok");
-    let fts_schema_rows = franken_fts_schema_rows(&conn)?;
-    let fts_queryable = fts_schema_rows == 1 && franken_fts_limit_probe(&conn);
-
-    if !quick_check_ok {
-        return Ok(SqliteDatabaseHealthProbe {
-            schema_version,
-            quick_check_ok,
-            fts_schema_rows,
-            fts_queryable,
-            message_count: 0,
-            max_message_id: 0,
-        });
-    }
-
-    let message_count: i64 = conn
-        .query_row_map("SELECT COUNT(*) FROM messages", fparams![], |row| {
-            row.get_typed(0)
-        })
-        .context("counting messages during sqlite database health probe")?;
-    let max_message_id: i64 = conn
-        .query_row_map(
-            "SELECT COALESCE(MAX(id), 0) FROM messages",
-            fparams![],
-            |row| row.get_typed(0),
-        )
-        .context("reading max message id during sqlite database health probe")?;
-
-    Ok(SqliteDatabaseHealthProbe {
-        schema_version,
-        quick_check_ok,
-        fts_schema_rows,
-        fts_queryable,
-        message_count,
-        max_message_id,
-    })
 }

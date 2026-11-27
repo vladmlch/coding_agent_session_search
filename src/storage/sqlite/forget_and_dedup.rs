@@ -74,7 +74,7 @@ impl FrankenStorage {
             if matched.contains_key(path) {
                 continue;
             }
-            let rows = statement.query_with_params(&[SqliteValue::Text(path.clone().into())])?;
+            let rows = statement.query_with_params(&[SqliteValue::Text(path.clone())])?;
             if let Some(row) = rows.first() {
                 matched.insert(
                     path.clone(),
@@ -445,10 +445,10 @@ impl FrankenStorage {
                 continue;
             }
             let rows = statement.query_with_params(&[
-                SqliteValue::Text(key.source_id.clone().into()),
-                SqliteValue::Text(key.agent_slug.clone().into()),
-                SqliteValue::Text(key.source_path.clone().into()),
-                SqliteValue::Text(key.external_id.clone().into()),
+                SqliteValue::Text(key.source_id.clone()),
+                SqliteValue::Text(key.agent_slug.clone()),
+                SqliteValue::Text(key.source_path.clone()),
+                SqliteValue::Text(key.external_id.clone()),
             ])?;
             if !rows.is_empty() {
                 matched.insert(key.clone());

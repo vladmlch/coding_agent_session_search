@@ -1,7 +1,6 @@
 use super::*;
 use crate::franken_sync::compat::{
     ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-    TransactionExt as FrankenTransactionExt,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

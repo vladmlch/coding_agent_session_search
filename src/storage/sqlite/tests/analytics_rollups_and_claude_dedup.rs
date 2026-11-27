@@ -3,7 +3,6 @@ use crate::franken_sync::{
     Connection as FrankenConnection, Row as FrankenRow,
     compat::{ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt},
 };
-use serial_test::serial;
 use tempfile::TempDir;
 
 // =========================================================================

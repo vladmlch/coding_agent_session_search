@@ -1312,7 +1312,7 @@ fn wal_file_is_valid(wal_path: &Path) -> Result<bool, FrankenError> {
 fn wal_index_checksum(header_40: &[u8]) -> (u32, u32) {
     let mut s0 = 0_u32;
     let mut s1 = 0_u32;
-    for pair in header_40.chunks_exact(8) {
+    for pair in header_40.as_chunks::<8>().0 {
         let x0 = u32::from_ne_bytes([pair[0], pair[1], pair[2], pair[3]]);
         let x1 = u32::from_ne_bytes([pair[4], pair[5], pair[6], pair[7]]);
         s0 = s0.wrapping_add(x0).wrapping_add(s1);

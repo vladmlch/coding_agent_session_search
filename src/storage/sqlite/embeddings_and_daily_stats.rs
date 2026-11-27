@@ -16,8 +16,7 @@ use crate::franken_sync::{
     Row as FrankenRow, SqliteValue, TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
-        ParamValue, RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
-        params_from_iter,
+        ParamValue, RowExt as FrankenRowExt, params_from_iter,
     },
 };
 use anyhow::{Context, Result};

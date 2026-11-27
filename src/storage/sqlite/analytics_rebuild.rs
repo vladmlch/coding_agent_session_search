@@ -23,7 +23,7 @@ use crate::franken_sync::{
     Row as FrankenRow, TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
-        RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
+        RowExt as FrankenRowExt,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -404,7 +404,7 @@ impl FrankenStorage {
     ///
     /// GH #424: the keyset runs over `messages` alone and resolves the
     /// `conversations` / `agents` dimensions from in-memory maps; every chunk
-    /// commits on its own. See [`Self::rebuild_analytics_since_with_chunk_size`].
+    /// commits on its own. See `Self::rebuild_analytics_since_with_chunk_size`.
     pub fn rebuild_analytics_since(&self, since_ms: Option<i64>) -> Result<AnalyticsRebuildResult> {
         self.rebuild_analytics_since_with_chunk_size(since_ms, ANALYTICS_REBUILD_CHUNK_SIZE)
     }

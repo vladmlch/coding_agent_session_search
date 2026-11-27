@@ -43,7 +43,7 @@ use crate::franken_sync::{
     TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-        Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt,
+        Transaction as FrankenTransaction,
     },
 };
 use crate::model::types::{Conversation, Message};
