@@ -253,11 +253,11 @@ RECEIPT
         "$BASH" "$gate" --verify-ubs
     check_exit ubs-missing-reports-stage 0 rg -x -F 'STAGE=ubs EXIT=1' "$proof_dir/ubs-missing-refused.log"
     check_exit ubs-missing-install-hint 0 rg -F \
-        'git clone --depth 1 --branch v5.4.4 https://github.com/Dicklesworthstone/ultimate_bug_scanner' \
+        'git clone --depth 1 --branch v5.5.27 https://github.com/Dicklesworthstone/ultimate_bug_scanner' \
         "$proof_dir/ubs-missing-refused.log"
     check_exit ubs-wrong-runner-digest 1 env -u UBS_MODULE_DIR UBS_BIN=/bin/ls bash "$gate" --verify-ubs
     check_exit ubs-wrong-runner-hint 0 rg -F \
-        'git clone --depth 1 --branch v5.4.4 https://github.com/Dicklesworthstone/ultimate_bug_scanner' \
+        'git clone --depth 1 --branch v5.5.27 https://github.com/Dicklesworthstone/ultimate_bug_scanner' \
         "$proof_dir/ubs-wrong-runner-digest.log"
     test_ubs="${UBS_BIN:-$(command -v ubs || true)}"
     if [ -n "$test_ubs" ]; then
@@ -388,7 +388,7 @@ trap cleanup EXIT
 UBS_RUNNER="${UBS_BIN:-$(command -v ubs || true)}"
 if [ -z "$UBS_RUNNER" ]; then
     echo "[dpfvr_e2e] WARN: ubs not found (UBS_BIN unset, not on PATH) — skipping live invocation tests."
-    echo "[dpfvr_e2e] install: git clone --depth 1 --branch v5.4.4 https://github.com/Dicklesworthstone/ultimate_bug_scanner <dir>"
+    echo "[dpfvr_e2e] install: git clone --depth 1 --branch v5.5.27 https://github.com/Dicklesworthstone/ultimate_bug_scanner <dir>"
     UBS_AVAILABLE=0
 else
     UBS_AVAILABLE=1

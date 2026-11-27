@@ -236,20 +236,21 @@ run_tests() {
 }
 
 # The scanner is always local: `ubs` from UBS_BIN or PATH, pinned by SHA-256
-# on both the runner and its module routing contract. The gate never
-# downloads it — a missing or mismatched install fails the stage and prints
-# the git-clone install hint.
-run_ubs() {
-    local expected actual scanner module_dir expected_sha expected_contract_sha
+# on the runner, its module routing contract, and the Rust language module.
+# The gate never downloads it — a missing or mismatched install fails the
+# stage and prints the git-clone install hint.
+verify_ubs_install() {
+    local expected actual scanner module_dir expected_sha expected_contract_sha expected_rust_mod_sha
     expected="$(tr -d '[:space:]' < scripts/ubs-version.txt)"
     # The runner verifies its language modules against embedded release hashes.
     # Updating the pin also requires reviewing the new runner digest here.
-    if [ "$expected" != v5.4.4 ]; then
+    if [ "$expected" != v5.5.27 ]; then
         echo "gate: no reviewed UBS runner digest for ${expected}" >&2
         return 1
     fi
-    expected_sha=bdeccbb35f2056e6177c73b3f0f9966d20d1cbeff22b7f084133c4a6ac625ee2
-    expected_contract_sha=7319b2e5e085d0dd2434e5114291b2dee9fbbb96e2cfe02027eb263abcb06ac3
+    expected_sha=559d0ad9414ea94f4cb53e8499c19db4a4a20d8647f1ce8614347b79e26b510c
+    expected_contract_sha=90b82afcc916b8f4608f1561be59fc874228028c40e957b42fba2791991ba970
+    expected_rust_mod_sha=a42d9509cac907fd5ccbc805575641fa4a5775c814c694a827f42fd5710ddd96
     scanner="${UBS_BIN:-$(command -v ubs || true)}"
     if [ -z "$scanner" ] || [ ! -f "$scanner" ]; then
         echo "gate: UBS ${expected} not found (set UBS_BIN or put ubs on PATH)" >&2
@@ -275,17 +276,220 @@ run_ubs() {
         echo "gate: install: git clone --depth 1 --branch ${expected} https://github.com/Dicklesworthstone/ultimate_bug_scanner <dir>" >&2
         return 1
     fi
+    if [ ! -f "$module_dir/ubs-rust.sh" ] || [ "$(sha256 "$module_dir/ubs-rust.sh" | cut -d' ' -f1)" != "$expected_rust_mod_sha" ]; then
+        echo "gate: UBS Rust module bytes differ from the pinned release (${module_dir}/ubs-rust.sh)" >&2
+        echo "gate: install: git clone --depth 1 --branch ${expected} https://github.com/Dicklesworthstone/ultimate_bug_scanner <dir>" >&2
+        return 1
+    fi
     actual="$(bash "$scanner" --version)" || return 1
     echo "UBS_VERSION=${actual} UBS_PIN=${expected} UBS_SHA256=${expected_sha}"
     echo "UBS_MODULE_DIR=${module_dir}"
     echo "UBS_CONTRACT_SHA256=${expected_contract_sha}"
+    echo "UBS_RUST_MODULE_SHA256=${expected_rust_mod_sha}"
+    UBS_VERIFIED_SCANNER="$scanner"
+    UBS_VERIFIED_MODULE_DIR="$module_dir"
+}
+
+run_ubs() {
+    verify_ubs_install || return 1
     if [ "$#" -eq 0 ]; then
         echo "UBS_FILES=0 (no changed scanner-supported source files)"
         return 0
     fi
     printf 'UBS_FILE=%s\n' "$@"
     # Text retains categories and source samples needed to diagnose a red gate.
-    bash "$scanner" --module-dir="$module_dir" --no-auto-update --format=text --ci --fail-on-warning "$@"
+    bash "$UBS_VERIFIED_SCANNER" --module-dir="$UBS_VERIFIED_MODULE_DIR" --no-auto-update --format=text --ci --fail-on-warning "$@"
+}
+
+# Filter NUL-separated repository-relative paths through .ubsignore into a
+# caller-provided array variable name (bash >= 4.4 nameref).
+filter_ubsignore_into() {
+    local out_name="$1"
+    shift
+    local -n out_ref="$out_name"
+    out_ref=()
+    [ "$#" -gt 0 ] || return 0
+    if [ -f .ubsignore ]; then
+        local -A ubs_ignored=()
+        local path
+        while IFS= read -r -d '' path; do
+            ubs_ignored["$path"]=1
+        done < <(git ls-files -z -c -o -i --exclude-from=.ubsignore -- "$@")
+        for path in "$@"; do
+            if [ -n "${ubs_ignored[${path#./}]:-}" ]; then
+                echo "gate: UBS skips .ubsignore path ${path}" >&2
+            else
+                out_ref+=("$path")
+            fi
+        done
+    else
+        out_ref=("$@")
+    fi
+}
+
+# Evaluate production UBS JSONL ledger per D1:
+# rust.perf.string-alloc-in-loop and rust.collections.clone-in-loop are moved
+# to the informational report; any Critical/Warning in other rules (or an
+# incomplete/failed scan) fails the blocking stage.
+ubs_eval_prod_jsonl() {
+    local raw_rc="$1" jsonl_path="$2" info_report="$3" prod_count="$4"
+    python3 - "$raw_rc" "$jsonl_path" "$info_report" "$prod_count" <<'PY'
+import json
+import sys
+
+raw_rc = int(sys.argv[1])
+jsonl_path = sys.argv[2]
+info_report = sys.argv[3]
+prod_count = int(sys.argv[4])
+excluded_rules = {
+    "rust.perf.string-alloc-in-loop",
+    "rust.collections.clone-in-loop",
+}
+
+if raw_rc not in (0, 1):
+    print(f"gate: production UBS exited with error status {raw_rc}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    with open(jsonl_path, encoding="utf-8") as fh:
+        records = [json.loads(line) for line in fh if line.strip()]
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"gate: failed to read production UBS JSONL {jsonl_path}: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+totals = [r for r in records if r.get("type") == "totals"]
+if len(totals) != 1:
+    print(f"gate: expected 1 UBS totals record in {jsonl_path}, got {len(totals)}", file=sys.stderr)
+    sys.exit(1)
+tot = totals[0]
+if tot.get("status") != "ok" or tot.get("failed_modules"):
+    print(f"gate: production UBS scan incomplete/failed: status={tot.get('status')} failed={tot.get('failed_modules')}", file=sys.stderr)
+    sys.exit(1)
+occ_export = tot.get("occurrence_export") or {}
+if not occ_export.get("analysis_complete", False):
+    print("gate: production UBS occurrence_export.analysis_complete is false", file=sys.stderr)
+    sys.exit(1)
+
+rule_summaries = [r for r in records if r.get("type") == "rule_summary"]
+rule_crit_warn = sum(
+    int(r.get("reported", 0))
+    for r in rule_summaries
+    if r.get("severity") in ("critical", "warning")
+)
+tot_crit_warn = int(tot.get("critical", 0)) + int(tot.get("warning", 0))
+if rule_crit_warn != tot_crit_warn:
+    print(
+        f"gate: UBS rule_summary total ({rule_crit_warn}) != totals ({tot_crit_warn})",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+blocking = []
+excluded_summaries = []
+for r in rule_summaries:
+    sev = r.get("severity")
+    rep = int(r.get("reported", 0))
+    rid = r.get("rule_id", "")
+    if sev not in ("critical", "warning") or rep <= 0:
+        continue
+    if rid in excluded_rules:
+        excluded_summaries.append(r)
+    else:
+        blocking.append(r)
+
+excluded_findings = [
+    r for r in records
+    if r.get("type") == "finding"
+    and r.get("rule_id") in excluded_rules
+    and not r.get("suppressed", False)
+]
+
+with open(info_report, "w", encoding="utf-8") as out:
+    out.write("=== UBS INFORMATIONAL: PRODUCTION LOOP RULES (D1) ===\n")
+    for r in excluded_summaries:
+        out.write(f"RULE_SUMMARY {r.get('rule_id')} severity={r.get('severity')} reported={r.get('reported')}\n")
+    for f in excluded_findings:
+        out.write(f"{f.get('file')}:{f.get('line')}: [{f.get('severity')}] {f.get('rule_id')} — {f.get('message')}\n")
+    out.write("\n=== UBS INFORMATIONAL: TESTS & BENCHES ===\n")
+
+block_crit = sum(int(r.get("reported", 0)) for r in blocking if r.get("severity") == "critical")
+block_warn = sum(int(r.get("reported", 0)) for r in blocking if r.get("severity") == "warning")
+info_loop_warn = sum(int(r.get("reported", 0)) for r in excluded_summaries)
+print(
+    f"UBS_PROD_FILES={prod_count} UBS_PROD_BLOCKING_CRITICAL={block_crit} "
+    f"UBS_PROD_BLOCKING_WARNING={block_warn} UBS_PROD_INFO_LOOP_WARNINGS={info_loop_warn}"
+)
+if blocking:
+    for r in blocking:
+        print(
+            f"gate: UBS blocking finding rule={r.get('rule_id')} severity={r.get('severity')} count={r.get('reported')}",
+            file=sys.stderr,
+        )
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+run_ubs_default_lanes() {
+    verify_ubs_install || return 1
+    local path
+    local -a raw_src=() raw_prod=() raw_info=() prod_ubs_files=() info_ubs_files=()
+    local -A pure_test_src=(
+        ["src/connectors/codex/source_budget/coverage_tests.rs"]=1
+        ["src/connectors/codex/source_budget/empty_source/tests.rs"]=1
+        ["src/connectors/codex/source_budget/limit_tests.rs"]=1
+        ["src/connectors/codex/source_budget/recovery/contract_tests.rs"]=1
+        ["src/connectors/codex/source_budget/recovery/resume_tests.rs"]=1
+        ["src/connectors/codex/source_budget/recovery/tests.rs"]=1
+        ["src/connectors/codex/source_budget/tests.rs"]=1
+        ["src/indexer/gh473_tests.rs"]=1
+        ["src/indexer/gh494_tests.rs"]=1
+        ["src/indexer/lexical_generation/cleanup_tests.rs"]=1
+        ["src/indexer/semantic/shard_publication_tests.rs"]=1
+        ["src/raw_mirror/policy_tests.rs"]=1
+        ["src/raw_mirror/retention_tests.rs"]=1
+        ["src/search/gh494_repair_tests.rs"]=1
+        ["src/search_service/mcp_refinement_evidence_tests.rs"]=1
+    )
+    while IFS= read -r -d '' path; do
+        [ -f "$path" ] && raw_src+=("$path")
+    done < <(git ls-files -z -- 'src/*.rs' 'src/**/*.rs' | sort -zu)
+    for path in "${raw_src[@]}"; do
+        if [[ "$path" == src/tests/* || "$path" == */tests/* ]] || [ -n "${pure_test_src[$path]:-}" ]; then
+            raw_info+=("$path")
+        else
+            raw_prod+=("$path")
+        fi
+    done
+    while IFS= read -r -d '' path; do
+        [ -f "$path" ] && raw_info+=("$path")
+    done < <(git ls-files -z -- 'tests/*.rs' 'tests/**/*.rs' 'benches/*.rs' 'benches/**/*.rs' | sort -zu)
+
+    filter_ubsignore_into prod_ubs_files "${raw_prod[@]}"
+    filter_ubsignore_into info_ubs_files "${raw_info[@]}"
+
+    local prod_jsonl="${receipt_file}.ubs-prod.jsonl"
+    local info_report="${receipt_file}.ubs-tests.log"
+    local raw_prod_rc=0 prod_rc=0 ubs_info_rc=0
+    if [ "${#prod_ubs_files[@]}" -eq 0 ]; then
+        echo "UBS_PROD_FILES=0 UBS_PROD_BLOCKING_CRITICAL=0 UBS_PROD_BLOCKING_WARNING=0 UBS_PROD_INFO_LOOP_WARNINGS=0"
+        : > "$info_report"
+    else
+        bash "$UBS_VERIFIED_SCANNER" --module-dir="$UBS_VERIFIED_MODULE_DIR" \
+            --no-auto-update --only=rust --no-cargo --exclude-tests \
+            --jobs="${CARGO_BUILD_JOBS:-8}" --format=text \
+            --also="jsonl:${prod_jsonl}" --all-occurrences --max-occurrences=100000 \
+            --ci --fail-on-warning "${prod_ubs_files[@]}" || raw_prod_rc=$?
+        ubs_eval_prod_jsonl "$raw_prod_rc" "$prod_jsonl" "$info_report" "${#prod_ubs_files[@]}" || prod_rc=$?
+    fi
+    if [ "${#info_ubs_files[@]}" -gt 0 ]; then
+        bash "$UBS_VERIFIED_SCANNER" --module-dir="$UBS_VERIFIED_MODULE_DIR" \
+            --no-auto-update --only=rust --no-cargo \
+            --jobs="${CARGO_BUILD_JOBS:-8}" --format=text \
+            --ci "${info_ubs_files[@]}" >> "$info_report" 2>&1 || ubs_info_rc=$?
+    fi
+    echo "UBS_INFO_REPORT=${info_report} UBS_INFO_EXIT=${ubs_info_rc}"
+    return "$prod_rc"
 }
 
 # Exercise the exact receipt parser without running a build or substituting
@@ -351,6 +555,7 @@ RUN_GOLDENS=1
 REGEN_GOLDENS=0
 RUN_DOCS_TRUTH=0
 PRINT_UBS_FILES=0
+UBS_FILES_EXPLICIT=0
 UBS_FILES=()
 # Each entry is `<test-binary>` or `<test-binary>:<filter words>`; the filter
 # is passed after `--` so one run can select only the tests a change touches.
@@ -373,7 +578,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --lib-filter) LIB_FILTER="$2"; shift 2 ;;
         --no-lib) RUN_LIB=0; shift ;;
-        --ubs-files) IFS=',' read -r -a UBS_FILES <<<"$2"; shift 2 ;;
+        --ubs-files) IFS=',' read -r -a UBS_FILES <<<"$2"; UBS_FILES_EXPLICIT=1; shift 2 ;;
         --integration) IFS=',' read -r -a INTEGRATION_TESTS <<<"$2"; shift 2 ;;
         # Regenerate goldens (UPDATE_GOLDENS=1) before verifying them. The
         # verify stage still runs, and every resulting diff under tests/golden
@@ -455,20 +660,8 @@ fi
 # own .ubsignore, --ignore-file or --exclude covers, so the config-level
 # suppression AGENTS.md prescribes only takes effect if the gate drops those
 # paths before naming them. Each skipped path is printed in the receipt.
-if [ -f .ubsignore ] && [ "${#UBS_FILES[@]}" -gt 0 ]; then
-    declare -A ubs_ignored=()
-    while IFS= read -r -d '' path; do
-        ubs_ignored["$path"]=1
-    done < <(git ls-files -z -c -o -i --exclude-from=.ubsignore -- "${UBS_FILES[@]}")
-    ubs_kept=()
-    for path in "${UBS_FILES[@]}"; do
-        if [ -n "${ubs_ignored[${path#./}]:-}" ]; then
-            echo "gate: UBS skips .ubsignore path ${path}" >&2
-        else
-            ubs_kept+=("$path")
-        fi
-    done
-    UBS_FILES=("${ubs_kept[@]}")
+if [ "${#UBS_FILES[@]}" -gt 0 ]; then
+    filter_ubsignore_into UBS_FILES "${UBS_FILES[@]}"
 fi
 for path in "${UBS_FILES[@]}"; do
     if [[ "$path" = /* || "$path" = .. || "$path" = ../* || "$path" = */../* ]] || [ ! -f "$path" ]; then
@@ -613,7 +806,11 @@ run_stages() {
             echo "STAGE=docs-truth EXIT=$?"
         fi
     fi
-    run_ubs "${UBS_FILES[@]}"
+    if [ "$UBS_FILES_EXPLICIT" = 1 ]; then
+        run_ubs "${UBS_FILES[@]}"
+    else
+        run_ubs_default_lanes
+    fi
     echo "STAGE=ubs EXIT=$?"
     echo "STAGE=job-complete EXIT=0"
 }
