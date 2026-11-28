@@ -486,6 +486,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cass-model"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "directories",
+ "dirs",
+ "dotenvy",
+ "dunce",
+ "hex",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -661,6 +682,7 @@ dependencies = [
  "blake3",
  "bloomfilter",
  "bytemuck",
+ "cass-model",
  "chrono",
  "clap",
  "clap_complete",

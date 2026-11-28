@@ -497,6 +497,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "cass-model"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "directories",
+ "dirs",
+ "dotenvy",
+ "dunce",
+ "hex",
+ "once_cell",
+ "proptest",
+ "regex",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2 0.11.0",
+ "tempfile",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -714,6 +738,7 @@ dependencies = [
  "blake3",
  "bloomfilter",
  "bytemuck",
+ "cass-model",
  "chrono",
  "clap",
  "clap_complete",
