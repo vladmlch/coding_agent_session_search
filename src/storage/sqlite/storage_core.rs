@@ -32,7 +32,9 @@ use crate::sources::provenance::{Source, SourceKind};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicI8, AtomicI64, AtomicU64, Ordering},
@@ -147,6 +149,10 @@ pub struct FrankenStorage {
     /// shared with every pool writer this connection spawns (see
     /// [`FtsShadowRunState`]).
     pub(super) fts_shadow_run: Arc<FtsShadowRunState>,
+    /// Thread-affinity marker: connections cache prepared statements and the
+    /// cached ephemeral writer is owner-thread state, so storage ownership must
+    /// not cross OS threads even when individual fields happen to be `Send`.
+    _thread_affine: PhantomData<Rc<()>>,
 }
 
 /// GH #413 follow-up (iify0): per-process state of the derived `fts_messages`
@@ -406,6 +412,7 @@ impl FrankenStorage {
             fts_messages_present_cache: AtomicI8::new(FTS_MESSAGES_PRESENT_UNKNOWN),
             fts_maintenance_heartbeat: parking_lot::Mutex::new(None),
             fts_shadow_run,
+            _thread_affine: PhantomData,
         }
     }
 
