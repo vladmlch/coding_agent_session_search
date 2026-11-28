@@ -1,12 +1,13 @@
 //! Shared workspace path resolution helpers for WS-PREP-1C integration tests.
 
-#![allow(dead_code)]
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Return the workspace/repository root regardless of whether tests run from
 /// the monolith root or a member crate under `crates/*`.
+// This shared module is compiled separately into several integration targets;
+// each target uses only a subset of its API, so targeted dead-code allowances
+// stay with the individual helpers instead of suppressing the whole module.
 #[allow(dead_code)]
 pub fn workspace_root() -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));

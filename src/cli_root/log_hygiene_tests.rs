@@ -772,3 +772,98 @@ fn bounded_trace_rejects_a_second_writer_until_finalized() -> TraceTestResult {
     BoundedTraceMakeWriter::open(&path, 8 * 1024, 24)?;
     Ok(())
 }
+
+#[test]
+fn moved_memo_trim_preserves_trace_target_and_filters() -> TraceTestResult {
+    use crate::resource_plan::memoization::{
+        ContentAddressedMemoCache, MemoContentHash, MemoKey, MemoRetentionBudget,
+    };
+
+    for directive in [
+        None,
+        Some(DEFAULT_TRACE_FILE_LOG_DIRECTIVE),
+        Some("off,coding_agent_search::resource_plan::memoization=debug"),
+    ] {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("moved-memo.jsonl");
+        let (writer, guard) = BoundedTraceMakeWriter::open(&path, 64 * 1024, 128)?;
+        let layer = if let Some(directive) = directive {
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(writer)
+                .with_ansi(false)
+                .with_filter(EnvFilter::try_new(directive)?)
+                .boxed()
+        } else {
+            let filter_state = Arc::clone(&writer.state);
+            let filter = tracing_subscriber::filter::dynamic_filter_fn(
+                move |metadata, _context| {
+                    let enabled = default_trace_metadata_enabled(metadata);
+                    if !enabled
+                        && metadata.is_event()
+                        && let Ok(mut state) = filter_state.lock()
+                    {
+                        state.record_filtered(metadata.target());
+                    }
+                    enabled
+                },
+            )
+            .with_max_level_hint(tracing_subscriber::filter::LevelFilter::DEBUG);
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(writer)
+                .with_ansi(false)
+                .with_filter(filter)
+                .boxed()
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || -> TraceTestResult {
+            let budget = MemoRetentionBudget::new(1024);
+            let mut cache = ContentAddressedMemoCache::<String>::with_retention_budget(
+                2,
+                Arc::clone(&budget),
+                String::len,
+            );
+            let key = MemoKey::new(MemoContentHash::from_bytes(vec![1_u8]), "trace", "v1");
+            cache.insert(key, "retained".to_owned());
+            trace_test_require!(budget.used() > 0, "fixture retained no value");
+            budget.set_limit(0);
+            trace_test_require!(
+                cache.trim_to_budget() == 1,
+                "fixture did not trim one value"
+            );
+            Ok(())
+        })?;
+        drop(guard);
+
+        let trace = std::fs::read_to_string(&path)?;
+        let events = trace
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        let trimmed: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                trace_json_text_is(
+                    event,
+                    "/fields/message",
+                    "memo cache released values under memory pressure",
+                )
+            })
+            .collect();
+        trace_test_require!(
+            trimmed.len() == 1,
+            "missing/duplicate trim event: {directive:?}"
+        );
+        trace_test_require!(
+            trace_json_text_is(trimmed[0], "/level", "DEBUG")
+                && trace_json_text_is(
+                    trimmed[0],
+                    "/target",
+                    "coding_agent_search::resource_plan::memoization",
+                ),
+            "trim DEBUG/legacy target changed: {directive:?}"
+        );
+    }
+    Ok(())
+}

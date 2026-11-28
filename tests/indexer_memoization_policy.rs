@@ -1,4 +1,4 @@
-#[path = "../src/resource_plan/memoization.rs"]
+#[path = "../crates/cass-model/src/resource_plan/memoization.rs"]
 mod memoization;
 
 use memoization::{ContentAddressedMemoCache, MemoContentHash, MemoKey, MemoLookup};

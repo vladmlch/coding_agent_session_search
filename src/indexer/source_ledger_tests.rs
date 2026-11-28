@@ -1,6 +1,7 @@
 //! GH512: use the production match and completion helpers, including a live
 //! pre-fix comparator in the workload-shaped ignored benchmark.
 
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test;
 use super::*;
 use std::hint::black_box;
 use std::sync::{Arc, Barrier};
@@ -20,7 +21,7 @@ fn discovered(path: &Path, slug: &str) -> DiscoveredSourceFile {
 fn saved_row(source: &DiscoveredSourceFile, dependencies: Vec<serde_json::Value>) -> String {
     serde_json::json!({
         "primary": source_file_observation(&source.source_path).unwrap(),
-        "producer_contract": crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract,
+        "producer_contract": current_for_unit_test().ingest_contract,
         "dependencies": dependencies,
     })
     .to_string()
@@ -567,7 +568,7 @@ fn gh512_incumbent_source_ledger_matches(observation: &str, source: &DiscoveredS
     };
     if saved["producer_contract"].as_str()
         != Some(
-            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+            current_for_unit_test()
                 .ingest_contract,
         )
     {
@@ -739,7 +740,7 @@ fn gh512_real_connectors_complete_during_growth_without_redundant_discovery() ->
             },
         )?;
         sender.flush()?;
-        let reusable = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+        let reusable = current_for_unit_test()
             .ingest_reuse;
         assert_eq!(rescanned, usize::from(!reusable), "{name}");
         assert_eq!(connector.discoveries.get(), 0);

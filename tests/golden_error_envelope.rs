@@ -69,9 +69,12 @@ fn lib_split_production_files() -> Vec<PathBuf> {
         collect_non_test_rs_files(&workspace_root, &dir, &mut files);
     }
     let model_cli_error = ws_paths_1c::resolve_workspace_source("src/model/cli_error.rs");
-    if model_cli_error.is_file() {
-        files.push(model_cli_error);
-    }
+    assert!(
+        model_cli_error.is_file(),
+        "moved model cli_error.rs must resolve through the cass-model source tree: {}",
+        model_cli_error.display()
+    );
+    files.push(model_cli_error);
     files
 }
 
@@ -173,6 +176,20 @@ fn build_golden_json(kinds: &BTreeMap<String, Vec<i32>>) -> serde_json::Value {
         },
         "kinds": kinds_obj,
     })
+}
+
+#[test]
+fn moved_model_error_sources_resolve_inside_cass_model() {
+    let root = ws_paths_1c::workspace_root();
+    for rel in ["src/model/cli_error.rs", "src/model/cli_error_kind.rs"] {
+        let resolved = ws_paths_1c::resolve_workspace_source(rel);
+        assert!(
+            resolved.starts_with(root.join("crates/cass-model/src")),
+            "{rel} resolved outside cass-model: {}",
+            resolved.display()
+        );
+        assert!(resolved.is_file(), "{rel} missing at {}", resolved.display());
+    }
 }
 
 #[test]

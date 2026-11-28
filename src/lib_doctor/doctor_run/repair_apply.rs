@@ -1,3 +1,7 @@
+#[cfg(not(test))]
+use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
+#[cfg(test)]
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
 #[allow(unused_imports)]
 use crate::franken_sync::compat::{
     ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
@@ -925,7 +929,7 @@ pub(crate) fn execute_doctor_repairs_and_cleanup(
         // run the cleanup (the FsMutationExecutor itself is the safety gate),
         // we just lose the post-hoc observability for this invocation.
         let target_sha =
-            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+            current_build_metadata()
                 .git_sha
                 .unwrap_or("unknown");
         let journal_run_id = crate::doctor_runs::RunId::new(target_sha);

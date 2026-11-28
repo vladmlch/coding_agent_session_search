@@ -80,6 +80,7 @@ fn documented_exit_codes() -> Result<BTreeSet<i32>, Box<dyn Error>> {
 /// Additional source files outside `src/lib.rs` and `src/{cli_root,lib_doctor,cli_app}/**`
 /// that construct `CliError { code: N, kind: .. }` or exit directly.
 const EXTRA_SOURCE_PATHS: &[&str] = &[
+    "src/model/cli_error.rs",
     "src/doctor.rs",
     "src/doctor_undo.rs",
     "src/doctor_runs.rs",
@@ -382,5 +383,20 @@ fn extractor_finds_the_cli_error_surface() -> TestResult {
             distinct.len(),
             total
         ),
+    )
+}
+
+#[test]
+fn model_cli_error_constructors_are_scanned() -> TestResult {
+    let sources = scanned_sources();
+    let source = sources
+        .iter()
+        .find(|(rel, _)| rel == "src/model/cli_error.rs")
+        .map(|(_, source)| source)
+        .ok_or_else(|| test_error("scanned sources do not include src/model/cli_error.rs"))?;
+    let emitted = emitted_cli_error_codes(source);
+    ensure(
+        emitted == BTreeSet::from([2, 9]),
+        format!("model cli_error constructors emit {emitted:?}, expected {{2, 9}}"),
     )
 }

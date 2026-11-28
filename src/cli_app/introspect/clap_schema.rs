@@ -1,3 +1,7 @@
+#[cfg(not(test))]
+use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
+#[cfg(test)]
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
 #[allow(unused_imports)]
 use crate::franken_sync::compat::{
     ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
@@ -393,7 +397,7 @@ pub(crate) fn run_config_based_export(
 
 /// Show API and contract versions (robot-friendly)
 pub(crate) fn run_api_version(output_format: Option<RobotFormat>) -> CliResult<()> {
-    let meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
+    let meta = current_build_metadata();
     let payload = serde_json::json!({
         "crate_version": env!("CARGO_PKG_VERSION"),
         "build_commit": meta.build_commit.unwrap_or("unknown"),

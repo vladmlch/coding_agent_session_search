@@ -5,47 +5,84 @@ edition = "2024"
 authors = ["Jeffrey Emanuel"]
 description = "Unified TUI search over local coding agent histories"
 license-file = "LICENSE"
-resolver = "2"
 repository = "https://github.com/Dicklesworthstone/coding_agent_session_search"
 default-run = "cass"
 # Local-only tool: never published to crates.io (or any other registry).
 # Install from a checkout with `cargo install --path . --locked --bin cass`.
 publish = false
 
+[workspace]
+members = [".", "crates/cass-model"]
+default-members = ["."]
+exclude = ["fuzz"]
+resolver = "2"
+
+[workspace.dependencies]
+cass-model = { path = "crates/cass-model", version = "0.11.0" }
+anyhow = "1.0.102"
+blake3 = "1.8.5"
+chrono = { version = "0.4.44", features = ["serde"] }
+directories = "6.0.0"
+dirs = "7.0.0"
+dotenvy = "0.15.7"
+dunce = "1.0.5"
+hex = "0.4.3"
+once_cell = "1.21.4"
+regex = "1.12.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
+sha2 = "0.11"
+toml = "1.1.2"
+tracing = "0.1.44"
+tempfile = "3.27.0"
+proptest = "1.11.0"
+serial_test = "4.0.1"
+asupersync = { version = "=0.5.0", features = ["test-internals"] }
+rusqlite = { version = "=0.40.2", features = ["bundled", "modern_sqlite"] }
+frankensearch = { version = "=0.7.1", default-features = false, features = ["hash", "cass-compat", "quill", "ann", "native"] }
+franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "0821edad49b474efa92eaa30c0a2293578c3d042", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
+toon = { version = "=0.2.4", package = "tru" }
+
+[workspace.lints.clippy]
+needless_range_loop = "allow"
+
+[lints]
+workspace = true
+
 [dependencies]
 # Resident-memory supervision reuses the sysinfo version already in Cargo.lock.
 sysinfo = { version = "*", default-features = false, features = ["system"] }
-anyhow = "1.0.102"
+anyhow = { workspace = true }
 thiserror = "2.0.18"
-tracing = "0.1.44"
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "ansi", "json"] }
-asupersync = { version = "=0.5.0", features = ["test-internals"] }
+asupersync = { workspace = true }
 clap = { version = "4.6.1", features = ["derive", "cargo", "env", "unicode", "wrap_help"] }
 clap_complete = "4.6.5"
 clap_mangen = "0.3.0"
 indicatif = "0.18.4"
 console = "0.16.3"
 colored = "3.1.1"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0.149", features = ["preserve_order"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 # The external HTTP embedding provider (reqwest/rustls) was removed by the
 # local-only conversion; cass makes no outbound network calls.
-toon = { version = "=0.2.4", package = "tru" }
-tempfile = "3.27.0"
+toon = { workspace = true }
+tempfile = { workspace = true }
 wait-timeout = "0.2.1"
 rmp-serde = "1.3.1"  # MessagePack for binary metadata serialization (Opt 3.1)
-toml = "1.1.2"
-directories = "6.0.0"
+toml = { workspace = true }
+directories = { workspace = true }
 which = "8.0.2"
 shell-words = "1.1.1"
-dotenvy = "0.15.7"
+dotenvy = { workspace = true }
 notify = "8.2.0"
 # SQLite storage runs on the bundled rusqlite engine (owner decision, the
 # rusqlite migration): `bundled` compiles the SQLite amalgamation into the
 # binary and `modern_sqlite` enables the current SQL surface. The exact
 # `=0.40.2` pin keeps the engine reproducible; franken-agent-detection's
 # SQLite connectors resolve the same release through feature unification.
-rusqlite = { version = "=0.40.2", features = ["bundled", "modern_sqlite"] }
+rusqlite = { workspace = true }
 rayon = "1.12.0"
 crossbeam-channel = "0.5.15"
 parking_lot = "0.12.5"
@@ -57,20 +94,20 @@ rustc-hash = "2.1.2"  # Fast non-cryptographic hashing for cache keys (P1 Opt 1.
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }  # Fast content hashing for search-hit dedup (bead sdoxg)
 itoa = "1.0.18"  # Zero-allocation integer-to-string for hot paths (bead w32k6)
 smallvec = "1.15.1"  # Stack-allocated small vectors for hot paths (Opt 4.4)
-regex = "1.12.3"
-dirs = "7.0.0"
+regex = { workspace = true }
+dirs = { workspace = true }
 # Canonical paths without Windows' verbatim `\\?\` prefix where the plain
 # spelling names the same file (source identities, 9v9xi).
-dunce = "1.0.5"
+dunce = { workspace = true }
 walkdir = "2.5.0"
 glob = "0.3.3"
 base64 = ">=0.21"
-blake3 = "1.8.5"
+blake3 = { workspace = true }
 pulldown-cmark = { version = "0.13.3", default-features = false, features = ["html"] }
-chrono = { version = "0.4.44", features = ["serde"] }
+chrono = { workspace = true }
 tracing-appender = "0.2.5"
 strsim = "0.11.1"
-once_cell = "1.21.4"
+once_cell = { workspace = true }
 itertools = "0.15.0"
 crc32fast = "1.5.0"
 unicode-normalization = "0.1.25"
@@ -92,7 +129,7 @@ bytemuck = "1.25.0"
 # concurrent segment verification on open (GH #501), snippets only for
 # returned hits, and a read-only refresh that skips the reopen when nothing
 # was published.
-frankensearch = { version = "=0.7.1", default-features = false, features = ["hash", "cass-compat", "quill", "ann", "native"] }
+frankensearch = { workspace = true }
 # Native OpenClaw transcripts and legacy VS Code Copilot sessions require SQLite.
 # Keep both readers unconditional, including --no-default-features builds.
 # codex-zstd reads Codex rollouts compressed to .jsonl.zst (GH #513).
@@ -147,7 +184,7 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # pins above; the enabled 7-feature set is unchanged.
 # Source: the owner's pushed FAD fork https://github.com/vladmlch/franken_agent_detection
 # (branch agent/FAD-R29/2.3b at 0821edad; the b44f0b5d main pin stays as rollback).
-franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "0821edad49b474efa92eaa30c0a2293578c3d042", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
+franken-agent-detection = { workspace = true }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache
@@ -155,8 +192,8 @@ bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Worksp
 ring = "0.17.14"
 
 # SHA256 hashing for model verification
-sha2 = "0.11"
-hex = "0.4.3"
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 # Interactive terminal prompts for setup wizard
 dialoguer = "0.12.0"
@@ -174,6 +211,9 @@ socket2 = { version = "0.6.5", features = ["all"] }
 # write to a closed pipe (`cass ... | head`) became a SIGABRT crash report.
 [target.'cfg(unix)'.dependencies]
 sigpipe = "0.1.3"
+
+[dependencies.cass-model]
+workspace = true
 
 [features]
 default = []
@@ -197,9 +237,9 @@ strict-path-dep-validation = []
 cass-layer-b-conformance = []
 
 [build-dependencies]
-blake3 = "1.8.5"
+blake3 = { workspace = true }
 vergen = { version = "10.0.0", default-features = false, features = ["build", "cargo"] }
-toml = "1.1.2"
+toml = { workspace = true }
 
 [dev-dependencies]
 aes-gcm = "0.11"
@@ -208,12 +248,12 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 insta = { version = "1.47.2", features = ["yaml", "json"] }
 criterion = "0.8.2"
-once_cell = "1.21.4"
-serial_test = "4.0.1"
+once_cell = { workspace = true }
+serial_test = { workspace = true }
 # Version-format assertions in spec_version_semver_format and
 # spec_diag_version_coherence; production code never parses versions.
 semver = "1.0.28"
-proptest = "1.11.0"
+proptest = { workspace = true }
 arbitrary = { version = "1", features = ["derive"] }
 serde_yaml = "0.9.34"
 rand = "0.10"
@@ -224,6 +264,10 @@ zstd = { version = "0.13", default-features = false }
 # GH470 measures native model input tokens without padding or silent truncation.
 # Reuse the tokenizer and regex backend already resolved by native MiniLM.
 tokenizers = { version = "*", default-features = false, features = ["fancy-regex"] }
+
+[dev-dependencies.cass-model]
+workspace = true
+features = ["test-support"]
 
 [[bin]]
 name = "cass"

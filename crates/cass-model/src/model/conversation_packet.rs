@@ -361,7 +361,7 @@ impl ConversationPacket {
     /// into the packet avoids retaining a second transcript-sized content copy
     /// while hashes and sink projections are derived (#320). Callers that need
     /// to retain their canonical input should use [`Self::from_canonical_replay`].
-    pub(crate) fn from_canonical_replay_owned(
+    pub fn from_canonical_replay_owned(
         conversation: Conversation,
         provenance: ConversationPacketProvenance,
     ) -> Self {

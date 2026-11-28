@@ -82,6 +82,11 @@ pub fn emit_contract(
             if !kind.is_dir() {
                 continue;
             }
+            let member_manifest_rel = member_rel.join("Cargo.toml");
+            if manifest_dir.join(&member_manifest_rel).is_file() {
+                inputs.insert(member_manifest_rel.clone());
+                watch(&member_manifest_rel);
+            }
             let src_rel = member_rel.join("src");
             if manifest_dir.join(&src_rel).is_dir() {
                 directories.push(src_rel);
@@ -865,6 +870,55 @@ checksum = "same-name-dependency"
     }
 
     #[test]
+    fn member_manifests_and_model_sources_are_contract_inputs() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "crates/cass-model/Cargo.toml",
+            b"[package]\nname = \"cass-model\"\nversion = \"0.11.0\"\n\n[features]\ndefault = []\n",
+        );
+        fixture.write("crates/cass-model/src/model/types.rs", b"types-v1");
+        let original = fixture.stream(&[]);
+
+        let mut watched = BTreeSet::new();
+        emit_contract(
+            &fixture.0,
+            [],
+            |_| {},
+            |path| {
+                watched.insert(path.to_path_buf());
+            },
+        )
+        .unwrap();
+        assert!(watched.contains(Path::new("crates")));
+        assert!(watched.contains(Path::new("crates/cass-model/Cargo.toml")));
+        assert!(watched.contains(Path::new("crates/cass-model/src")));
+        assert!(watched.contains(Path::new("crates/cass-model/src/model")));
+
+        fixture.write("crates/cass-model/src/model/types.rs", b"types-v2");
+        assert_ne!(fixture.stream(&[]), original, "model source bytes");
+        fixture.write("crates/cass-model/src/model/types.rs", b"types-v1");
+        assert_eq!(fixture.stream(&[]), original, "restored model source");
+
+        fixture.write(
+            "crates/cass-model/Cargo.toml",
+            b"[package]\nname = \"cass-model\"\nversion = \"0.11.0\"\n\n[features]\ndefault = []\ntest-support = []\n",
+        );
+        assert_ne!(fixture.stream(&[]), original, "member feature change");
+        fixture.write(
+            "crates/cass-model/Cargo.toml",
+            b"[package]\nname = \"cass-model\"\nversion = \"0.11.1\"\n\n[features]\ndefault = []\n",
+        );
+        assert_ne!(fixture.stream(&[]), original, "member version change");
+
+        fs::rename(
+            fixture.0.join("crates/cass-model/Cargo.toml"),
+            fixture.0.join("crates/cass-model/Cargo.toml.removed"),
+        )
+        .unwrap();
+        assert_ne!(fixture.stream(&[]), original, "member manifest removal");
+    }
+
+    #[test]
     fn workspace_internal_cass_crates_allow_source_none_while_external_path_deps_block_reuse() {
         let fixture = Fixture::new();
         fixture.write(
@@ -891,6 +945,21 @@ checksum = "same-name-dependency"
         assert!(ws_packages.contains(&("cass-model".to_string(), "0.11.0".to_string())));
         assert!(ws_packages.contains(&("cass-storage".to_string(), "0.11.0".to_string())));
         assert!(!ws_packages.contains(&("external-helper".to_string(), "0.11.0".to_string())));
+
+        let model_blocks = |name, version, source| {
+            dependency_blocks_reuse_with_workspace(
+                name,
+                version,
+                source,
+                "coding-agent-search",
+                "0.11.0",
+                &ws_packages,
+            )
+        };
+        assert!(!model_blocks(Some("cass-model"), Some("0.11.0"), None));
+        assert!(model_blocks(Some("cass-model"), Some("0.10.0"), None));
+        assert!(model_blocks(Some("cass-unlisted"), Some("0.11.0"), None));
+        assert!(model_blocks(Some("external-helper"), Some("0.11.0"), None));
 
         let blocks = |name, version, source| {
             dependency_blocks_reuse_with_workspace(

@@ -2,11 +2,11 @@
 //! these source modules in this integration target gives the regression its
 //! own production retention pool without mutating another test's process.
 
-#[path = "../src/resource_plan/memoization.rs"]
+#[path = "../crates/cass-model/src/resource_plan/memoization.rs"]
 pub(crate) mod memoization;
 // This target uses part of the redactor; the library target lints the rest.
 #[allow(dead_code)]
-#[path = "../src/resource_plan/redact_secrets.rs"]
+#[path = "../crates/cass-model/src/resource_plan/redact_secrets.rs"]
 mod redact_secrets;
 #[path = "../src/connectors/host_responsiveness/resident/policy.rs"]
 mod resident_policy;

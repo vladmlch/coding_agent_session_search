@@ -44,31 +44,31 @@ use serde::{Deserialize, Serialize};
 /// Keys, map buckets, quarantine metadata and caller-owned clones are outside
 /// this quantity; the independent entry limit still applies to each cache.
 #[derive(Debug)]
-pub(crate) struct MemoRetentionBudget {
+pub struct MemoRetentionBudget {
     limit: AtomicUsize,
     used: AtomicUsize,
 }
 
 impl MemoRetentionBudget {
-    pub(crate) fn new(limit: usize) -> Arc<Self> {
+    pub fn new(limit: usize) -> Arc<Self> {
         Arc::new(Self {
             limit: AtomicUsize::new(limit),
             used: AtomicUsize::new(0),
         })
     }
 
-    pub(crate) fn limit(&self) -> usize {
+    pub fn limit(&self) -> usize {
         self.limit.load(Ordering::Acquire)
     }
 
-    pub(crate) fn used(&self) -> usize {
+    pub fn used(&self) -> usize {
         self.used.load(Ordering::Acquire)
     }
 
     /// Existing owners may still hold more than a newly lowered limit. They
     /// release those values on their next cache operation or on Drop; no new
     /// reservation may use the excess, and raising a limit allocates nothing.
-    pub(crate) fn set_limit(&self, limit: usize) {
+    pub fn set_limit(&self, limit: usize) {
         self.limit.store(limit, Ordering::Release);
     }
 
@@ -132,14 +132,14 @@ impl<V> MemoEntry<V> {
 /// plain bytes here keeps this module independent of the hasher
 /// choice (blake3 today, whatever frankensearch switches to tomorrow).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct MemoContentHash(pub Vec<u8>);
+pub struct MemoContentHash(pub Vec<u8>);
 
 impl MemoContentHash {
-    pub(crate) fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self(bytes.into())
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 }
@@ -150,14 +150,14 @@ impl MemoContentHash {
 /// embedder, tokenizer, etc.) transparently invalidates every prior
 /// entry whose algorithm fingerprint differs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub(crate) struct MemoKey {
+pub struct MemoKey {
     pub content_hash: MemoContentHash,
     pub algorithm: String,
     pub algorithm_version: String,
 }
 
 impl MemoKey {
-    pub(crate) fn new(
+    pub fn new(
         content_hash: MemoContentHash,
         algorithm: impl Into<String>,
         algorithm_version: impl Into<String>,
@@ -175,7 +175,7 @@ impl MemoKey {
 /// cache behavior from logs alone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "outcome")]
-pub(crate) enum MemoLookup<V> {
+pub enum MemoLookup<V> {
     Hit { value: V },
     Miss,
     Quarantined { reason: String },
@@ -186,7 +186,7 @@ pub(crate) enum MemoLookup<V> {
 /// across backends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-pub(crate) enum MemoCacheEvent {
+pub enum MemoCacheEvent {
     Hit,
     Miss,
     Insert,
@@ -207,7 +207,7 @@ pub(crate) enum MemoCacheEvent {
 /// observed quarantine from a producer-side mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum MemoCacheOperation {
+pub enum MemoCacheOperation {
     Lookup,
     Insert,
     Invalidate,
@@ -216,7 +216,7 @@ pub(crate) enum MemoCacheOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum MemoEvictReason {
+pub enum MemoEvictReason {
     /// Evicted because the cache reached `max_entries` and the entry
     /// was the least-recently-used.
     CapacityLru,
@@ -229,7 +229,7 @@ pub(crate) enum MemoEvictReason {
 /// Running counters for an individual cache instance; serialized on
 /// every mutating operation so tests and operators can pin behavior.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemoCacheStats {
+pub struct MemoCacheStats {
     pub hits: u64,
     pub misses: u64,
     pub inserts: u64,
@@ -244,7 +244,7 @@ pub(crate) struct MemoCacheStats {
 /// decision. Wiring sites can serialize this directly into
 /// refresh/rebuild traces once the packet dataflow is fully migrated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemoCacheAuditRecord {
+pub struct MemoCacheAuditRecord {
     pub operation: MemoCacheOperation,
     pub key: MemoKey,
     pub event: MemoCacheEvent,
@@ -256,7 +256,7 @@ pub(crate) struct MemoCacheAuditRecord {
 
 /// Stable operator-facing inspection row for a quarantined memo entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemoQuarantineInspectionItem {
+pub struct MemoQuarantineInspectionItem {
     pub key: MemoKey,
     pub reason: String,
 }
@@ -264,7 +264,7 @@ pub(crate) struct MemoQuarantineInspectionItem {
 /// Aggregated operator-facing quarantine counts. BTreeMap keeps JSON
 /// output stable for robot consumers and lifecycle proofs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct MemoQuarantineSummary {
+pub struct MemoQuarantineSummary {
     pub quarantined_entries: usize,
     pub reasons: BTreeMap<String, usize>,
     pub algorithms: BTreeMap<String, usize>,
@@ -285,7 +285,7 @@ pub(crate) struct MemoQuarantineSummary {
 /// push-back/pop-front VecDeque: least-recently-touched entry evicts
 /// first.
 #[derive(Debug)]
-pub(crate) struct ContentAddressedMemoCache<V: Clone> {
+pub struct ContentAddressedMemoCache<V: Clone> {
     max_entries: usize,
     entries: HashMap<MemoKey, MemoEntry<V>>,
     quarantined: HashMap<MemoKey, String>,
@@ -299,7 +299,7 @@ pub(crate) struct ContentAddressedMemoCache<V: Clone> {
 }
 
 impl<V: Clone> ContentAddressedMemoCache<V> {
-    pub(crate) fn with_capacity(max_entries: usize) -> Self {
+    pub fn with_capacity(max_entries: usize) -> Self {
         Self {
             max_entries: max_entries.max(1),
             // Capacity is an admission ceiling, not a request to allocate all
@@ -316,7 +316,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         }
     }
 
-    pub(crate) fn with_retention_budget(
+    pub fn with_retention_budget(
         max_entries: usize,
         retention: Arc<MemoRetentionBudget>,
         value_bytes: fn(&V) -> usize,
@@ -328,7 +328,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         }
     }
 
-    pub(crate) fn retained_bytes(&self) -> usize {
+    pub fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
 
@@ -336,7 +336,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
     /// is met or this owner is empty. Idle peer owners retain their leases;
     /// their bytes still prevent new admission and are released on use/Drop.
     /// Quarantine records are deliberately not collected under pressure.
-    pub(crate) fn trim_to_budget(&mut self) -> usize {
+    pub fn trim_to_budget(&mut self) -> usize {
         let Some(retention) = self.retention.as_ref().map(Arc::clone) else {
             return 0;
         };
@@ -350,6 +350,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
             self.entries.shrink_to_fit();
             self.lru_seq.shrink_to_fit();
             tracing::debug!(
+                target: "coding_agent_search::resource_plan::memoization",
                 evicted,
                 retained_value_bytes = self.retained_bytes,
                 shared_value_bytes = retention.used(),
@@ -360,11 +361,11 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         evicted
     }
 
-    pub(crate) fn get(&mut self, key: &MemoKey) -> MemoLookup<V> {
+    pub fn get(&mut self, key: &MemoKey) -> MemoLookup<V> {
         self.get_with_audit(key).0
     }
 
-    pub(crate) fn get_with_audit(
+    pub fn get_with_audit(
         &mut self,
         key: &MemoKey,
     ) -> (MemoLookup<V>, MemoCacheAuditRecord) {
@@ -410,11 +411,11 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         }
     }
 
-    pub(crate) fn insert(&mut self, key: MemoKey, value: V) -> MemoCacheEvent {
+    pub fn insert(&mut self, key: MemoKey, value: V) -> MemoCacheEvent {
         self.insert_with_audit(key, value).event
     }
 
-    pub(crate) fn insert_with_audit(&mut self, key: MemoKey, value: V) -> MemoCacheAuditRecord {
+    pub fn insert_with_audit(&mut self, key: MemoKey, value: V) -> MemoCacheAuditRecord {
         let trimmed = self.trim_to_budget() > 0;
         if let Some(reason) = self.quarantined.get(&key) {
             return self.audit_record(
@@ -514,11 +515,11 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         true
     }
 
-    pub(crate) fn invalidate(&mut self, key: &MemoKey) -> bool {
+    pub fn invalidate(&mut self, key: &MemoKey) -> bool {
         self.invalidate_with_audit(key).changed
     }
 
-    pub(crate) fn invalidate_with_audit(&mut self, key: &MemoKey) -> MemoCacheAuditRecord {
+    pub fn invalidate_with_audit(&mut self, key: &MemoKey) -> MemoCacheAuditRecord {
         let removed = self.remove_entry(key);
         if removed {
             self.stats.invalidations = self.stats.invalidations.saturating_add(1);
@@ -531,11 +532,11 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         )
     }
 
-    pub(crate) fn quarantine(&mut self, key: MemoKey, reason: impl Into<String>) {
+    pub fn quarantine(&mut self, key: MemoKey, reason: impl Into<String>) {
         let _ = self.quarantine_with_audit(key, reason);
     }
 
-    pub(crate) fn quarantine_with_audit(
+    pub fn quarantine_with_audit(
         &mut self,
         key: MemoKey,
         reason: impl Into<String>,
@@ -558,11 +559,11 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         )
     }
 
-    pub(crate) fn stats(&self) -> &MemoCacheStats {
+    pub fn stats(&self) -> &MemoCacheStats {
         &self.stats
     }
 
-    pub(crate) fn quarantine_inspection_items(&self) -> Vec<MemoQuarantineInspectionItem> {
+    pub fn quarantine_inspection_items(&self) -> Vec<MemoQuarantineInspectionItem> {
         let mut items: Vec<_> = self
             .quarantined
             .iter()
@@ -575,7 +576,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         items
     }
 
-    pub(crate) fn quarantine_summary(&self) -> MemoQuarantineSummary {
+    pub fn quarantine_summary(&self) -> MemoQuarantineSummary {
         let mut summary = MemoQuarantineSummary {
             quarantined_entries: self.quarantined.len(),
             ..MemoQuarantineSummary::default()
@@ -590,7 +591,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
     /// Remove an inspected quarantine tombstone and return its audit
     /// record. This is in-memory metadata GC only; persisted artifact
     /// retention stays with the caller.
-    pub(crate) fn garbage_collect_quarantined(
+    pub fn garbage_collect_quarantined(
         &mut self,
         key: &MemoKey,
     ) -> Option<MemoQuarantineInspectionItem> {
@@ -604,7 +605,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
 
     /// Preview which quarantine tombstones would be collected for an
     /// algorithm without mutating the cache.
-    pub(crate) fn preview_garbage_collect_quarantined_algorithm(
+    pub fn preview_garbage_collect_quarantined_algorithm(
         &self,
         algorithm: &str,
     ) -> Vec<MemoQuarantineInspectionItem> {
@@ -623,7 +624,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
 
     /// Preview which quarantine tombstones would be collected for an
     /// exact reason string without mutating the cache.
-    pub(crate) fn preview_garbage_collect_quarantined_reason(
+    pub fn preview_garbage_collect_quarantined_reason(
         &self,
         reason: &str,
     ) -> Vec<MemoQuarantineInspectionItem> {
@@ -642,7 +643,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
 
     /// Remove every inspected quarantine tombstone for an algorithm and
     /// return a deterministic audit list of what was collected.
-    pub(crate) fn garbage_collect_quarantined_algorithm(
+    pub fn garbage_collect_quarantined_algorithm(
         &mut self,
         algorithm: &str,
     ) -> Vec<MemoQuarantineInspectionItem> {
@@ -662,7 +663,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
 
     /// Remove every inspected quarantine tombstone with an exact reason
     /// and return a deterministic audit list of what was collected.
-    pub(crate) fn garbage_collect_quarantined_reason(
+    pub fn garbage_collect_quarantined_reason(
         &mut self,
         reason: &str,
     ) -> Vec<MemoQuarantineInspectionItem> {

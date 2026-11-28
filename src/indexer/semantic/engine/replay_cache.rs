@@ -8,6 +8,10 @@
 //! can survive process restarts while the exact archive and input contract stay
 //! unchanged. Ingest, edits, deletion, or a producer change require fresh replay.
 
+#[cfg(not(test))]
+use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
+#[cfg(test)]
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
 use super::*;
 use std::mem::size_of;
 use std::sync::Mutex;
@@ -47,7 +51,7 @@ impl ReplayKey {
             schema_version: SEMANTIC_SCHEMA_VERSION,
             chunking_version: CHUNKING_STRATEGY_VERSION,
             source_ingest_contract:
-                crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+                current_build_metadata()
                     .ingest_contract
                     .into(),
         }))
@@ -299,7 +303,7 @@ impl CanonicalReplayCache {
         // the recorded build inputs. Keep the in-memory optimization, but never
         // trust a previous process's inventory in such development builds.
         let cache_path = (budget > 0
-            && crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+            && current_build_metadata()
                 .ingest_reuse)
             .then(|| persistent_path(data_dir, plan.tier));
         let mut disk_hit = false;

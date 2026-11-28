@@ -1,6 +1,3 @@
-// Index walks over parallel slices by a single counter; an iterator rewrite would
-// obscure the arithmetic without changing behaviour.
-#![allow(clippy::needless_range_loop)]
 #![recursion_limit = "512"]
 // `unsafe` is denied crate-wide outside tests; the only sanctioned sites carry
 // `#[allow(unsafe_code)]` + a SAFETY comment (startup env writes, unavoidable FFI per AGENTS.md).
@@ -11,6 +8,12 @@
 // that spelling resolve inside the library too.
 extern crate self as coding_agent_search;
 
+pub use cass_model::{
+    daemon_runtime_state, dependency_pin_correlation, evidence_bundle, model,
+    perf_evidence, resource_plan, robot_budget_envelope, root_cause_taxonomy,
+    search_defaults, subsystem_coverage_matrix, time_parser,
+};
+
 pub mod bookmarks;
 pub mod connector_ingest_diagnostics;
 pub mod connectors;
@@ -18,8 +21,6 @@ pub mod conversation_view;
 pub mod crash_replay;
 #[cfg(unix)]
 pub mod daemon;
-pub mod daemon_runtime_state;
-pub mod dependency_pin_correlation;
 pub mod doctor;
 #[cfg(test)]
 mod doctor_candidate_wal_tests;
@@ -28,7 +29,6 @@ pub mod doctor_recover;
 pub(crate) mod doctor_robot_docs;
 pub(crate) mod doctor_runs;
 pub(crate) mod doctor_undo;
-pub mod evidence_bundle;
 pub mod explainability;
 pub mod export;
 mod followup_coordinates;
@@ -36,27 +36,19 @@ pub mod franken_sync;
 pub mod html_export;
 mod index_result;
 pub mod indexer;
-pub mod model;
 pub mod pages;
-pub mod perf_evidence;
 pub mod policy_registry;
 pub mod privacy_exposure;
 pub mod query_cost_planner;
 pub mod raw_mirror;
 pub(crate) mod recipes_robot_docs;
 pub(crate) mod recovery_support_bundle;
-pub mod resource_plan;
-pub mod robot_budget_envelope;
 pub mod root_cause_projection;
-pub mod root_cause_taxonomy;
 pub mod search;
-pub mod search_defaults;
 pub mod search_quality_eval;
 pub mod source_onboarding;
 pub mod sources;
 pub mod storage;
-pub mod subsystem_coverage_matrix;
-pub mod time_parser;
 mod timeline_json;
 pub mod topology_budget;
 pub mod viewer_extensions;

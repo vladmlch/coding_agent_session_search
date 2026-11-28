@@ -89,7 +89,7 @@ pub struct RobotBudget {
 /// a NearLimit decision appear to have been an Exhausted decision after a
 /// scheduler preemption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct BudgetSnapshot {
+pub struct BudgetSnapshot {
     /// Phase derived from this snapshot's `elapsed_ms` and `budget_ms`.
     phase: BudgetPhase,
     /// Elapsed wall-clock time sampled once at capture.
@@ -102,12 +102,12 @@ pub(crate) struct BudgetSnapshot {
 
 impl BudgetSnapshot {
     /// Capture a live budget exactly once.
-    pub(crate) fn capture(budget: &RobotBudget) -> Self {
+    pub fn capture(budget: &RobotBudget) -> Self {
         Self::from_elapsed(budget.elapsed_ms(), budget.total_ms())
     }
 
     /// Build a deterministic snapshot from an elapsed/total pair.
-    pub(crate) fn from_elapsed(elapsed_ms: u64, budget_ms: u64) -> Self {
+    pub fn from_elapsed(elapsed_ms: u64, budget_ms: u64) -> Self {
         Self {
             phase: budget_status(elapsed_ms, budget_ms),
             elapsed_ms,
@@ -116,9 +116,9 @@ impl BudgetSnapshot {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     /// Build a deliberately synthetic snapshot for identity-path tests.
-    pub(crate) const fn from_parts_for_test(
+    pub const fn from_parts_for_test(
         phase: BudgetPhase,
         elapsed_ms: u64,
         budget_ms: u64,
@@ -133,22 +133,22 @@ impl BudgetSnapshot {
     }
 
     /// Captured phase.
-    pub(crate) const fn phase(self) -> BudgetPhase {
+    pub const fn phase(self) -> BudgetPhase {
         self.phase
     }
 
     /// Captured elapsed milliseconds.
-    pub(crate) const fn elapsed_ms(self) -> u64 {
+    pub const fn elapsed_ms(self) -> u64 {
         self.elapsed_ms
     }
 
     /// Captured total budget milliseconds.
-    pub(crate) const fn budget_ms(self) -> u64 {
+    pub const fn budget_ms(self) -> u64 {
         self.budget_ms
     }
 
     /// Captured remaining milliseconds.
-    pub(crate) const fn remaining_ms(self) -> u64 {
+    pub const fn remaining_ms(self) -> u64 {
         self.remaining_ms
     }
 }
@@ -185,7 +185,7 @@ impl RobotBudget {
     }
 
     /// Capture one immutable observation for a multi-step policy decision.
-    pub(crate) fn snapshot(&self) -> BudgetSnapshot {
+    pub fn snapshot(&self) -> BudgetSnapshot {
         BudgetSnapshot::capture(self)
     }
 

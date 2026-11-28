@@ -53,7 +53,7 @@ fn apply_redaction_retention_limit(
 /// semantics. Normalization deliberately accepts the common snake/kebab/camel
 /// spellings while using an exact allowlist to avoid broad false positives such
 /// as `keyframe`, `monkey`, or `token_count`.
-pub(crate) fn is_sensitive_json_field(key: &str) -> bool {
+pub fn is_sensitive_json_field(key: &str) -> bool {
     let normalized = key
         .bytes()
         .filter(|byte| byte.is_ascii_alphanumeric())
@@ -135,24 +135,24 @@ struct SecretPattern {
 // next to an ASCII word character, and ASCII word characters are a subset of
 // Unicode ones, so the ASCII form matches wherever the Unicode form did (plus a
 // token directly touching a non-ASCII letter): redaction can only get stricter.
-pub(crate) const AWS_ACCESS_KEY_PATTERN: &str = r"(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)";
-pub(crate) const AWS_SECRET_KEY_PATTERN: &str =
+pub const AWS_ACCESS_KEY_PATTERN: &str = r"(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)";
+pub const AWS_SECRET_KEY_PATTERN: &str =
     r#"(?i)aws(.{0,20})?(secret|access)?[_-]?key\s*[:=]\s*['"]?[A-Za-z0-9/+=]{40}['"]?"#;
-pub(crate) const AWS_SESSION_TOKEN_PATTERN: &str = r#"(?i)(?-u:\b)aws[_-]?(?:session|security)[_-]?token\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n]){8,}"|'(?:\\.|[^'\\\r\n]){8,}'|[^\s,;}\]]{8,})"#;
+pub const AWS_SESSION_TOKEN_PATTERN: &str = r#"(?i)(?-u:\b)aws[_-]?(?:session|security)[_-]?token\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n]){8,}"|'(?:\\.|[^'\\\r\n]){8,}'|[^\s,;}\]]{8,})"#;
 // ubs:ignore[rust.security.hardcoded-secrets] — secret detection regex pattern, not a credential
-pub(crate) const GITHUB_TOKEN_PATTERN: &str =
+pub const GITHUB_TOKEN_PATTERN: &str =
     r"(?-u:\b)(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,})(?-u:\b)";
 // ubs:ignore[rust.security.hardcoded-secrets] — secret detection regex pattern, not a credential
-pub(crate) const OPENAI_API_KEY_PATTERN: &str =
+pub const OPENAI_API_KEY_PATTERN: &str =
     r"(?-u:\b)(?:sk-(?:proj-|admin-)[A-Za-z0-9_-]{19,}[A-Za-z0-9_]|sk-[A-Za-z0-9]{20,})(?-u:\b)";
 // ubs:ignore[rust.security.hardcoded-secrets] — secret detection regex pattern, not a credential
-pub(crate) const ANTHROPIC_API_KEY_PATTERN: &str =
+pub const ANTHROPIC_API_KEY_PATTERN: &str =
     r"(?-u:\b)sk-ant-(?:api[0-9]{2}-)?[A-Za-z0-9_-]{19,}[A-Za-z0-9_](?-u:\b)";
 // ubs:ignore[rust.security.hardcoded-secrets] — secret detection regex pattern, not a credential
-pub(crate) const BEARER_TOKEN_PATTERN: &str = r"(?i)(?-u:\b)Bearer[ \t]+[A-Za-z0-9._~+/=-]{8,}";
-pub(crate) const JWT_PATTERN: &str =
+pub const BEARER_TOKEN_PATTERN: &str = r"(?i)(?-u:\b)Bearer[ \t]+[A-Za-z0-9._~+/=-]{8,}";
+pub const JWT_PATTERN: &str =
     r"(?-u:\b)eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+(?-u:\b)";
-pub(crate) const PRIVATE_KEY_BLOCK_PATTERN: &str = concat!(
+pub const PRIVATE_KEY_BLOCK_PATTERN: &str = concat!(
     r"(?s)(?:",
     r"-----BEGIN RSA PRIVATE KEY-----.*?(?:-----END RSA PRIVATE KEY-----|\z)|", // ubs:ignore — public key-block regex, not embedded credentials.
     r"-----BEGIN EC PRIVATE KEY-----.*?(?:-----END EC PRIVATE KEY-----|\z)|", // ubs:ignore — public key-block regex, not embedded credentials.
@@ -163,12 +163,12 @@ pub(crate) const PRIVATE_KEY_BLOCK_PATTERN: &str = concat!(
     r"-----BEGIN PGP PRIVATE KEY BLOCK-----.*?(?:-----END PGP PRIVATE KEY BLOCK-----|\z)", // ubs:ignore — public key-block regex, not embedded credentials.
     r")",
 );
-pub(crate) const DATABASE_URL_PATTERN: &str =
+pub const DATABASE_URL_PATTERN: &str =
     r#"(?i)(?-u:\b)(postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s'"]{8,}"#;
-pub(crate) const GENERIC_SECRET_ASSIGNMENT_PATTERN: &str = r#"(?i)(?-u:\b)(?:api[ _-]?(?:key|secret|token)|auth[ _-]?token|access[ _-]?(?:token|key)|secret[ _-]?key|session[ _-]?token|password|passwd|passphrase|token|secret|authorization)\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n]){4,}"|'(?:\\.|[^'\\\r\n]){4,}'|[^\s,;}\]]{8,})"#;
+pub const GENERIC_SECRET_ASSIGNMENT_PATTERN: &str = r#"(?i)(?-u:\b)(?:api[ _-]?(?:key|secret|token)|auth[ _-]?token|access[ _-]?(?:token|key)|secret[ _-]?key|session[ _-]?token|password|passwd|passphrase|token|secret|authorization)\s*[:=]\s*(?:"(?:\\.|[^"\\\r\n]){4,}"|'(?:\\.|[^'\\\r\n]){4,}'|[^\s,;}\]]{8,})"#;
 // ubs:ignore[rust.security.hardcoded-secrets] — secret detection regex pattern, not a credential
-pub(crate) const SLACK_TOKEN_PATTERN: &str = r"(?-u:\b)xox[bpsaor]-[A-Za-z0-9\-]{10,}";
-pub(crate) const STRIPE_KEY_PATTERN: &str = r"(?-u:\b)[spr]k_live_[A-Za-z0-9]{20,}";
+pub const SLACK_TOKEN_PATTERN: &str = r"(?-u:\b)xox[bpsaor]-[A-Za-z0-9\-]{10,}";
+pub const STRIPE_KEY_PATTERN: &str = r"(?-u:\b)[spr]k_live_[A-Za-z0-9]{20,}";
 
 /// All built-in patterns, compiled once on first use.
 static SECRET_PATTERNS: Lazy<Vec<SecretPattern>> = Lazy::new(|| {
@@ -285,7 +285,7 @@ fn apply_replacements<'a>(input: &'a str, matches: &regex::SetMatches) -> Cow<'a
 /// whose distinct source key redacted to the same placeholder. Generated
 /// suffixes contain only public punctuation/digits, so collision handling
 /// never reintroduces source-key bytes.
-pub(crate) fn insert_redacted_json_entry(
+pub fn insert_redacted_json_entry(
     object: &mut serde_json::Map<String, serde_json::Value>,
     next_suffixes: &mut HashMap<String, usize>,
     redacted_key: String,
@@ -392,6 +392,7 @@ fn redaction_enabled_from_values(modern: Option<&str>, legacy: Option<&str>) -> 
             "" => {}
             other => {
                 tracing::warn!(
+                    target: "coding_agent_search::resource_plan::redact_secrets",
                     value = %other,
                     "unrecognized CASS_INDEX_REDACTION value; defaulting to full redaction"
                 );
@@ -454,11 +455,10 @@ pub fn redaction_algorithm_fingerprint() -> String {
 /// returned directly; on miss, the legacy regex path runs. Retention is
 /// optional: byte-pressure refusal never skips or truncates redaction.
 ///
-/// `MemoizingRedactor` is `pub(crate)` so the live persist path can
-/// adopt it without leaking the memoization vocabulary into public
-/// API. Wiring lives in the indexer crate.
+/// Public across the cass-model boundary for persist-path consumers.
+/// Wiring lives in the indexer crate.
 #[allow(dead_code)]
-pub(crate) struct MemoizingRedactor {
+pub struct MemoizingRedactor {
     text_cache: super::memoization::ContentAddressedMemoCache<String>,
     algorithm_fingerprint: String,
     retention: Arc<MemoRetentionBudget>,
@@ -469,16 +469,16 @@ pub(crate) struct MemoizingRedactor {
 impl MemoizingRedactor {
     /// Default per-owner entry ceiling. Production owners additionally share
     /// REDACTION_RETAINED_VALUE_BYTES, regardless of their number or capacity.
-    pub(crate) const DEFAULT_CAPACITY: usize = 4096;
+    pub const DEFAULT_CAPACITY: usize = 4096;
 
     /// Inputs above this size bypass memoization entirely. Smaller inputs
     /// still need byte admission for their actual owned output buffer; this
     /// per-input cutoff alone is not an aggregate cache-memory bound.
-    pub(crate) const MAX_MEMOIZED_INPUT_BYTES: usize = 64 * 1024;
+    pub const MAX_MEMOIZED_INPUT_BYTES: usize = 64 * 1024;
 
     /// Explicit isolated cache for callers such as equivalence tests and the
     /// fuzz adapter. Live persistence workers use new(), sharing one allowance.
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self {
         Self::with_retention_budget(
             capacity,
             MemoRetentionBudget::new(REDACTION_RETAINED_VALUE_BYTES),
@@ -498,7 +498,7 @@ impl MemoizingRedactor {
         }
     }
 
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::with_retention_budget(
             Self::configured_capacity(),
             Arc::clone(&REDACTION_RETENTION),
@@ -509,7 +509,7 @@ impl MemoizingRedactor {
     /// `CASS_REDACT_MEMO_CAPACITY` override (#291). Raising it never bypasses
     /// the shared byte allowance. A `0`, empty, or unparseable value falls
     /// back to the default.
-    pub(crate) fn configured_capacity() -> usize {
+    pub fn configured_capacity() -> usize {
         dotenvy::var("CASS_REDACT_MEMO_CAPACITY")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
@@ -529,11 +529,11 @@ impl MemoizingRedactor {
         }
     }
 
-    pub(crate) fn algorithm_fingerprint(&self) -> &str {
+    pub fn algorithm_fingerprint(&self) -> &str {
         &self.algorithm_fingerprint
     }
 
-    pub(crate) fn stats(&self) -> &super::memoization::MemoCacheStats {
+    pub fn stats(&self) -> &super::memoization::MemoCacheStats {
         self.text_cache.stats()
     }
 
@@ -547,7 +547,7 @@ impl MemoizingRedactor {
     /// behavior from logs alone (per `coding_agent_session_search-ibuuh.34`
     /// AC: "operator-auditable through structured hit, miss,
     /// invalidation, eviction, quarantine, and budget logs").
-    pub(crate) fn redact_text(&mut self, input: &str) -> String {
+    pub fn redact_text(&mut self, input: &str) -> String {
         let (output, _audit) = self.redact_text_with_audit(input);
         output
     }
@@ -558,7 +558,7 @@ impl MemoizingRedactor {
     /// subscriber (telemetry sink, doctor diagnostics, etc.) use this
     /// directly; the convenience `redact_text` wrapper drops them
     /// after emitting tracing events.
-    pub(crate) fn redact_text_with_audit(
+    pub fn redact_text_with_audit(
         &mut self,
         input: &str,
     ) -> (String, Vec<super::memoization::MemoCacheAuditRecord>) {
@@ -607,6 +607,7 @@ impl MemoizingRedactor {
                 // inspection until explicitly lifted via
                 // `lift_quarantine_for`).
                 tracing::warn!(
+                    target: "coding_agent_search::resource_plan::redact_secrets",
                     quarantine_reason = %reason,
                     algorithm = %self.algorithm_fingerprint,
                     "redaction memo entry is quarantined; falling back to direct regex pass"
@@ -628,7 +629,7 @@ impl MemoizingRedactor {
     /// underlying `ContentAddressedMemoCache` contract). Mostly
     /// useful for tests and for operator tooling that wants to bust
     /// individual cache entries without restarting the process.
-    pub(crate) fn invalidate(&mut self, input: &str) -> bool {
+    pub fn invalidate(&mut self, input: &str) -> bool {
         if input.is_empty() {
             return false;
         }
@@ -642,7 +643,7 @@ impl MemoizingRedactor {
     /// [`super::memoization::MemoLookup::Quarantined`] (handled by
     /// `redact_text` as a fallthrough to the direct regex path) instead of the
     /// cached value. Memory pressure never lifts a quarantine.
-    pub(crate) fn quarantine(&mut self, input: &str, reason: impl Into<String>) {
+    pub fn quarantine(&mut self, input: &str, reason: impl Into<String>) {
         if input.is_empty() {
             return;
         }
@@ -712,7 +713,7 @@ impl MemoizingRedactor {
     /// independently — JSON arrays / objects themselves are not
     /// cached because their structural identity dominates compared to
     /// per-string regex cost.
-    pub(crate) fn redact_json(&mut self, value: &serde_json::Value) -> serde_json::Value {
+    pub fn redact_json(&mut self, value: &serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::String(s) => serde_json::Value::String(self.redact_text(s)),
             serde_json::Value::Array(arr) => {

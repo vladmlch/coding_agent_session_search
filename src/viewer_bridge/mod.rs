@@ -7,6 +7,10 @@
 //! The watchdog remains only as the last-resort backstop for a request that
 //! stops making progress: it fires [`deadline::BACKSTOP_GRACE_MS`] past the
 //! same deadline and exits 70.
+#[cfg(not(test))]
+use coding_agent_search::dependency_pin_correlation::build_metadata::current as current_build_metadata;
+#[cfg(test)]
+use coding_agent_search::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
 mod analytics;
 mod annotations;
 mod catalog;
@@ -702,7 +706,7 @@ impl Session {
         let write_privilege = self.write_enabled && extension.installed;
         Ok(json!({
             "bridge_protocol":1,"cass_crate_version":env!("CARGO_PKG_VERSION"),
-            "cass_build_commit":coding_agent_search::dependency_pin_correlation::build_metadata::BuildMetadata::current().build_commit.unwrap_or("unknown"),
+            "cass_build_commit":current_build_metadata().build_commit.unwrap_or("unknown"),
             "source_api_version":1,"source_contract_version":"1","db_schema_version":reader::STRICT_SCHEMA_VERSION,
             "db_path":stamp.canonical_path,"data_dir":self.data_dir,
             "archive_stamp":stamp,"catalog_revision":revision,"worker_epoch":self.worker_epoch,

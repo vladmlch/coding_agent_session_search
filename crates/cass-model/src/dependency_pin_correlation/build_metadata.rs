@@ -23,7 +23,7 @@ static REGISTERED: OnceLock<BuildMetadata> = OnceLock::new();
 
 /// Fail-closed default used in `--lib` unit tests when no thread-local
 /// override is installed.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub const ISOLATED_TEST_DEFAULT: BuildMetadata = BuildMetadata {
     ingest_contract: "isolated_unit_test",
     ingest_reuse: false,
@@ -35,7 +35,7 @@ pub const ISOLATED_TEST_DEFAULT: BuildMetadata = BuildMetadata {
 
 /// Pinned test metadata for `--lib` unit tests that explicitly exercise
 /// `ingest_reuse: true` on their own thread.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub const PINNED_TEST_METADATA: BuildMetadata = BuildMetadata {
     ingest_contract: "pinned_unit_test_contract",
     ingest_reuse: true,
@@ -45,7 +45,7 @@ pub const PINNED_TEST_METADATA: BuildMetadata = BuildMetadata {
     git_sha: None,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static TEST_OVERRIDE: std::cell::Cell<Option<&'static BuildMetadata>> =
         const { std::cell::Cell::new(None) };
@@ -53,10 +53,10 @@ thread_local! {
 
 /// RAII guard restoring the previous thread-local [`BuildMetadata`] override
 /// on drop.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct TestBuildMetadataGuard(Option<&'static BuildMetadata>);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for TestBuildMetadataGuard {
     fn drop(&mut self) {
         let previous = self.0;
@@ -66,18 +66,33 @@ impl Drop for TestBuildMetadataGuard {
 
 /// Install a thread-local [`BuildMetadata`] override for the lifetime of the
 /// returned RAII guard.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn install_thread_local_test_metadata(meta: &'static BuildMetadata) -> TestBuildMetadataGuard {
     let previous = TEST_OVERRIDE.with(|slot| slot.replace(Some(meta)));
     TestBuildMetadataGuard(previous)
 }
 
+/// Registered metadata for ordinary library/binary consumers.
+pub fn current() -> &'static BuildMetadata {
+    BuildMetadata::current()
+}
+
+/// Unit-test-only access; never writes defaults into REGISTERED.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn current_for_unit_test() -> &'static BuildMetadata {
+    TEST_OVERRIDE
+        .with(std::cell::Cell::get)
+        .or_else(|| REGISTERED.get())
+        .unwrap_or(&ISOLATED_TEST_DEFAULT)
+}
+
 impl BuildMetadata {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub const ISOLATED_TEST_DEFAULT: Self = ISOLATED_TEST_DEFAULT;
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub const PINNED_TEST_METADATA: Self = PINNED_TEST_METADATA;
 
     /// Register process-wide build metadata idempotently.
@@ -110,10 +125,7 @@ impl BuildMetadata {
     /// global state.
     #[cfg(test)]
     pub fn current() -> &'static BuildMetadata {
-        TEST_OVERRIDE
-            .with(std::cell::Cell::get)
-            .or_else(|| REGISTERED.get())
-            .unwrap_or(&ISOLATED_TEST_DEFAULT)
+        current_for_unit_test()
     }
 }
 
@@ -137,4 +149,32 @@ mod tests {
         }
         assert_eq!(BuildMetadata::current(), &ISOLATED_TEST_DEFAULT);
     }
+    #[test]
+    fn nested_guards_and_unwind_restore_previous_metadata() {
+        let pinned = install_thread_local_test_metadata(&PINNED_TEST_METADATA);
+        assert_eq!(current_for_unit_test(), &PINNED_TEST_METADATA);
+        let isolated = install_thread_local_test_metadata(&ISOLATED_TEST_DEFAULT);
+        assert_eq!(current_for_unit_test(), &ISOLATED_TEST_DEFAULT);
+        drop(isolated);
+        assert_eq!(current_for_unit_test(), &PINNED_TEST_METADATA);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _nested = install_thread_local_test_metadata(&ISOLATED_TEST_DEFAULT);
+            panic!("forced unwind");
+        }));
+        assert!(result.is_err());
+        assert_eq!(current_for_unit_test(), &PINNED_TEST_METADATA);
+        drop(pinned);
+        assert_eq!(current_for_unit_test(), &ISOLATED_TEST_DEFAULT);
+    }
+
+    #[test]
+    fn second_thread_without_guard_sees_isolated_default() {
+        let _pinned = install_thread_local_test_metadata(&PINNED_TEST_METADATA);
+        let observed = std::thread::spawn(|| *current_for_unit_test())
+            .join()
+            .expect("observer thread");
+        assert_eq!(observed, ISOLATED_TEST_DEFAULT);
+        assert!(REGISTERED.get().is_none() || REGISTERED.get() != Some(&ISOLATED_TEST_DEFAULT));
+    }
+
 }

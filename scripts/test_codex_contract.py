@@ -45,6 +45,31 @@ def toml_value(value: object) -> str:
     raise ValueError(f"unsupported Cargo dependency value type: {type(value).__name__}")
 
 
+def resolve_workspace_dependency(
+    name: str, specification: str | dict, workspace_dependencies: dict,
+) -> str | dict:
+    """Resolve Cargo `{ workspace = true }` without dropping inherited identity."""
+    if isinstance(specification, str) or specification.get("workspace") is not True:
+        return specification
+    local = dict(specification)
+    local.pop("workspace")
+    inherited = workspace_dependencies.get(name)
+    if inherited is None:
+        raise ValueError(f"{name}: no matching [workspace.dependencies] entry")
+    merged = {"version": inherited} if isinstance(inherited, str) else dict(inherited)
+    forbidden = {"version", "git", "rev", "path", "package"} & set(local)
+    if forbidden:
+        raise ValueError(
+            f"{name}: local workspace dependency overrides {', '.join(sorted(forbidden))}"
+        )
+    inherited_features = list(merged.get("features", []))
+    local_features = list(local.pop("features", []))
+    if inherited_features or local_features:
+        merged["features"] = list(dict.fromkeys([*inherited_features, *local_features]))
+    merged.update(local)
+    return merged
+
+
 def dependency_for_harness(
     name: str, specification: str | dict, root: Path,
     fad_checkout: Path | None, fad_version: str,
@@ -135,8 +160,10 @@ def main() -> None:
             "path = " + json.dumps((root / f"tests/{test}.rs").as_posix(), ensure_ascii=False),
         ])
     lines.extend(["", "[dependencies]"])
+    workspace_dependencies = manifest.get("workspace", {}).get("dependencies", {})
     for name in names:
         spec = dependencies[name] if name in dependencies else manifest["dev-dependencies"][name]
+        spec = resolve_workspace_dependency(name, spec, workspace_dependencies)
         lines.append(dependency_for_harness(name, spec, root, fad_checkout, fad_version))
     lines.extend(["", "[lints.rust]", 'unsafe_code = "forbid"', ""])
 

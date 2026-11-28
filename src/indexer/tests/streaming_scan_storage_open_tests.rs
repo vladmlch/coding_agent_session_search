@@ -1,3 +1,4 @@
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test;
 use super::super::*;
 use super::helpers::*;
 use crate::connectors::ScanContext;
@@ -580,7 +581,7 @@ fn gh426_source_observation_rejects_same_size_restored_mtime_rewrite() {
     .with_fs_metadata();
     let before = source_file_observation(&path).unwrap();
     let saved=serde_json::json!({"primary":before,"dependencies":[source_file_observation(temp.path()).unwrap()],
-        "producer_contract":crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract}).to_string();
+        "producer_contract":current_for_unit_test().ingest_contract}).to_string();
     std::thread::sleep(Duration::from_millis(2));
     std::fs::write(&path, b"after!").unwrap();
     std::fs::OpenOptions::new()
@@ -614,7 +615,7 @@ fn gh426_source_observation_rejects_changed_primary_sidecar_and_new_dependency()
     .with_fs_metadata();
     let snapshot = || {
         serde_json::json!({"primary":source_file_observation(&path).unwrap(),
-        "producer_contract":crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract,
+        "producer_contract":current_for_unit_test().ingest_contract,
         "dependencies":[source_file_observation(temp.path()).unwrap(),source_file_observation(&sidecar).unwrap()]}).to_string()
     };
     let saved = snapshot();

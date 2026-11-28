@@ -148,6 +148,19 @@ mod tests {
     }
 
     #[test]
+    fn real_workspace_resolves_moved_model_source_without_root_shim() {
+        let root = workspace_root();
+        assert!(root.join("Cargo.lock").is_file());
+        assert!(root.join("src/main.rs").is_file());
+        let resolved = resolve_workspace_source_file(&root, "src/model/cli_error.rs");
+        assert_eq!(
+            resolved,
+            root.join("crates/cass-model/src/model/cli_error.rs")
+        );
+        assert!(resolved.is_file());
+    }
+
+    #[test]
     fn resolves_workspace_root_from_member_crate_dir() {
         let tmp = TempRoot::new();
         tmp.write(

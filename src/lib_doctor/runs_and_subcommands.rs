@@ -1,3 +1,7 @@
+#[cfg(not(test))]
+use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
+#[cfg(test)]
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
 #[allow(unused_imports)]
 use crate::franken_sync::compat::{
     ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
@@ -157,7 +161,7 @@ pub(crate) fn run_doctor_undo(
 
     // Best-effort: identify the cass build sha for the new undo run id. If
     // unavailable (development build), use a sentinel that hashes deterministically.
-    let target_sha = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current()
+    let target_sha = current_build_metadata()
         .git_sha
         .unwrap_or("unknown");
 

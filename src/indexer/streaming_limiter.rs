@@ -1,3 +1,7 @@
+#[cfg(not(test))]
+use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
+#[cfg(test)]
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
 use super::*;
 #[cfg(test)]
 use std::iter::Peekable;
@@ -675,7 +679,7 @@ pub(in crate::indexer) fn source_ledger_matches(
     source_ledger_matches_with_contract(
         observation,
         source,
-        crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract,
+        current_build_metadata().ingest_contract,
     )
 }
 
@@ -745,7 +749,7 @@ pub(in crate::indexer) fn scan_with_durable_source_boundaries(
     sender: &mut StreamingBatchSender<'_>,
     mut prepare: impl FnMut(NormalizedConversation) -> Result<Option<NormalizedConversation>>,
 ) -> Result<()> {
-    let build_meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
+    let build_meta = current_build_metadata();
     let producer_contract =
         WorkspaceExclusions::from_env()?.bind_contract(build_meta.ingest_contract);
     if !connector.supports_source_boundaries() {

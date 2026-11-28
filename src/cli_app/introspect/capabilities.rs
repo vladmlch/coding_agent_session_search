@@ -1,3 +1,7 @@
+#[cfg(not(test))]
+use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
+#[cfg(test)]
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
 #[allow(unused_imports)]
 use crate::franken_sync::compat::{
     ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
@@ -54,7 +58,7 @@ impl SourceIngestReuseCapability {
     #[allow(dead_code)]
     pub(crate) fn compiled() -> Self {
         Self::compiled_with_metadata(
-            crate::dependency_pin_correlation::build_metadata::BuildMetadata::current(),
+            current_build_metadata(),
         )
     }
 
@@ -1253,7 +1257,7 @@ pub(crate) fn build_mistake_recovery_capabilities() -> Vec<MistakeRecoveryCapabi
 
 /// Discover the first-stop self-description contract for agent introspection.
 pub(crate) fn run_capabilities(output_format: Option<RobotFormat>) -> CliResult<()> {
-    let meta = crate::dependency_pin_correlation::build_metadata::BuildMetadata::current();
+    let meta = current_build_metadata();
     let crate_version = env!("CARGO_PKG_VERSION").to_string();
     let response = CapabilitiesResponse {
         version: crate_version.clone(),

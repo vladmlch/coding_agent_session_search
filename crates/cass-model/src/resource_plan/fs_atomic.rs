@@ -48,7 +48,7 @@ fn path_to_cstring(path: &Path) -> Result<CString> {
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-pub(crate) fn atomic_exchange_paths(left: &Path, right: &Path) -> Result<()> {
+pub fn atomic_exchange_paths(left: &Path, right: &Path) -> Result<()> {
     let left_c = path_to_cstring(left)?;
     let right_c = path_to_cstring(right)?;
     // SAFETY: both paths are valid NUL-terminated C strings that outlive the
@@ -76,7 +76,7 @@ pub(crate) fn atomic_exchange_paths(left: &Path, right: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn linux_atomic_exchange_is_unsupported(error: &anyhow::Error) -> bool {
+pub fn linux_atomic_exchange_is_unsupported(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()

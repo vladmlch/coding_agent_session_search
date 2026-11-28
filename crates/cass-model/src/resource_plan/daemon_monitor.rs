@@ -85,7 +85,8 @@ impl ResourceMonitor {
                 0
             }
             Err(e) => {
-                debug!(error = %e, "Failed to read /proc/self/statm");
+                debug!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",error = %e, "Failed to read /proc/self/statm");
                 0
             }
         }
@@ -110,6 +111,7 @@ impl ResourceMonitor {
         {
             if !(-20..=19).contains(&nice_value) {
                 warn!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",
                     nice = nice_value,
                     "Refusing out-of-range nice value (valid range: -20..=19)"
                 );
@@ -127,11 +129,13 @@ impl ResourceMonitor {
             };
             if result != 0 {
                 let err = std::io::Error::last_os_error();
-                warn!(nice = nice_value, error = %err, "Failed to set nice value");
+                warn!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",nice = nice_value, error = %err, "Failed to set nice value");
                 return false;
             }
 
             debug!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",
                 nice = nice_value,
                 pid = self.pid,
                 "Applied absolute nice value"
@@ -141,7 +145,8 @@ impl ResourceMonitor {
 
         #[cfg(not(unix))]
         {
-            debug!(nice = nice_value, "nice not supported on this platform");
+            debug!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",nice = nice_value, "nice not supported on this platform");
             let _ = nice_value;
             false
         }
@@ -161,6 +166,7 @@ impl ResourceMonitor {
         {
             if class > 3 {
                 warn!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",
                     class = class,
                     "Refusing unsupported ionice class (valid classes: 0..=3)"
                 );
@@ -175,11 +181,13 @@ impl ResourceMonitor {
             {
                 Ok(output) => {
                     if output.status.success() {
-                        debug!(class = class, pid = self.pid, "Applied ionice class");
+                        debug!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",class = class, pid = self.pid, "Applied ionice class");
                         true
                     } else {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         warn!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",
                             class = class,
                             error = %stderr,
                             "ionice command failed"
@@ -188,7 +196,8 @@ impl ResourceMonitor {
                     }
                 }
                 Err(e) => {
-                    warn!(error = %e, "ionice command not available");
+                    warn!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",error = %e, "ionice command not available");
                     false
                 }
             }
@@ -196,7 +205,8 @@ impl ResourceMonitor {
 
         #[cfg(not(target_os = "linux"))]
         {
-            debug!(class = class, "ionice not supported on this platform");
+            debug!(
+                    target: "coding_agent_search::resource_plan::daemon_monitor",class = class, "ionice not supported on this platform");
             let _ = class;
             false
         }

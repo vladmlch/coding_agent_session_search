@@ -1,3 +1,4 @@
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test;
 use super::super::*;
 use super::helpers::*;
 use crate::connectors::{DetectionResult, NormalizedConversation, NormalizedMessage, ScanContext};
@@ -225,7 +226,7 @@ fn gh537_workspace_excluded_source_keeps_reusable_completion_without_rows() -> R
     )
     .with_fs_metadata();
     let contract = WorkspaceExclusions::from_env()?.bind_contract(
-        crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract,
+        current_for_unit_test().ingest_contract,
     );
     let completion = crate::storage::sqlite::SourceIngestLedgerEntry {
         key: "source_ingest_v1:workspace-excluded".into(),
@@ -260,7 +261,7 @@ fn gh537_workspace_excluded_source_keeps_reusable_completion_without_rows() -> R
     assert!(!source_ledger_matches_with_contract(
         saved,
         &source,
-        crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract
+        current_for_unit_test().ingest_contract
     ));
     {
         let _removed = set_env("CASS_EXCLUDE_WORKSPACES", "");
@@ -578,7 +579,7 @@ fn gh537_shared_raw_exclusions_preserve_sibling_ingest_and_completion() -> Resul
         observation: serde_json::json!({
             "primary": source_file_observation(&source_path),
             "dependencies": [],
-            "producer_contract": crate::dependency_pin_correlation::build_metadata::BuildMetadata::current().ingest_contract,
+            "producer_contract": current_for_unit_test().ingest_contract,
         })
         .to_string(),
     };
