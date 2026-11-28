@@ -928,10 +928,7 @@ pub(crate) fn execute_doctor_repairs_and_cleanup(
         // Journaling is best-effort: if the run-dir cannot be created we still
         // run the cleanup (the FsMutationExecutor itself is the safety gate),
         // we just lose the post-hoc observability for this invocation.
-        let target_sha =
-            current_build_metadata()
-                .git_sha
-                .unwrap_or("unknown");
+        let target_sha = current_build_metadata().git_sha.unwrap_or("unknown");
         let journal_run_id = crate::doctor_runs::RunId::new(target_sha);
         let journal_run_id_str = journal_run_id.as_str().to_string();
         let journal_run_dir = match crate::doctor_runs::create_run_dir(&data_dir, &journal_run_id) {

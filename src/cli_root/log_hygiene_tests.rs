@@ -796,8 +796,8 @@ fn moved_memo_trim_preserves_trace_target_and_filters() -> TraceTestResult {
                 .boxed()
         } else {
             let filter_state = Arc::clone(&writer.state);
-            let filter = tracing_subscriber::filter::dynamic_filter_fn(
-                move |metadata, _context| {
+            let filter =
+                tracing_subscriber::filter::dynamic_filter_fn(move |metadata, _context| {
                     let enabled = default_trace_metadata_enabled(metadata);
                     if !enabled
                         && metadata.is_event()
@@ -806,9 +806,8 @@ fn moved_memo_trim_preserves_trace_target_and_filters() -> TraceTestResult {
                         state.record_filtered(metadata.target());
                     }
                     enabled
-                },
-            )
-            .with_max_level_hint(tracing_subscriber::filter::LevelFilter::DEBUG);
+                })
+                .with_max_level_hint(tracing_subscriber::filter::LevelFilter::DEBUG);
             tracing_subscriber::fmt::layer()
                 .json()
                 .with_writer(writer)

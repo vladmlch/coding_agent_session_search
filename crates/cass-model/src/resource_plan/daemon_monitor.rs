@@ -187,11 +187,11 @@ impl ResourceMonitor {
                     } else {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         warn!(
-                    target: "coding_agent_search::resource_plan::daemon_monitor",
-                            class = class,
-                            error = %stderr,
-                            "ionice command failed"
-                        );
+                        target: "coding_agent_search::resource_plan::daemon_monitor",
+                                class = class,
+                                error = %stderr,
+                                "ionice command failed"
+                            );
                         false
                     }
                 }

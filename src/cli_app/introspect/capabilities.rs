@@ -57,9 +57,7 @@ pub struct SourceIngestReuseCapability {
 impl SourceIngestReuseCapability {
     #[allow(dead_code)]
     pub(crate) fn compiled() -> Self {
-        Self::compiled_with_metadata(
-            current_build_metadata(),
-        )
+        Self::compiled_with_metadata(current_build_metadata())
     }
 
     pub(crate) fn compiled_with_metadata(

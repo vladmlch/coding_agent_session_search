@@ -31,10 +31,9 @@ fn metadata_child() {
     assert_eq!(BuildMetadata::current(), &CHILD_META);
     assert_eq!(current(), &CHILD_META);
     BuildMetadata::register_idempotent(CHILD_META);
-    assert!(std::panic::catch_unwind(|| {
-        BuildMetadata::register_idempotent(CONFLICT_META)
-    })
-    .is_err());
+    assert!(
+        std::panic::catch_unwind(|| { BuildMetadata::register_idempotent(CONFLICT_META) }).is_err()
+    );
     assert_eq!(BuildMetadata::current(), &CHILD_META);
     println!("metadata child contract complete");
 }

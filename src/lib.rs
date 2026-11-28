@@ -9,9 +9,9 @@
 extern crate self as coding_agent_search;
 
 pub use cass_model::{
-    daemon_runtime_state, dependency_pin_correlation, evidence_bundle, model,
-    perf_evidence, resource_plan, robot_budget_envelope, root_cause_taxonomy,
-    search_defaults, subsystem_coverage_matrix, time_parser,
+    daemon_runtime_state, dependency_pin_correlation, evidence_bundle, model, perf_evidence,
+    resource_plan, robot_budget_envelope, root_cause_taxonomy, search_defaults,
+    subsystem_coverage_matrix, time_parser,
 };
 
 pub mod bookmarks;

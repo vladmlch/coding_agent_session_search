@@ -1,8 +1,8 @@
+use super::*;
 #[cfg(not(test))]
 use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
 #[cfg(test)]
 use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
-use super::*;
 #[cfg(test)]
 use std::iter::Peekable;
 

@@ -1,7 +1,7 @@
-use crate::dependency_pin_correlation::build_metadata::current_for_unit_test;
 use super::super::*;
 use super::helpers::*;
 use crate::connectors::{DetectionResult, NormalizedConversation, NormalizedMessage, ScanContext};
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test;
 use serial_test::serial;
 use tempfile::TempDir;
 
@@ -225,9 +225,8 @@ fn gh537_workspace_excluded_source_keeps_reusable_completion_without_rows() -> R
         true,
     )
     .with_fs_metadata();
-    let contract = WorkspaceExclusions::from_env()?.bind_contract(
-        current_for_unit_test().ingest_contract,
-    );
+    let contract =
+        WorkspaceExclusions::from_env()?.bind_contract(current_for_unit_test().ingest_contract);
     let completion = crate::storage::sqlite::SourceIngestLedgerEntry {
         key: "source_ingest_v1:workspace-excluded".into(),
         observation: serde_json::json!({

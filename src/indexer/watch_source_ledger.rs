@@ -6,11 +6,11 @@
 //! batch. Recovery may then skip those sources even while a sibling retains
 //! root-wide replay debt.
 
+use super::*;
 #[cfg(not(test))]
 use crate::dependency_pin_correlation::build_metadata::current as current_build_metadata;
 #[cfg(test)]
 use crate::dependency_pin_correlation::build_metadata::current_for_unit_test as current_build_metadata;
-use super::*;
 use crate::franken_sync::compat::TransactionBehavior;
 use crate::storage::sqlite::SourceIngestLedgerEntry;
 use std::cell::{Cell, RefCell};
@@ -84,8 +84,7 @@ impl WatchSourceLedger {
         }
         let mut ctx = ctx.clone();
         ctx.since_ts = None;
-        let build_meta =
-            current_build_metadata();
+        let build_meta = current_build_metadata();
         let producer_contract =
             WorkspaceExclusions::from_env()?.bind_contract(build_meta.ingest_contract);
         // As in startup, a self-contained provider needs no second inventory

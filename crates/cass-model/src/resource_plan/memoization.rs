@@ -365,10 +365,7 @@ impl<V: Clone> ContentAddressedMemoCache<V> {
         self.get_with_audit(key).0
     }
 
-    pub fn get_with_audit(
-        &mut self,
-        key: &MemoKey,
-    ) -> (MemoLookup<V>, MemoCacheAuditRecord) {
+    pub fn get_with_audit(&mut self, key: &MemoKey) -> (MemoLookup<V>, MemoCacheAuditRecord) {
         self.trim_to_budget();
         if let Some(reason) = self.quarantined.get(key) {
             let lookup = MemoLookup::Quarantined {

@@ -176,5 +176,4 @@ mod tests {
         assert_eq!(observed, ISOLATED_TEST_DEFAULT);
         assert!(REGISTERED.get().is_none() || REGISTERED.get() != Some(&ISOLATED_TEST_DEFAULT));
     }
-
 }

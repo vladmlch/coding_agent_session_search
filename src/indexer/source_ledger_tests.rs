@@ -1,8 +1,8 @@
 //! GH512: use the production match and completion helpers, including a live
 //! pre-fix comparator in the workload-shaped ignored benchmark.
 
-use crate::dependency_pin_correlation::build_metadata::current_for_unit_test;
 use super::*;
+use crate::dependency_pin_correlation::build_metadata::current_for_unit_test;
 use std::hint::black_box;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
@@ -566,12 +566,7 @@ fn gh512_incumbent_source_ledger_matches(observation: &str, source: &DiscoveredS
     let Ok(saved) = serde_json::from_str::<serde_json::Value>(observation) else {
         return false;
     };
-    if saved["producer_contract"].as_str()
-        != Some(
-            current_for_unit_test()
-                .ingest_contract,
-        )
-    {
+    if saved["producer_contract"].as_str() != Some(current_for_unit_test().ingest_contract) {
         return false;
     }
     if saved["primary"] != source_file_observation(&source.source_path).unwrap_or_default() {
@@ -740,8 +735,7 @@ fn gh512_real_connectors_complete_during_growth_without_redundant_discovery() ->
             },
         )?;
         sender.flush()?;
-        let reusable = current_for_unit_test()
-            .ingest_reuse;
+        let reusable = current_for_unit_test().ingest_reuse;
         assert_eq!(rescanned, usize::from(!reusable), "{name}");
         assert_eq!(connector.discoveries.get(), 0);
         if reusable {

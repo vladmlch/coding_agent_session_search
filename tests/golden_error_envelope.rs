@@ -188,7 +188,11 @@ fn moved_model_error_sources_resolve_inside_cass_model() {
             "{rel} resolved outside cass-model: {}",
             resolved.display()
         );
-        assert!(resolved.is_file(), "{rel} missing at {}", resolved.display());
+        assert!(
+            resolved.is_file(),
+            "{rel} missing at {}",
+            resolved.display()
+        );
     }
 }
 
