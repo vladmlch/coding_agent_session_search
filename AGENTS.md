@@ -813,10 +813,15 @@ Provides unified full-text and semantic search across all local coding agent ses
 
 ```
 coding_agent_session_search/
-├── Cargo.toml                    # Single-crate project
+├── Cargo.toml                    # Workspace root package (`coding-agent-search`)
+├── crates/
+│   └── cass-model/               # Extracted L0 model crate (`cass-model`)
+│       ├── Cargo.toml            # Member manifest; shares workspace dependency pins
+│       └── src/
+│           └── model/            # Data models and CLI error-kind vocabulary
 ├── src/
 │   ├── main.rs                   # Entry point (binary: cass)
-│   ├── lib.rs                    # Library root
+│   ├── lib.rs                    # Library root + public facade re-exports for cass-model
 │   ├── connectors/               # Per-agent session parsers
 │   │   ├── mod.rs                # Connector trait + registry
 │   │   ├── claude_code.rs        # Claude Code sessions
@@ -868,7 +873,6 @@ coding_agent_session_search/
 │   ├── analytics/                # Usage analytics
 │   ├── daemon/                   # Background search daemon
 │   ├── sources/                  # Local source config/provenance (legacy-remote records stay readable)
-│   ├── model/                    # Data models
 │   ├── bookmarks.rs              # Session bookmarking
 │   ├── bakeoff.rs                # Embedder comparison tool
 │   ├── encryption.rs             # AES-GCM encryption
@@ -1067,7 +1071,7 @@ Returns in <50ms on a healthy archive (the archive probe is the same strict, mut
 
 Search/pack timeouts are not exit 8: on expiry `search` and `pack` exit 0 with `{"hits": [], "budget": {"timed_out": true, "skipped_sections": [...], "recommended_next_probe": "<command>", ...}}`; `--robot-format sessions` instead fails with exit 10, kind `timeout`. Explicit `--mode semantic` also fails with exit 10, kind `timeout`, retryable, when the budget cannot admit semantic setup or dispatch (ds7uy.4.1); hybrid falls back to lexical with `semantic_budget_limited`.
 
-**Codes ≥ 10 are domain-specific.** The numeric code alone is ambiguous (e.g. code 10 covers both `config` and `timeout` kinds). Agents should branch on `err.kind` from the JSON error envelope, not on the numeric code, when handling codes ≥ 10. Kind names are kebab-case (examples: `missing-index`, `missing-db`, `semantic-unavailable`, `embedder-unavailable`, `ambiguous-source`, `timeout`, `config`, `lock-busy`, `model`, `io`). The full set (about 90 kinds) lives in `src/model/cli_error_kind.rs`.
+**Codes ≥ 10 are domain-specific.** The numeric code alone is ambiguous (e.g. code 10 covers both `config` and `timeout` kinds). Agents should branch on `err.kind` from the JSON error envelope, not on the numeric code, when handling codes ≥ 10. Kind names are kebab-case (examples: `missing-index`, `missing-db`, `semantic-unavailable`, `embedder-unavailable`, `ambiguous-source`, `timeout`, `config`, `lock-busy`, `model`, `io`). The full set (about 90 kinds) lives in `crates/cass-model/src/model/cli_error_kind.rs`.
 
 ### Feature Flags
 

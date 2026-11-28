@@ -897,7 +897,7 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 }
 ```
 
-**Kind names** are kebab-case (e.g. `missing-index`, `missing-db`, `semantic-unavailable`, `embedder-unavailable`, `ambiguous-source`, `timeout`, `config`, `lock-busy`). Agents that branch on `err.kind` should treat them as stable identifiers. The full set (about 90 kinds) is defined in `src/model/cli_error_kind.rs`; the canonical way to discover a kind programmatically is to trigger the condition and inspect `err.kind` from the JSON envelope.
+**Kind names** are kebab-case (e.g. `missing-index`, `missing-db`, `semantic-unavailable`, `embedder-unavailable`, `ambiguous-source`, `timeout`, `config`, `lock-busy`). Agents that branch on `err.kind` should treat them as stable identifiers. The full set (about 90 kinds) is defined in `crates/cass-model/src/model/cli_error_kind.rs`; the canonical way to discover a kind programmatically is to trigger the condition and inspect `err.kind` from the JSON envelope.
 
 **Exit codes** follow a semantic convention:
 | Code | Meaning | Typical action |

@@ -8,7 +8,7 @@
 > by the process exit code plus the kebab-case `err.kind` in the JSON error
 > envelope. The exit codes are listed by `cass robot-docs exit-codes` and
 > under `exit_codes` in `cass capabilities --json`; the kind vocabulary (about
-> 90 values) lives in `src/model/cli_error_kind.rs`. Branch on `err.kind`,
+> 90 values) lives in `crates/cass-model/src/model/cli_error_kind.rs`. Branch on `err.kind`,
 > never on an `E` code.
 
 This document describes the Pages export error cases and provides guidance for resolution.
@@ -26,7 +26,7 @@ Error codes follow the format `E<category><number>`:
 
 The `E`-codes above belong to the Pages viewer. CLI failures are reported
 as `{"error": {"code", "kind", "message", "hint", "retryable"}}`; the full
-kind vocabulary lives in `src/model/cli_error_kind.rs` and in
+kind vocabulary lives in `crates/cass-model/src/model/cli_error_kind.rs` and in
 `tests/golden/robot/error_envelope_kinds.json.golden`. Kinds added by the
 local-only port:
 
