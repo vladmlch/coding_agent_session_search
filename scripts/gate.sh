@@ -588,6 +588,16 @@ if [ "${1:-}" = --verify-ubs ]; then
     echo "STAGE=ubs EXIT=${ubs_rc}"
     exit "$ubs_rc"
 fi
+# Exercise the default production/informational lane selection itself. The
+# shell regression suite uses isolated staged fixtures to prove member crates
+# are inside the blocking lane; no cargo stage runs here.
+if [ "${1:-}" = --verify-ubs-default ]; then
+    receipt_file="$(mktemp -t cass-gate-ubs-default.XXXXXX)"
+    run_ubs_default_lanes
+    ubs_rc=$?
+    echo "STAGE=ubs EXIT=${ubs_rc}"
+    exit "$ubs_rc"
+fi
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 cd "$PROJECT_ROOT" || exit 1

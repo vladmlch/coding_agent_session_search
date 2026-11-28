@@ -14,7 +14,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # These cases exercise the production batched-gate parsers directly. Inputs are
 # terminal-output fixtures, not substitute cargo/ubs executables or live proof.
 if [ "${1:-}" = --batched-only ] || [ "${1:-}" = --formatter-only ]; then
-    proof_dir="$(mktemp -d -t cass-gate-parser.XXXXXX)"
+    proof_dir="${GATE_TEST_PROOF_DIR:-$(mktemp -d -t cass-gate-parser.XXXXXX)}"
+    mkdir -p "$proof_dir"
     gate="$PROJECT_ROOT/scripts/gate.sh"
     pass=0
     fail=0
@@ -22,6 +23,7 @@ if [ "${1:-}" = --batched-only ] || [ "${1:-}" = --formatter-only ]; then
         local label="$1" expected="$2" actual=0
         shift 2
         "$@" > "$proof_dir/$label.log" 2>&1 || actual=$?
+        printf '%s\n' "$actual" > "$proof_dir/$label.rc"
         if [ "$actual" -eq "$expected" ]; then
             echo "PASS $label"
             pass=$((pass + 1))
@@ -154,6 +156,11 @@ PYFIX
     git -C "$scope_root" add scripts/gate.sh scripts/lib/run_cargo.sh scripts/ubs-version.txt .ubsignore
     git -C "$scope_root" -c user.name=gate-test -c user.email=gate-test@example.invalid \
         -c commit.gpgsign=false commit -q -m 'isolated gate scope baseline'
+    # Keep the production/test/member inputs staged but uncommitted: the
+    # default scanner lane uses git ls-files, while the changed-file scope
+    # probe still sees them as inputs relative to HEAD.
+    git -C "$scope_root" add src/production.rs tests/selected.rs \
+        crates/cass-model/Cargo.toml crates/cass-model/src/model.rs
     check_exit ubs-scope-printed 0 env GATE_BASE=HEAD bash "$scope_root/scripts/gate.sh" --print-ubs-files
     check_exit production-unwrap-still-selected 0 rg -x -F 'src/production.rs' "$proof_dir/ubs-scope-printed.log"
     check_exit test-source-still-selected 0 rg -x -F 'tests/selected.rs' "$proof_dir/ubs-scope-printed.log"
@@ -201,8 +208,13 @@ PYFIX
     check_exit source-state-captured 0 test -n "$state_head"
     check_exit source-diff-captured 0 test -n "$state_diff"
     check_exit source-content-captured 0 test -n "$state_content"
+    copy_scope_fixture() {
+        cp -R "$scope_root" "$1"
+    }
+    stability_root="$proof_dir/scope-stability-unchanged"
+    copy_scope_fixture "$stability_root"
     check_exit unchanged-tree-stable 0 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
-        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
+        _ "$stability_root" "$state_head" "$state_diff" "$state_content"
     check_exit unchanged-tree-reports-stage 0 rg -x -F 'STAGE=source-stability EXIT=0' "$proof_dir/unchanged-tree-stable.log"
 
     # A PATH without sha256sum still verifies sources via `shasum -a 256`.
@@ -249,33 +261,60 @@ PYFIX
         echo "SKIP unsupported-bash cases (/bin/bash is >= 4.4)"
     fi
 
-    # Editing a tracked input mid-run must fail source-stability.
-    printf '%s\n' '# mid-run probe edit' >> "$scope_root/scripts/gate.sh"
+    # Every mutation below starts from its own clean fixture copy. This keeps
+    # each negative case meaningful: a failure cannot be inherited from an
+    # earlier probe file or an earlier member edit. Each member case also gets
+    # its own unchanged positive control immediately before mutation.
+    modified_root="$proof_dir/scope-modified-input"
+    copy_scope_fixture "$modified_root"
+    printf '%s\n' '# mid-run probe edit' >> "$modified_root/scripts/gate.sh"
     check_exit modified-input-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
-        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
+        _ "$modified_root" "$state_head" "$state_diff" "$state_content"
     check_exit modified-input-reports-stage 0 rg -x -F 'STAGE=source-stability EXIT=1' "$proof_dir/modified-input-refused.log"
     check_exit modified-input-reason 0 rg -F 'working-tree diff changed' "$proof_dir/modified-input-refused.log"
-    git -C "$scope_root" checkout -q scripts/gate.sh
 
-    # A new untracked file mid-run must fail source-stability too.
-    printf '%s\n' 'pub fn late() {}' > "$scope_root/tests/late_probe.rs"
+    untracked_root="$proof_dir/scope-untracked-input"
+    copy_scope_fixture "$untracked_root"
+    printf '%s\n' 'pub fn late() {}' > "$untracked_root/tests/late_probe.rs"
     check_exit untracked-input-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
-        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
+        _ "$untracked_root" "$state_head" "$state_diff" "$state_content"
+    check_exit untracked-input-reason 0 rg -F 'working-tree diff changed' "$proof_dir/untracked-input-refused.log"
 
-    printf '%s\n' '// member mutation' >> "$scope_root/crates/cass-model/src/model.rs"
+    member_source_root="$proof_dir/scope-member-source"
+    copy_scope_fixture "$member_source_root"
+    check_exit member-source-unchanged-control 0 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
+        _ "$member_source_root" "$state_head" "$state_diff" "$state_content"
+    printf '%s\n' '// member mutation' >> "$member_source_root/crates/cass-model/src/model.rs"
+    member_source_state="$proof_dir/member-source-state.txt"
+    (cd "$member_source_root" && bash scripts/gate.sh --print-source-state) > "$member_source_state" 2>"$proof_dir/member-source-state.err"
+    member_source_content="$(sed -n 's/^SOURCE_CONTENT_SHA256=//p' "$member_source_state")"
+    check_exit member-source-content-digest-changed 0 test "$member_source_content" != "$state_content"
     check_exit member-input-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
-        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
-    printf '%s\n' '// member manifest mutation' >> "$scope_root/crates/cass-model/Cargo.toml"
+        _ "$member_source_root" "$state_head" "$state_diff" "$state_content"
+    check_exit member-input-reason 0 rg -F 'input content changed' "$proof_dir/member-input-refused.log"
+
+    member_manifest_root="$proof_dir/scope-member-manifest"
+    copy_scope_fixture "$member_manifest_root"
+    check_exit member-manifest-unchanged-control 0 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
+        _ "$member_manifest_root" "$state_head" "$state_diff" "$state_content"
+    printf '%s\n' '// member manifest mutation' >> "$member_manifest_root/crates/cass-model/Cargo.toml"
+    member_manifest_state="$proof_dir/member-manifest-state.txt"
+    (cd "$member_manifest_root" && bash scripts/gate.sh --print-source-state) > "$member_manifest_state" 2>"$proof_dir/member-manifest-state.err"
+    member_manifest_content="$(sed -n 's/^SOURCE_CONTENT_SHA256=//p' "$member_manifest_state")"
+    check_exit member-manifest-content-digest-changed 0 test "$member_manifest_content" != "$state_content"
     check_exit member-manifest-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
-        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
+        _ "$member_manifest_root" "$state_head" "$state_diff" "$state_content"
+    check_exit member-manifest-reason 0 rg -F 'input content changed' "$proof_dir/member-manifest-refused.log"
 
     # A commit mid-run moves HEAD.
-    printf '%s\n' 'pub fn committed() {}' > "$scope_root/src/committed.rs"
-    git -C "$scope_root" add src/committed.rs
-    git -C "$scope_root" -c user.name=gate-test -c user.email=gate-test@example.invalid \
+    moved_head_root="$proof_dir/scope-moved-head"
+    copy_scope_fixture "$moved_head_root"
+    printf '%s\n' 'pub fn committed() {}' > "$moved_head_root/src/committed.rs"
+    git -C "$moved_head_root" add src/committed.rs
+    git -C "$moved_head_root" -c user.name=gate-test -c user.email=gate-test@example.invalid \
         -c commit.gpgsign=false commit -q -m 'mid-run head move'
     check_exit moved-head-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
-        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
+        _ "$moved_head_root" "$state_head" "$state_diff" "$state_content"
     check_exit moved-head-reason 0 rg -F 'HEAD moved' "$proof_dir/moved-head-refused.log"
 
     # UBS is mandatory and pinned; missing or wrong bytes must fail the stage.
@@ -304,6 +343,98 @@ PYFIX
             check_exit ubs-pinned-install-accepted 0 env UBS_BIN="$test_ubs" \
                 UBS_MODULE_DIR="$UBS_MODULE_DIR" bash "$gate" --verify-ubs "$proof_dir/probe.rs"
             check_exit ubs-stage-reported 0 rg -x -F 'STAGE=ubs EXIT=0' "$proof_dir/ubs-pinned-install-accepted.log"
+
+            # Negative control for the workspace extraction: stage a forbidden
+            # production pattern inside a member crate, then scan exactly the
+            # files the pre-workspace root-only scanner would have scanned
+            # (`src/*.rs` / `src/**/*.rs`). The member file must be selected by
+            # the current default lane and rejected by the real pinned scanner,
+            # while the legacy scope must pass only because it never names the
+            # member file. The probe contains both an unsafe impl/block and an
+            # assert!: the unsafe shape is the regression being controlled and
+            # the regex-detected assert makes the blocking verdict independent
+            # of optional ast-grep availability.
+            if [ "$(cat "$proof_dir/ubs-pinned-install-accepted.rc")" -eq 0 ]; then
+                ubs_negative_root="$proof_dir/ubs-member-negative"
+                mkdir -p "$ubs_negative_root/scripts/lib" "$ubs_negative_root/src" \
+                    "$ubs_negative_root/crates/cass-model/src"
+                cp "$gate" "$ubs_negative_root/scripts/gate.sh"
+                cp "$PROJECT_ROOT/scripts/lib/run_cargo.sh" "$ubs_negative_root/scripts/lib/run_cargo.sh"
+                cp "$PROJECT_ROOT/scripts/ubs-version.txt" "$ubs_negative_root/scripts/ubs-version.txt"
+                cp "$PROJECT_ROOT/.ubsignore" "$ubs_negative_root/.ubsignore"
+                printf '%s\n' 'pub fn clean_root() -> u64 { 1 }' > "$ubs_negative_root/src/lib.rs"
+                cat > "$ubs_negative_root/crates/cass-model/src/unsafe_probe.rs" <<'RS'
+pub struct UnsafeProbe;
+
+unsafe impl Send for UnsafeProbe {}
+
+pub fn banned_pattern() {
+    unsafe {
+        assert!(false);
+    }
+}
+RS
+                git -C "$ubs_negative_root" init -q --initial-branch=main
+                git -C "$ubs_negative_root" add scripts/gate.sh scripts/lib/run_cargo.sh \
+                    scripts/ubs-version.txt .ubsignore src/lib.rs crates/cass-model/src/unsafe_probe.rs
+                check_exit ubs-negative-prod-list 0 bash -c \
+                    'cd "$1" && exec bash scripts/gate.sh --print-ubs-prod-files' _ "$ubs_negative_root"
+                check_exit ubs-negative-prod-list-includes-member 0 rg -x -F \
+                    'crates/cass-model/src/unsafe_probe.rs' "$proof_dir/ubs-negative-prod-list.log"
+                check_exit ubs-crates-negative-rejected 1 env UBS_BIN="$test_ubs" UBS_MODULE_DIR="$UBS_MODULE_DIR" \
+                    bash -c 'cd "$1" && exec bash scripts/gate.sh --verify-ubs-default' _ "$ubs_negative_root"
+                check_exit ubs-crates-negative-stage 0 rg -x -F 'STAGE=ubs EXIT=1' \
+                    "$proof_dir/ubs-crates-negative-rejected.log"
+                check_exit ubs-crates-negative-blocking-rule 0 rg -F \
+                    'gate: UBS blocking finding rule=rust.panic.assert-macros severity=warning' \
+                    "$proof_dir/ubs-crates-negative-rejected.log"
+
+                check_exit ubs-root-only-scanner-passes 0 bash -c '
+                    cd "$1" || exit 1
+                    legacy_files=()
+                    while IFS= read -r -d "" path; do
+                        legacy_files+=("$path")
+                    done < <(git ls-files -z -- "src/*.rs" "src/**/*.rs")
+                    [ "${#legacy_files[@]}" -gt 0 ] || exit 2
+                    printf "LEGACY_ROOT_ONLY_FILES=%s\n" "${legacy_files[*]}"
+                    bash "$2" --module-dir="$3" \
+                        --no-auto-update --only=rust --no-cargo --exclude-tests \
+                        --jobs=8 --format=text --also="jsonl:$4" \
+                        --all-occurrences --max-occurrences=100000 \
+                        --ci --fail-on-warning "${legacy_files[@]}"
+                ' _ "$ubs_negative_root" "$test_ubs" "$UBS_MODULE_DIR" "$proof_dir/ubs-root-only.jsonl"
+                check_exit ubs-root-only-file-list 0 rg -x -F \
+                    'LEGACY_ROOT_ONLY_FILES=src/lib.rs' "$proof_dir/ubs-root-only-scanner-passes.log"
+                check_exit ubs-root-only-missed-member 1 rg -F \
+                    'crates/cass-model/src/unsafe_probe.rs' "$proof_dir/ubs-root-only-scanner-passes.log"
+
+                member_probe_sha256="$(python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+                    "$ubs_negative_root/crates/cass-model/src/unsafe_probe.rs")"
+                current_negative_rc="$(cat "$proof_dir/ubs-crates-negative-rejected.rc")"
+                legacy_root_rc="$(cat "$proof_dir/ubs-root-only-scanner-passes.rc")"
+                printf -v current_negative_cmd 'cd %q && UBS_BIN=%q UBS_MODULE_DIR=%q bash scripts/gate.sh --verify-ubs-default' \
+                    "$ubs_negative_root" "$test_ubs" "$UBS_MODULE_DIR"
+                printf -v legacy_root_cmd 'cd %q && bash %q --module-dir=%q --no-auto-update --only=rust --no-cargo --exclude-tests --jobs=8 --format=text --also=jsonl:%q --all-occurrences --max-occurrences=100000 --ci --fail-on-warning src/lib.rs' \
+                    "$ubs_negative_root" "$test_ubs" "$UBS_MODULE_DIR" "$proof_dir/ubs-root-only.jsonl"
+                {
+                    echo 'UBS_CRATES_NEGATIVE_CONTROL=executed'
+                    echo "FIXTURE_ROOT=$ubs_negative_root"
+                    echo 'MEMBER_PROBE=crates/cass-model/src/unsafe_probe.rs'
+                    echo "MEMBER_PROBE_SHA256=$member_probe_sha256"
+                    echo 'UBS_RUNNER_SHA256=559d0ad9414ea94f4cb53e8499c19db4a4a20d8647f1ce8614347b79e26b510c'
+                    echo "CURRENT_BLOCKING_COMMAND=$current_negative_cmd"
+                    echo "CURRENT_BLOCKING_RC=$current_negative_rc"
+                    echo 'CURRENT_BLOCKING_RESULT=reject crates/cass-model production probe'
+                    echo "LEGACY_ROOT_ONLY_COMMAND=$legacy_root_cmd"
+                    echo "LEGACY_ROOT_ONLY_RC=$legacy_root_rc"
+                    echo 'LEGACY_ROOT_ONLY_RESULT=passes because member file is outside src-only scope'
+                    echo 'WIN=member-crate production files now enter the same pinned blocking UBS lane; the staged forbidden probe is rejected, closing the root-only blind spot'
+                    echo 'LOSE=no previously blocked root-production finding is admitted: scanner bytes, module pins, options and blocking-rule evaluation are unchanged; the legacy pass is scope absence rather than a new admission'
+                } > "$proof_dir/ubs-member-negative-control.txt"
+                cat "$proof_dir/ubs-member-negative-control.txt"
+            else
+                echo "SKIP crates negative control (pinned UBS acceptance probe failed)"
+            fi
         fi
     else
         echo "SKIP live UBS cases (no ubs on PATH and UBS_BIN unset)"
