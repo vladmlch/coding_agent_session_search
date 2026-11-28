@@ -703,6 +703,15 @@ fn dedicated_owner_safe_handles_are_send_and_sync() {
 }
 
 #[test]
+fn storage_and_writer_guard_preserve_sequential_send_ownership() {
+    fn assert_send<T: Send>() {}
+
+    assert_send::<FrankenStorage>();
+    assert_send::<SqliteStorage>();
+    assert_send::<WriterGuard<'static>>();
+}
+
+#[test]
 fn storage_source_forbids_manual_raw_connection_auto_trait_overrides() {
     fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)

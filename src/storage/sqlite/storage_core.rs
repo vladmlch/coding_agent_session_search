@@ -105,15 +105,27 @@ pub(crate) fn close_franken_in_place_with_busy_retry(
     unreachable!("close retry loop returns on the final attempt")
 }
 
-/// Thread-affine storage owning the primary raw connection and any cached raw
-/// ephemeral writer. Moving it to another OS thread must remain a compile-time
-/// error; use [`FrankenOwnerConnection`](super::connection_pool::FrankenOwnerConnection) for cross-thread reads instead.
+/// Storage owning the primary raw connection and any cached ephemeral writer.
+///
+/// The rusqlite-backed connection is `Send` but not `Sync`: ownership may move
+/// across OS threads sequentially, while unsynchronized shared access remains a
+/// compile-time error. Use
+/// [`FrankenOwnerConnection`](super::connection_pool::FrankenOwnerConnection)
+/// when a connection must be shared through a synchronized facade.
+///
+/// ```
+/// use coding_agent_search::storage::sqlite::{FrankenStorage, SqliteStorage, WriterGuard};
+/// fn assert_send<T: Send>() {}
+/// assert_send::<FrankenStorage>();
+/// assert_send::<SqliteStorage>();
+/// assert_send::<WriterGuard<'static>>();
+/// ```
 ///
 /// ```compile_fail
 /// use coding_agent_search::storage::sqlite::FrankenStorage;
-/// fn requires_send<T: Send>(_: T) {}
-/// fn raw_storage_must_not_cross_threads(storage: FrankenStorage) {
-///     requires_send(storage);
+/// fn requires_sync<T: Sync>(_: &T) {}
+/// fn raw_storage_must_not_be_shared_without_synchronization(storage: &FrankenStorage) {
+///     requires_sync(storage);
 /// }
 /// ```
 pub struct FrankenStorage {
@@ -184,12 +196,15 @@ enum CachedEphemeralWriter {
     InUse,
 }
 
-/// Thread-affine writer state cached only inside the owning `FrankenStorage`.
+/// Writer state cached inside the owning `FrankenStorage`.
 ///
-/// Unlike the public reader facade, this intentionally contains the raw
-/// `!Send` connection and has no manual auto-trait implementation. That makes
-/// moving a storage (and therefore a cached writer) across OS threads a
-/// compile-time error while preserving the inexpensive same-thread reuse path.
+/// This contains the raw `FrankenConnection`, which is `Send` but not `Sync`
+/// because rusqlite caches prepared statements in unsynchronized interior
+/// state. The cached writer may move only as part of a sequential ownership
+/// transfer; concurrent sharing must be synchronized by the caller. The
+/// surrounding mutex protects cache occupancy, while the primary raw
+/// connection keeps the public storage type `!Sync` without any manual
+/// auto-trait implementation.
 struct CachedRawFrankenConnection {
     conn: FrankenConnection,
     index_writer_checkpoint_pages: i64,
