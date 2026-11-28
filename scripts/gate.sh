@@ -154,7 +154,7 @@ run_fmt() {
 exit "$?"
 SH
     chmod +x "$wrapper" || return 1
-    CASS_GATE_RUSTFMT="$formatter" RUSTFMT="$wrapper" cargo fmt --check
+    CASS_GATE_RUSTFMT="$formatter" RUSTFMT="$wrapper" cargo fmt --all --check
     rc=$?
     return "$rc"
 }
@@ -165,12 +165,35 @@ SH
 source_paths() {
     git ls-files --cached --others --exclude-standard -z -- \
         Cargo.toml Cargo.lock rust-toolchain.toml build.rs build_support \
-        src tests benches scripts .cargo .github README.md | sort -z
+        crates fuzz/Cargo.toml fuzz/Cargo.lock src tests benches scripts .cargo .github README.md | sort -z
 }
 
 # Combined SHA-256 of every input file's own digest line.
 source_content() {
     source_paths | xargs -0 bash -c 'sha256 "$@"' _ | sha256 | cut -d' ' -f1
+}
+
+run_loc() {
+    python3 - <<'PY'
+from pathlib import Path
+import sys
+
+roots = [Path("src"), *sorted(Path("crates").glob("*/src"))]
+violations = []
+count = 0
+for root in roots:
+    if not root.is_dir():
+        continue
+    for path in sorted(root.rglob("*.rs")):
+        count += 1
+        lines = len(path.read_text(encoding="utf-8").splitlines())
+        if lines > 2000:
+            violations.append((path, lines))
+print(f"LOC_SCAN_FILES={count} LOC_MAX=2000 LOC_VIOLATIONS={len(violations)}")
+for path, lines in violations:
+    print(f"gate: LOC violation {path}: {lines} > 2000", file=sys.stderr)
+sys.exit(1 if violations else 0)
+PY
 }
 
 # Digest of everything not yet committed: the working-tree diff plus a
@@ -430,10 +453,13 @@ sys.exit(0)
 PY
 }
 
-run_ubs_default_lanes() {
-    verify_ubs_install || return 1
+
+collect_ubs_default_filesets() {
+    local prod_out="$1" info_out="$2"
+    local -n prod_ref="$prod_out"
+    local -n info_ref="$info_out"
     local path
-    local -a raw_src=() raw_prod=() raw_info=() prod_ubs_files=() info_ubs_files=()
+    local -a raw_src=() raw_prod=() raw_info=()
     local -A pure_test_src=(
         ["src/connectors/codex/source_budget/coverage_tests.rs"]=1
         ["src/connectors/codex/source_budget/empty_source/tests.rs"]=1
@@ -451,9 +477,11 @@ run_ubs_default_lanes() {
         ["src/cli_root/gh494_repair_tests.rs"]=1
         ["src/search_service/mcp_refinement_evidence_tests.rs"]=1
     )
+    prod_ref=()
+    info_ref=()
     while IFS= read -r -d '' path; do
         [ -f "$path" ] && raw_src+=("$path")
-    done < <(git ls-files -z -- 'src/*.rs' 'src/**/*.rs' | sort -zu)
+    done < <(git ls-files -z -- 'src/*.rs' 'src/**/*.rs' 'crates/*/src/*.rs' 'crates/*/src/**/*.rs' | sort -zu)
     for path in "${raw_src[@]}"; do
         if [[ "$path" == src/tests/* || "$path" == */tests/* ]] || [ -n "${pure_test_src[$path]:-}" ]; then
             raw_info+=("$path")
@@ -463,10 +491,15 @@ run_ubs_default_lanes() {
     done
     while IFS= read -r -d '' path; do
         [ -f "$path" ] && raw_info+=("$path")
-    done < <(git ls-files -z -- 'tests/*.rs' 'tests/**/*.rs' 'benches/*.rs' 'benches/**/*.rs' | sort -zu)
+    done < <(git ls-files -z -- 'tests/*.rs' 'tests/**/*.rs' 'benches/*.rs' 'benches/**/*.rs' 'crates/*/tests/*.rs' 'crates/*/tests/**/*.rs' | sort -zu)
+    filter_ubsignore_into prod_ref "${raw_prod[@]}"
+    filter_ubsignore_into info_ref "${raw_info[@]}"
+}
 
-    filter_ubsignore_into prod_ubs_files "${raw_prod[@]}"
-    filter_ubsignore_into info_ubs_files "${raw_info[@]}"
+run_ubs_default_lanes() {
+    verify_ubs_install || return 1
+    local -a prod_ubs_files=() info_ubs_files=()
+    collect_ubs_default_filesets prod_ubs_files info_ubs_files
 
     local prod_jsonl="${receipt_file}.ubs-prod.jsonl"
     local info_report="${receipt_file}.ubs-tests.log"
@@ -504,6 +537,10 @@ if [ "${1:-}" = --verify-test-log ]; then
     test_log_counts "$@"
     exit $?
 fi
+if [ "${1:-}" = --verify-loc ]; then
+    run_loc
+    exit $?
+fi
 if [ "${1:-}" = --verify-fmt ]; then
     run_fmt
     exit $?
@@ -525,6 +562,23 @@ if [ "${1:-}" = --print-source-state ]; then
         "$state_head" "$state_diff" "$state_content"
     exit 0
 fi
+if [ "${1:-}" = --print-ubs-prod-files ]; then
+    print_prod_files=()
+    print_info_files=()
+    collect_ubs_default_filesets print_prod_files print_info_files
+    printf '%s
+' "${print_prod_files[@]}"
+    exit 0
+fi
+if [ "${1:-}" = --print-ubs-info-files ]; then
+    print_prod_files=()
+    print_info_files=()
+    collect_ubs_default_filesets print_prod_files print_info_files
+    printf '%s
+' "${print_info_files[@]}"
+    exit 0
+fi
+
 # Run the pinned UBS stage as it runs inside the gate, then report the stage
 # verdict the same way the run does.
 if [ "${1:-}" = --verify-ubs ]; then
@@ -705,7 +759,7 @@ done
 # Every stage the run will execute, in order. The receipt check below
 # requires each one to report: a run cut short leaves later stages missing,
 # and a missing stage is RED, never green.
-EXPECTED_STAGES=(fmt clippy)
+EXPECTED_STAGES=(fmt loc clippy)
 if [ "$RUN_LIB" = 1 ]; then
     EXPECTED_STAGES+=(lib-build lib-tests)
 fi
@@ -739,7 +793,7 @@ if [ "$RUN_DOCS_TRUTH" = 1 ]; then
 fi
 # Scan after behavioral validation: a slow scanner must not consume the whole
 # run before any product test runs. UBS remains mandatory and blocking.
-EXPECTED_STAGES+=(ubs job-complete)
+EXPECTED_STAGES+=(doc-tests doc ubs job-complete)
 
 # Every stage records its own exit code and preserves complete test output.
 run_stages() {
@@ -748,16 +802,18 @@ run_stages() {
     echo "SOURCE_HEAD=${SOURCE_HEAD}"
     run_fmt
     echo "STAGE=fmt EXIT=$?"
-    run_cargo clippy --locked --all-targets -- -D warnings
+    run_loc
+    echo "STAGE=loc EXIT=$?"
+    run_cargo clippy --workspace --locked --all-targets -- -D warnings
     echo "STAGE=clippy EXIT=$?"
     if [ "$RUN_LIB" = 1 ]; then
-        run_cargo test --locked --lib --no-run
+        run_cargo test --workspace --locked --lib --no-run
         echo "STAGE=lib-build EXIT=$?"
         # `timeout` needs a real binary, so the bounded run calls cargo with
         # the already-exported resolved defaults instead of run_cargo.
         run_tests lib-tests "${lib_filter_checks[@]}" \
             run_with_timeout lib-tests "$LIB_TIMEOUT" \
-            cargo test --locked --lib -- "${lib_filter_words[@]}"
+            cargo test --workspace --locked --lib -- "${lib_filter_words[@]}"
     fi
     if [ "$RUN_INTEGRATION" = 1 ]; then
         for entry in "${INTEGRATION_TESTS[@]}"; do
@@ -774,29 +830,29 @@ run_stages() {
                 int_filter_checks+=(--filter "$fw")
             done
             run_tests "test-${t}" "${int_filter_checks[@]}" \
-                run_cargo test --locked --test "$t" -- "${int_filter_words[@]}"
+                run_cargo test -p coding-agent-search --locked --test "$t" -- "${int_filter_words[@]}"
         done
         if [ "$RUN_BIN" = 1 ]; then
-            run_cargo test --locked --bin cass --no-run
+            run_cargo test -p coding-agent-search --locked --bin cass --no-run
             echo "STAGE=bin-build EXIT=$?"
             # As for lib-tests, the timeout bounds the test run, not the compile.
             run_tests bin-cass \
                 run_with_timeout bin-cass "$BIN_TIMEOUT" \
-                cargo test --locked --bin cass -- "${bin_skip_args[@]}"
+                cargo test -p coding-agent-search --locked --bin cass -- "${bin_skip_args[@]}"
         fi
     fi
     if [ "$RUN_GOLDENS" = 1 ]; then
         if [ "$REGEN_GOLDENS" = 1 ]; then
             UPDATE_GOLDENS=1 run_tests goldens-regen \
-                run_cargo test --locked --test golden_robot_json --test golden_robot_docs
+                run_cargo test -p coding-agent-search --locked --test golden_robot_json --test golden_robot_docs
         fi
         run_tests goldens \
-            run_cargo test --locked --test golden_robot_json --test golden_robot_docs
+            run_cargo test -p coding-agent-search --locked --test golden_robot_json --test golden_robot_docs
     fi
     if [ "$RUN_DOCS_TRUTH" = 1 ]; then
         # Never inspect a pre-existing target binary when the selected tests
         # did not build it. This stage must establish its source and ELF first.
-        run_cargo build --locked --bin cass
+        run_cargo build -p coding-agent-search --locked --bin cass
         build_rc=$?
         echo "STAGE=docs-build EXIT=${build_rc}"
         if [ "$build_rc" -eq 0 ]; then
@@ -806,6 +862,10 @@ run_stages() {
             echo "STAGE=docs-truth EXIT=$?"
         fi
     fi
+    run_cargo test --workspace --locked --doc
+    echo "STAGE=doc-tests EXIT=$?"
+    RUSTDOCFLAGS="-D warnings" run_cargo doc --workspace --locked --no-deps
+    echo "STAGE=doc EXIT=$?"
     if [ "$UBS_FILES_EXPLICIT" = 1 ]; then
         run_ubs "${UBS_FILES[@]}"
     else

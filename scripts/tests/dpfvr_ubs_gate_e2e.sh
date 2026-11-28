@@ -78,6 +78,7 @@ SH
     receipt="$proof_dir/complete.txt"
     cat > "$receipt" <<'RECEIPT'
 STAGE=fmt EXIT=0
+STAGE=loc EXIT=0
 STAGE=clippy EXIT=0
 TEST_COUNT=lib-tests PASSED=4 BINARIES=1
 STAGE=lib-tests EXIT=0
@@ -85,15 +86,17 @@ TEST_COUNT=test-e2e_lexical_fail_open PASSED=1 BINARIES=1
 STAGE=test-e2e_lexical_fail_open EXIT=0
 TEST_COUNT=goldens PASSED=20 BINARIES=2
 STAGE=goldens EXIT=0
+STAGE=doc-tests EXIT=0
+STAGE=doc EXIT=0
 STAGE=ubs EXIT=0
 STAGE=job-complete EXIT=0
 RECEIPT
-    expected=(fmt clippy lib-tests test-e2e_lexical_fail_open goldens ubs job-complete)
+    expected=(fmt loc clippy lib-tests test-e2e_lexical_fail_open goldens doc-tests doc ubs job-complete)
     check_exit digits-and-positive-counts 0 bash "$gate" --verify-receipt "$receipt" 0 "${expected[@]}"
     check_exit runner-failure 1 bash "$gate" --verify-receipt "$receipt" 103 "${expected[@]}"
     check_exit runner-timeout 1 bash "$gate" --verify-receipt "$receipt" 124 "${expected[@]}"
     check_exit runner-failure-reported 0 rg -x -F 'STAGE=runner EXIT=103 (runner did not complete normally)' "$proof_dir/runner-failure.log"
-    for stage in fmt clippy lib-tests test-e2e_lexical_fail_open goldens ubs job-complete; do
+    for stage in fmt loc clippy lib-tests test-e2e_lexical_fail_open goldens doc-tests doc ubs job-complete; do
         awk -v stage="$stage" '$0 != "STAGE=" stage " EXIT=0"' "$receipt" > "$proof_dir/missing-$stage.txt"
         check_exit "missing-$stage" 1 bash "$gate" --verify-receipt "$proof_dir/missing-$stage.txt" 0 "${expected[@]}"
         awk -v stage="$stage" '{if ($0 == "STAGE=" stage " EXIT=0") print "STAGE=" stage " EXIT=1"; else print}' \
@@ -111,6 +114,26 @@ RECEIPT
     check_exit nonterminal-job-complete 1 bash "$gate" --verify-receipt "$proof_dir/not-terminal.txt" 0 "${expected[@]}"
     check_exit stale-docs-binary 1 bash "$gate" --verify-receipt "$receipt" 0 "${expected[@]}" docs-build docs-binary-identity docs-truth
 
+    loc_root="$proof_dir/loc-fixture"
+    mkdir -p "$loc_root/src" "$loc_root/crates/cass-model/src"
+    printf '%s\n' 'pub fn short() {}' > "$loc_root/src/lib.rs"
+    printf '%s\n' 'pub fn member_short() {}' > "$loc_root/crates/cass-model/src/model.rs"
+    check_exit loc-clean 0 bash -c 'cd "$1" && exec bash "$2" --verify-loc' _ "$loc_root" "$gate"
+    python3 - "$loc_root/crates/cass-model/src/long.rs" <<'PYFIX'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_text("// filler\n" * 2001, encoding="utf-8")
+PYFIX
+    check_exit loc-crates-violation 1 bash -c 'cd "$1" && exec bash "$2" --verify-loc' _ "$loc_root" "$gate"
+    check_exit loc-violation-named 0 rg -F 'crates/cass-model/src/long.rs: 2001 > 2000' "$proof_dir/loc-crates-violation.log"
+
+    check_exit ubs-prod-lane-printed 0 bash "$gate" --print-ubs-prod-files
+    check_exit ubs-prod-lane-includes-model 0 rg -x -F 'crates/cass-model/src/resource_plan/memoization.rs' "$proof_dir/ubs-prod-lane-printed.log"
+    check_exit ubs-prod-lane-excludes-member-tests 1 rg -x -F 'crates/cass-model/tests/build_metadata_contract.rs' "$proof_dir/ubs-prod-lane-printed.log"
+    check_exit ubs-info-lane-printed 0 bash "$gate" --print-ubs-info-files
+    check_exit ubs-info-lane-includes-member-tests 0 rg -x -F 'crates/cass-model/tests/build_metadata_contract.rs' "$proof_dir/ubs-info-lane-printed.log"
+    check_exit ubs-info-lane-excludes-model-prod 1 rg -x -F 'crates/cass-model/src/resource_plan/memoization.rs' "$proof_dir/ubs-info-lane-printed.log"
+
     # Exercise the actual scanner-file scope builder with no gate run.
     # Ignored paths must be dropped before they are named to the scanner;
     # production and test sources must remain selected.
@@ -123,6 +146,9 @@ RECEIPT
     cp "$PROJECT_ROOT/.ubsignore" "$scope_root/.ubsignore"
     printf '%s\n' 'pub fn parse(raw: &str) -> u64 { raw.parse().unwrap() }' > "$scope_root/src/production.rs"
     printf '%s\n' '#[test] fn selected_test() { assert!(true); }' > "$scope_root/tests/selected.rs"
+    mkdir -p "$scope_root/crates/cass-model/src"
+    printf '%s\n' 'pub fn member_input() {}' > "$scope_root/crates/cass-model/src/model.rs"
+    printf '%s\n' '[package]' 'name = "cass-model"' 'version = "0.11.0"' > "$scope_root/crates/cass-model/Cargo.toml"
     printf '%s\n' 'raise RuntimeError("retained scanner fixture")' > "$scope_root/.aider.tags.cache.v3/cass-gate-ubs.example/modules/scanner.py"
     git -C "$scope_root" init -q --initial-branch=main
     git -C "$scope_root" add scripts/gate.sh scripts/lib/run_cargo.sh scripts/ubs-version.txt .ubsignore
@@ -234,6 +260,13 @@ RECEIPT
     # A new untracked file mid-run must fail source-stability too.
     printf '%s\n' 'pub fn late() {}' > "$scope_root/tests/late_probe.rs"
     check_exit untracked-input-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
+        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
+
+    printf '%s\n' '// member mutation' >> "$scope_root/crates/cass-model/src/model.rs"
+    check_exit member-input-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
+        _ "$scope_root" "$state_head" "$state_diff" "$state_content"
+    printf '%s\n' '// member manifest mutation' >> "$scope_root/crates/cass-model/Cargo.toml"
+    check_exit member-manifest-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
         _ "$scope_root" "$state_head" "$state_diff" "$state_content"
 
     # A commit mid-run moves HEAD.
